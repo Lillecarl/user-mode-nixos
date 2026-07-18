@@ -57,6 +57,7 @@ in
     UML_NET_SLIRP = yes;
 
     BLOCK = yes;
+    BLK_DEV = yes;
     BLK_DEV_LOOP = yes;
     BLK_DEV_UBD = yes;
     TUN = yes;
