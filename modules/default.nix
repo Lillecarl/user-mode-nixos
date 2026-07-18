@@ -70,7 +70,7 @@ HEREDOC
       IMAGE=${config.system.build.umlRootImage}
 
       echo "Booting UML kernel (root on ubd) ..."
-      exec "$KERNEL" ubda="$IMAGE" root=/dev/ubda rw init=/init eth0=slirp
+      exec "$KERNEL" ubd0="$IMAGE" root=/dev/ubda rw init=/init eth0=slirp
     '';
   };
 }
