@@ -67,10 +67,14 @@ HEREDOC
     runtimeInputs = with pkgs; [ coreutils ];
     text = ''
       KERNEL=${umlKernel}/linux
-      IMAGE=${config.system.build.umlRootImage}
+      BASE=${config.system.build.umlRootImage}
 
-      echo "Booting UML kernel (root on ubd) ..."
-      exec "$KERNEL" ubd0="$IMAGE" root=/dev/ubda rw init=/init eth0=slirp
+      COW=$(mktemp /tmp/uml-cow-XXXXXX)
+      cleanup() { rm -f "$COW"; }
+      trap cleanup EXIT
+
+      echo "Booting UML kernel (root on ubd+cow) ..."
+      exec "$KERNEL" ubd0="$COW,$BASE" root=/dev/ubda rw init=/init eth0=slirp
     '';
   };
 }
