@@ -25,12 +25,13 @@ in
     mkdir -p $out
     cat > $out/init <<'HEREDOC'
 #!/bin/sh
+export PATH=/bin
 echo "Mounting host /nix/store via hostfs ..."
 mkdir -p /host/nix/store
 mount -t hostfs none /host/nix/store -o /nix/store
 
-echo "Overlaying /nix/store (lower=host, upper=ubd) ..."
-mkdir -p /nix/.store-upper /nix/.store-work /nix/store
+echo "Overlaying writable /nix/store (lower=host, upper=ubd) ..."
+mkdir -p /nix/.store-upper /nix/.store-work
 mount -t overlay overlay \
   -o lowerdir=/host/nix/store,upperdir=/nix/.store-upper,workdir=/nix/.store-work \
   /nix/store
@@ -53,8 +54,8 @@ HEREDOC
 
     cp ${pkgs.pkgsStatic.busybox}/bin/busybox root/bin/busybox
     chmod 0555 root/bin/busybox
-    for cmd in sh mkdir mount echo cat; do
-      ln -s busybox root/bin/$cmd
+    for cmd in sh mkdir mount cat echo ls; do
+      ln -sf busybox "root/bin/$cmd"
     done
 
     ln -sf ${config.system.build.toplevel}/init root/sbin/init
