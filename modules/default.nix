@@ -4,9 +4,9 @@ let
 in
 {
   networking.hostName = "umn";
-  networking.useDHCP = true;
   networking.firewall.enable = false;
   networking.interfaces.vec0.useDHCP = true;
+  systemd.services.resolvconf.enable = false;
 
   users.users.root.initialPassword = "";
 

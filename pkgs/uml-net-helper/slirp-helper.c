@@ -344,11 +344,12 @@ int main(int argc, char *argv[])
         close(sv[0]);
     }
 
-    int new_argc = argc - 2 + 2;
+    int kernel_argc = argc - 3;
+    int new_argc = 1 + kernel_argc + 1;
     char **new_argv = calloc(new_argc + 1, sizeof(char *));
     new_argv[0] = argv[2];
-    for (int i = 3; i < argc; i++)
-        new_argv[i - 2] = argv[i];
+    for (int i = 0; i < kernel_argc; i++)
+        new_argv[1 + i] = argv[3 + i];
     new_argv[new_argc - 1] = "vec0:transport=fd,fd=3";
     new_argv[new_argc] = NULL;
 

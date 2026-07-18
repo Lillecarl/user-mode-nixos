@@ -2,7 +2,6 @@
 set -euo pipefail
 
 NIX_FLAGS=(
-  --max-jobs 0
   --builders "ssh-ng://eu.nixbuild.net x86_64-linux - 100 1 kvm,nixos-test,benchmark,big-parallel"
 )
 INSTALLABLE=(--file . umn.config.system.build.umlRunner)
