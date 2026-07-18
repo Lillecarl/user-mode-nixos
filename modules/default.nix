@@ -13,6 +13,18 @@
   documentation.enable = false;
   documentation.nixos.enable = false;
 
+  system.build.umlInit = pkgs.runCommand "uml-init" { } ''
+    mkdir -p $out
+    cat > $out/init <<'HEREDOC'
+#!/bin/busybox sh
+echo "Mounting host /nix/store ..."
+/bin/busybox mount -t hostfs none /nix/store -o /nix/store
+echo "Starting NixOS init..."
+exec /sbin/init
+HEREDOC
+    chmod +x $out/init
+  '';
+
   system.build.umlRootfs = pkgs.callPackage (pkgs.path + "/nixos/lib/make-system-tarball.nix") {
     fileName = "nixos-uml-rootfs-${pkgs.stdenv.hostPlatform.system}";
 
@@ -29,19 +41,13 @@
         source = pkgs.pkgsStatic.busybox + "/bin/busybox";
         target = "/bin/busybox";
       }
+      {
+        source = config.system.build.umlInit + "/init";
+        target = "/init";
+      }
     ];
 
-    extraCommands = ''
-      mkdir -p proc sys dev tmp run
-      cat > /init <<'INIT_EOF'
-#!/bin/busybox sh
-echo "Mounting host /nix/store ..."
-/bin/busybox mount -t hostfs none /nix/store -o /nix/store
-echo "Starting NixOS init..."
-exec /sbin/init
-INIT_EOF
-      chmod +x /init
-    '';
+    extraCommands = "mkdir -p proc sys dev tmp run";
   };
 
   system.build.umlRunner = pkgs.writeShellApplication {
