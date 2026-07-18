@@ -1,5 +1,14 @@
-{ config, pkgs, lib, umlRunner, umlPasstBridge, umlKernel, ... }:
+{ config, pkgs, lib, ... }:
 let
+  sysKernel = config.boot.kernelPackages.kernel;
+
+  umlKernel = pkgs.callPackage ../pkgs/uml-kernel {
+    inherit (sysKernel) src version modDirVersion;
+  };
+
+  umlRunner = pkgs.callPackage ../pkgs/uml-runner { };
+  umlPasstBridge = pkgs.callPackage ../pkgs/uml-passt-bridge { };
+
   imageSize = "512"; # MiB
 in
 {

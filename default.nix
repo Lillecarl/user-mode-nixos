@@ -12,6 +12,5 @@ let
 in
 {
   inherit (outputs.nixosConfigurations) umn;
-  inherit (outputs.packages.${system}) umlKernel vdeNet;
   inherit umlRootfs toplevel;
 }
