@@ -1,4 +1,4 @@
-{ config, pkgs, lib, umlKernel, slirp, umlPasstBridge, ... }:
+{ config, pkgs, lib, vdeNet, umlKernel, ... }:
 let
   imageSize = "512"; # MiB
 in
@@ -95,18 +95,21 @@ HEREDOC
 
   system.build.umlRunner = pkgs.writeShellApplication {
     name = "run-uml";
-    runtimeInputs = with pkgs; [ coreutils passt ];
+    runtimeInputs = with pkgs; [ coreutils ];
     text = ''
       KERNEL=${umlKernel}/linux
-      BRIDGE=${umlPasstBridge}/bin/uml-passt-bridge
       BASE=${config.system.build.umlRootImage}
 
       RUNDIR=$(mktemp -d /tmp/uml-run-XXXXXX)
       cleanup() { rm -rf "$RUNDIR"; }
       trap cleanup EXIT
 
-      echo "Booting UML kernel (root on ubd+cow, vec0 via passt) ..."
-      exec "$BRIDGE" "$KERNEL" ubd0="$RUNDIR/cow,$BASE" root=/dev/ubda rw init=/init
+      export LD_LIBRARY_PATH=${vdeNet}/lib
+      export VDEPLUGIN_PATH=${vdeNet}/lib/vdeplug
+      export PATH=${vdeNet}/bin:$PATH
+
+      echo "Booting UML kernel (root on ubd+cow, vec0 via vde slirp) ..."
+      exec "$KERNEL" ubd0="$RUNDIR/cow,$BASE" root=/dev/ubda rw init=/init vec0:transport=vde,vnl=slirp://
     '';
   };
 }

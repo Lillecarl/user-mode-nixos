@@ -11,20 +11,25 @@
 
       latestKernel = pkgs.linuxPackages_latest.kernel;
 
+      vdeplug4 = pkgs.callPackage ./pkgs/vdeplug4 { };
+      libvdeslirp = pkgs.callPackage ./pkgs/libvdeslirp { inherit vdeplug4; };
+      vdeplug_slirp = pkgs.callPackage ./pkgs/vdeplug_slirp { inherit vdeplug4 libvdeslirp; };
+      vdeNet = pkgs.callPackage ./pkgs/vde-net { inherit vdeplug4 vdeplug_slirp libvdeslirp; };
       umlKernel = pkgs.callPackage ./pkgs/uml-kernel {
         inherit (latestKernel) version modDirVersion src;
       };
-      slirp = pkgs.callPackage ./pkgs/slirp { };
-      umlPasstBridge = pkgs.callPackage ./pkgs/uml-passt-bridge { };
     in
     {
       packages.${system} = {
-        inherit umlKernel slirp umlPasstBridge;
+        inherit umlKernel vdeplug4 libvdeslirp vdeplug_slirp vdeNet;
       };
 
       nixosConfigurations.umn = inputs.nixpkgs.lib.nixosSystem {
         inherit system;
-        specialArgs = { inherit umlKernel slirp umlPasstBridge; };
+        specialArgs = {
+          vdeNet = vdeNet;
+          umlKernel = umlKernel;
+        };
         modules = [ ./modules ];
       };
     };
