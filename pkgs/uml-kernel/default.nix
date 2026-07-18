@@ -17,7 +17,7 @@ let
     hash = k.hash;
   };
 in
-linuxKernel.buildLinux {
+(linuxKernel.buildLinux {
   inherit version src modDirVersion;
   pname = "linux-uml";
   kernelArch = "um";
@@ -32,4 +32,12 @@ linuxKernel.buildLinux {
   ];
   structuredExtraConfig = with lib.kernel; { };
   extraMeta.platforms = lib.platforms.linux;
-}
+}).overrideAttrs (_: {
+  installTargets = [ ];
+  preInstall = "";
+  installPhase = ''
+    mkdir -p $out $dev $modules
+    cp -v linux $out/
+    cp -v System.map $out/
+  '';
+})
