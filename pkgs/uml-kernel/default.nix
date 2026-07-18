@@ -1,13 +1,8 @@
 {
   stdenv,
-  stdenvNoCC,
   lib,
   fetchurl,
   linuxKernel,
-  perl,
-  kmod,
-  bison,
-  flex,
   kernelsJson,
 }:
 
@@ -21,33 +16,19 @@ let
     url = "mirror://kernel/linux/kernel/v${lib.versions.major version}.x/linux-${version}.tar.xz";
     hash = k.hash;
   };
-
-  umlDefconfig = stdenvNoCC.mkDerivation {
-    name = "uml-defconfig-${version}";
-    inherit src;
-    nativeBuildInputs = [ stdenv.cc perl bison flex ];
-    buildPhase = ''
-      make \
-        ARCH=um \
-        HOSTCC=${stdenv.cc.targetPrefix}gcc \
-        CC=${stdenv.cc.targetPrefix}gcc \
-        defconfig
-    '';
-    installPhase = ''
-      cp .config $out
-    '';
-    dontFixup = true;
-  };
 in
-linuxKernel.manualConfig {
+linuxKernel.buildLinux {
   inherit version src modDirVersion;
   pname = "linux-uml";
-  configfile = umlDefconfig;
+  kernelArch = "um";
   target = "linux";
+  enableCommonConfig = false;
+  autoModules = false;
+  ignoreConfigErrors = true;
   extraMakeFlags = [
-    "ARCH=um"
     "SUBARCH=x86_64"
+    "CC=${lib.getExe stdenv.cc}"
   ];
-  kernelPatches = [ ];
+  structuredExtraConfig = with lib.kernel; { };
   extraMeta.platforms = lib.platforms.linux;
 }
