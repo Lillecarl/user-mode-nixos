@@ -26,6 +26,7 @@ linuxKernel.buildLinux {
   autoModules = false;
   ignoreConfigErrors = true;
   extraMakeFlags = [
+    "ARCH=um"
     "SUBARCH=x86_64"
     "CC=${lib.getExe stdenv.cc}"
   ];
