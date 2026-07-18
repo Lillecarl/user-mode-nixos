@@ -1,10 +1,9 @@
 { config, pkgs, lib, umlKernel, ... }:
 let
-  makeDiskImage = import (pkgs.path + "/nixos/lib/make-disk-image.nix");
+  imageSize = "512"; # MiB
 in
 {
   boot.isContainer = true;
-  boot.loader.initScript.enable = true;
 
   networking.hostName = "umn";
   networking.useDHCP = false;
@@ -30,9 +29,11 @@ echo "Mounting host /nix/store via hostfs ..."
 mkdir -p /host/nix/store
 /bin/busybox mount -t hostfs none /host/nix/store -o /nix/store
 
-echo "Overlaying /nix/store (lower=host, upper=ubd) ..."
+echo "Overlaying writable /nix/store (lower=host, upper=ubd) ..."
 mkdir -p /nix/.store-upper /nix/.store-work
-/bin/busybox mount -t overlay overlay -o lowerdir=/host/nix/store,upperdir=/nix/.store-upper,workdir=/nix/.store-work /nix/store
+/bin/busybox mount -t overlay overlay \
+  -o lowerdir=/host/nix/store,upperdir=/nix/.store-upper,workdir=/nix/.store-work \
+  /nix/store
 
 echo "Starting NixOS init..."
 exec /sbin/init
@@ -40,34 +41,33 @@ HEREDOC
     chmod +x $out/init
   '';
 
-  system.build.umlRootImage = makeDiskImage {
-    inherit pkgs lib config;
-    format = "raw";
-    partitionTableType = "none";
-    installBootLoader = false;
-    diskSize = "auto";
-    additionalSpace = "512M";
-    copyChannel = false;
-    contents = [
-      {
-        source = config.system.build.umlInit + "/init";
-        target = "/init";
-        mode = "0555";
-      }
-      {
-        source = pkgs.pkgsStatic.busybox + "/bin/busybox";
-        target = "/bin/busybox";
-        mode = "0555";
-      }
-    ];
-  };
+  system.build.umlRootImage = pkgs.runCommand "uml-root-image" {
+    nativeBuildInputs = with pkgs; [ e2fsprogs ];
+  } ''
+    mkdir -p root/{dev,proc,sys,tmp,run,var,root,home,bin,sbin}
+    mkdir -p root/nix/.store-upper root/nix/.store-work
+    mkdir -p root/host/nix/store
+
+    cp ${config.system.build.umlInit}/init root/init
+    chmod 0555 root/init
+
+    cp ${pkgs.pkgsStatic.busybox}/bin/busybox root/bin/busybox
+    chmod 0555 root/bin/busybox
+
+    ln -sf ${config.system.build.toplevel}/init root/sbin/init
+
+    truncate -s ${imageSize}M disk.img
+    mkfs.ext4 -L nixos -d root disk.img
+
+    cp disk.img $out
+  '';
 
   system.build.umlRunner = pkgs.writeShellApplication {
     name = "run-uml";
     runtimeInputs = with pkgs; [ coreutils ];
     text = ''
       KERNEL=${umlKernel}/linux
-      IMAGE=${config.system.build.umlRootImage}/nixos.img
+      IMAGE=${config.system.build.umlRootImage}
 
       echo "Booting UML kernel (root on ubd) ..."
       exec "$KERNEL" ubda="$IMAGE" root=/dev/ubda rw init=/init eth0=slirp
