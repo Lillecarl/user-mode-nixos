@@ -54,7 +54,7 @@ in
     UNIX = yes;
     PACKET = yes;
     UML_NET = yes;
-    UML_NET_VECTOR = yes;
+    UML_NET_SLIRP = yes;
 
     BLOCK = yes;
     BLK_DEV = yes;

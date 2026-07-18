@@ -1,11 +1,13 @@
-{ config, pkgs, lib, umlKernel, umlNetHelper, ... }:
+{ config, pkgs, lib, umlKernel, umlNetHelper, slirp, ... }:
 let
   imageSize = "512"; # MiB
 in
 {
   networking.hostName = "umn";
+  networking.useDHCP = false;
+  networking.dhcpcd.enable = false;
   networking.firewall.enable = false;
-  networking.interfaces.vec0.useDHCP = true;
+  networking.interfaces.eth0.useDHCP = true;
   systemd.services.resolvconf.enable = false;
 
   users.users.root.initialPassword = "";
@@ -80,18 +82,17 @@ HEREDOC
 
   system.build.umlRunner = pkgs.writeShellApplication {
     name = "run-uml";
-    runtimeInputs = with pkgs; [ coreutils ];
+    runtimeInputs = with pkgs; [ coreutils ] ++ [ slirp ];
     text = ''
       KERNEL=${umlKernel}/linux
-      HELPER=${umlNetHelper}/bin/slirp-helper
       BASE=${config.system.build.umlRootImage}
 
       RUNDIR=$(mktemp -d /tmp/uml-run-XXXXXX)
       cleanup() { rm -rf "$RUNDIR"; }
       trap cleanup EXIT
 
-      echo "Booting UML kernel (root on ubd+cow, vec0 slirp) ..."
-      exec "$HELPER" -- "$KERNEL" ubd0="$RUNDIR/cow,$BASE" root=/dev/ubda rw init=/init
+      echo "Booting UML kernel (root on ubd+cow, eth0=slirp) ..."
+      exec "$KERNEL" ubd0="$RUNDIR/cow,$BASE" root=/dev/ubda rw init=/init eth0=slirp
     '';
   };
 }
