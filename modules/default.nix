@@ -13,6 +13,7 @@ in
   systemd.services.systemd-networkd.enable = true;
   systemd.services.systemd-networkd-wait-online.enable = lib.mkForce false;
 
+  users.mutableUsers = false;
   users.users.root.initialPassword = "Flagpole3.Equinox.Grasp";
 
   system.stateVersion = "25.05";
@@ -30,14 +31,14 @@ in
   systemd.services.nsncd.enable = false;
 
 
-  # socat test: prove passt port forwarding reaches the guest
-  systemd.services.echo-tcp = {
-    description = "Echo TCP test on 4325";
-    wantedBy = [ "multi-user.target" ];
-    after = [ "network.target" ];
-    serviceConfig = {
-      Type = "simple";
-      ExecStart = "${pkgs.socat}/bin/socat tcp-listen:4325,reuseaddr,fork exec:'${pkgs.coreutils}/bin/cat',pty,stderr";
+  services.openssh = {
+    enable = true;
+    ports = [ 4325 ];
+    startWhenNeeded = false;
+    settings = {
+      PermitRootLogin = "yes";
+      PasswordAuthentication = true;
+      UsePAM = true;
     };
   };
 
@@ -53,14 +54,6 @@ in
       echo "vec0: $(ip -4 -br addr show vec0)"
       echo "canhazip: $(curl -s --max-time 10 https://canhazip.com || echo FAILED)"
       echo "example: $(curl -s --max-time 10 -o /dev/null -w '%{http_code}' https://example.com || echo FAILED)"
-      echo ""
-      echo "=== SSHD CONFIG ==="
-      ${pkgs.gnugrep}/bin/grep -v '^#' /etc/ssh/sshd_config | grep -v '^$'
-      echo "=== PASSWD ==="
-      ${pkgs.gnugrep}/bin/grep ^root /etc/shadow | cut -d: -f1,2
-      echo ""
-      echo "=== SSHD LISTENING ==="
-      ${pkgs.iproute2}/bin/ss -tlnp 2>/dev/null || true
       echo "=== END ==="
     '';
   };

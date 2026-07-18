@@ -33,10 +33,12 @@
     PROC_FS = yes;
     SYSFS = yes;
     TMPFS = yes;
+    TMPFS_XATTR = yes;
     SHMEM = yes;
     DEVTMPFS = yes;
 
     EXT4_FS = yes;
+    EXT4_FS_SECURITY = yes;
     OVERLAY_FS = yes;
     HOSTFS = yes;
 
@@ -65,6 +67,9 @@
     INOTIFY_USER = yes;
     FHANDLE = yes;
     CGROUPS = yes;
+
+    SECURITY = yes;
+    SECURITYFS = yes;
   };
   extraMeta.platforms = lib.platforms.linux;
 }).overrideAttrs (_: {

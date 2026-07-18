@@ -17,9 +17,12 @@ import tempfile
 from asyncio import subprocess
 from pathlib import Path
 
+import asyncssh
+
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
-READY_RE = re.compile(r"Started Echo TCP")
-TEST_PORT = 4325
+SSH_READY_RE = re.compile(r"Started SSH Daemon")
+SSH_PORT = 4325
+SSH_PASSWORD = "Flagpole3.Equinox.Grasp"
 
 
 def strip_ansi(line: str) -> str:
@@ -64,7 +67,7 @@ class UmlRunner:
                 plain = strip_ansi(text)
                 if plain:
                     print(f"[uml] {plain}", flush=True)
-                if READY_RE.search(plain):
+                if SSH_READY_RE.search(plain):
                     self.ready_event.set()
 
         if self.uml_process.stdout and self.uml_process.stderr:
@@ -75,27 +78,26 @@ class UmlRunner:
         elif self.uml_process.stdout:
             await _read_and_detect(self.uml_process.stdout, "out")
 
-    async def _test_echo(self) -> str | None:
-        """Test that passt port forwarding reaches the guest."""
-        print("[runner] Echo service started, testing port forward ...", flush=True)
+    async def _try_ssh(self) -> str | None:
+        print("[runner] SSH daemon detected, attempting connection ...", flush=True)
         await asyncio.sleep(1)
-        TEST_TEXT = b"HELLO_FROM_HOST\n"
         for attempt in range(5):
             try:
-                reader, writer = await asyncio.open_connection(
-                    "127.0.0.1", TEST_PORT
-                )
-                writer.write(TEST_TEXT)
-                await writer.drain()
-                data = await asyncio.wait_for(reader.readline(), timeout=5)
-                writer.close()
-                await writer.wait_closed()
-                resp = data.decode().strip()
-                print(f"[runner] Echo response: '{resp}'", flush=True)
-                return f"echo response: {resp}"
-            except (OSError, asyncio.TimeoutError) as e:
+                async with asyncssh.connect(
+                    host="127.0.0.1",
+                    port=SSH_PORT,
+                    username="root",
+                    password=SSH_PASSWORD,
+                    known_hosts=None,
+                    preferred_auth="password",
+                    agent_path=None,
+                    connect_timeout=5,
+                ) as conn:
+                    result = await conn.run("echo SSH_OK && hostname && ip addr show vec0", check=True)
+                    return result.stdout.strip()
+            except (OSError, asyncssh.Error) as e:
                 detail = str(e) or repr(e)
-                print(f"[runner] Echo attempt {attempt + 1}/5 failed: {detail}", flush=True)
+                print(f"[runner] SSH attempt {attempt + 1}/5 failed: {detail}", flush=True)
                 if attempt < 4:
                     await asyncio.sleep(2)
         return None
@@ -137,18 +139,18 @@ class UmlRunner:
         try:
             await asyncio.wait_for(self.ready_event.wait(), timeout=60)
         except asyncio.TimeoutError:
-            print("[runner] timed out waiting for echo service", flush=True)
+            print("[runner] timed out waiting for SSH daemon", flush=True)
             monitor_task.cancel()
             self._terminate_uml()
             self._cleanup_rundir()
             return 1
 
-        echo_output = await self._test_echo()
+        ssh_output = await self._try_ssh()
 
-        if echo_output is None:
-            print("[runner] Echo test FAILED — port forwarding did not reach guest", flush=True)
+        if ssh_output is None:
+            print("[runner] SSH connection failed after retries", flush=True)
         else:
-            print(f"[runner] Echo test SUCCESS — port forwarding works: {echo_output}", flush=True)
+            print(f"[runner] SSH connected successfully:\n{ssh_output}", flush=True)
 
         print("[runner] waiting for UML to shut down (30s sleep) ...", flush=True)
         try:
@@ -160,7 +162,7 @@ class UmlRunner:
         self._cleanup_rundir()
         rc = self.uml_process.returncode or 0
         print(f"[runner] UML exited with code {rc}", flush=True)
-        return 0 if echo_output else 1
+        return 0 if ssh_output else 1
 
     def _terminate_uml(self) -> None:
         if self.uml_process and self.uml_process.returncode is None:
