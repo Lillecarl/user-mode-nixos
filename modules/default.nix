@@ -31,7 +31,7 @@ mkdir -p /host/nix/store
 mount -t hostfs none /host/nix/store -o /nix/store
 
 echo "Overlaying writable /nix/store (lower=host, upper=ubd) ..."
-mkdir -p /nix/.store-upper /nix/.store-work
+mkdir -p /nix/store /nix/.store-upper /nix/.store-work
 mount -t overlay overlay \
   -o lowerdir=/host/nix/store,upperdir=/nix/.store-upper,workdir=/nix/.store-work \
   /nix/store
@@ -46,7 +46,7 @@ HEREDOC
     nativeBuildInputs = with pkgs; [ e2fsprogs ];
   } ''
     mkdir -p root/{dev,proc,sys,tmp,run,var,root,home,bin,sbin}
-    mkdir -p root/nix/.store-upper root/nix/.store-work
+    mkdir -p root/nix/.store-upper root/nix/.store-work root/nix/store
     mkdir -p root/host/nix/store
 
     cp ${config.system.build.umlInit}/init root/init
