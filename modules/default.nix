@@ -6,11 +6,6 @@
   networking.hostName = "umn";
   networking.useDHCP = false;
 
-  fileSystems."/" = {
-    device = "none";
-    fsType = "tmpfs";
-  };
-
   users.users.root.initialPassword = "";
 
   system.stateVersion = "25.05";
@@ -21,13 +16,6 @@
   system.build.umlRootfs = pkgs.callPackage (pkgs.path + "/nixos/lib/make-system-tarball.nix") {
     fileName = "nixos-uml-rootfs-${pkgs.stdenv.hostPlatform.system}";
 
-    storeContents = [
-      {
-        object = config.system.build.toplevel;
-        symlink = "none";
-      }
-    ];
-
     contents = [
       {
         source = config.system.build.toplevel + "/init";
@@ -37,9 +25,23 @@
         source = config.system.build.toplevel + "/etc/os-release";
         target = "/etc/os-release";
       }
+      {
+        source = pkgs.pkgsStatic.busybox + "/bin/busybox";
+        target = "/bin/busybox";
+      }
     ];
 
-    extraCommands = "mkdir -p proc sys dev tmp run";
+    extraCommands = ''
+      mkdir -p proc sys dev tmp run
+      cat > /init <<'INIT_EOF'
+#!/bin/busybox sh
+echo "Mounting host /nix/store ..."
+/bin/busybox mount -t hostfs none /nix/store -o /nix/store
+echo "Starting NixOS init..."
+exec /sbin/init
+INIT_EOF
+      chmod +x /init
+    '';
   };
 
   system.build.umlRunner = pkgs.writeShellApplication {
@@ -57,7 +59,7 @@
       tar xf "$ROOTFS" -C "$ROOT"
 
       echo "Booting UML kernel..."
-      exec "$KERNEL" rootfstype=hostfs rootflags="$ROOT" rw init=/sbin/init
+      exec "$KERNEL" rootfstype=hostfs rootflags="$ROOT" rw init=/init
     '';
   };
 }
