@@ -58,6 +58,7 @@ in
 
     BLOCK = yes;
     BLK_DEV_LOOP = yes;
+    BLK_DEV_UBD = yes;
     TUN = yes;
     PRINTK = yes;
     EARLY_PRINTK = yes;

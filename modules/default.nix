@@ -1,4 +1,7 @@
 { config, pkgs, lib, umlKernel, ... }:
+let
+  makeDiskImage = import (pkgs.path + "/nixos/lib/make-disk-image.nix");
+in
 {
   boot.isContainer = true;
   boot.loader.initScript.enable = true;
@@ -23,12 +26,13 @@
     mkdir -p $out
     cat > $out/init <<'HEREDOC'
 #!/bin/busybox sh
-echo "Mounting host /nix/store ..."
-/bin/busybox mount -t hostfs none /nix/store -o /nix/store
+echo "Mounting host /nix/store via hostfs ..."
+mkdir -p /host/nix/store
+/bin/busybox mount -t hostfs none /host/nix/store -o /nix/store
 
-echo "Setting up writable /etc overlay ..."
-mkdir -p /run/uml-etc-upper /run/uml-etc-work
-/bin/busybox mount -t overlay overlay -o lowerdir=/etc,upperdir=/run/uml-etc-upper,workdir=/run/uml-etc-work /etc
+echo "Overlaying /nix/store (lower=host, upper=ubd) ..."
+mkdir -p /nix/.store-upper /nix/.store-work
+/bin/busybox mount -t overlay overlay -o lowerdir=/host/nix/store,upperdir=/nix/.store-upper,workdir=/nix/.store-work /nix/store
 
 echo "Starting NixOS init..."
 exec /sbin/init
@@ -36,47 +40,37 @@ HEREDOC
     chmod +x $out/init
   '';
 
-  system.build.umlRootfs = pkgs.callPackage (pkgs.path + "/nixos/lib/make-system-tarball.nix") {
-    fileName = "nixos-uml-rootfs-${pkgs.stdenv.hostPlatform.system}";
-
+  system.build.umlRootImage = makeDiskImage {
+    inherit pkgs lib config;
+    format = "raw";
+    partitionTableType = "none";
+    installBootLoader = false;
+    diskSize = "auto";
+    additionalSpace = "512M";
+    copyChannel = false;
     contents = [
       {
-        source = config.system.build.toplevel + "/init";
-        target = "/sbin/init";
-      }
-      {
-        source = config.system.build.toplevel + "/etc/os-release";
-        target = "/etc/os-release";
+        source = config.system.build.umlInit + "/init";
+        target = "/init";
+        mode = "0555";
       }
       {
         source = pkgs.pkgsStatic.busybox + "/bin/busybox";
         target = "/bin/busybox";
-      }
-      {
-        source = config.system.build.umlInit + "/init";
-        target = "/init";
+        mode = "0555";
       }
     ];
-
-    extraCommands = "mkdir -p proc sys dev tmp run";
   };
 
   system.build.umlRunner = pkgs.writeShellApplication {
     name = "run-uml";
-    runtimeInputs = with pkgs; [ coreutils gnutar ];
+    runtimeInputs = with pkgs; [ coreutils ];
     text = ''
       KERNEL=${umlKernel}/linux
-      ROOTFS=${config.system.build.umlRootfs}/tarball/nixos-uml-rootfs-x86_64-linux.tar.xz
+      IMAGE=${config.system.build.umlRootImage}/nixos.img
 
-      ROOT=$(mktemp -d /tmp/uml-root-XXXXXX)
-      cleanup() { rm -rf "$ROOT"; }
-      trap cleanup EXIT
-
-      echo "Extracting rootfs to $ROOT ..."
-      tar xf "$ROOTFS" -C "$ROOT"
-
-      echo "Booting UML kernel..."
-      exec "$KERNEL" rootfstype=hostfs rootflags="$ROOT" rw init=/init eth0=slirp
+      echo "Booting UML kernel (root on ubd) ..."
+      exec "$KERNEL" ubda="$IMAGE" root=/dev/ubda rw init=/init eth0=slirp
     '';
   };
 }
