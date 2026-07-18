@@ -100,13 +100,13 @@ int main(int argc, char *argv[])
         }
         fcntl(3, F_SETFD, 0);
 
-        int new_argc = argc;
+        /* Build argv: skip argv[0] (our name), pass through all UML args,
+         * then append vec0 transport. */
+        int new_argc = argc + 1;  /* +1 for vec0 transport arg */
         char **new_argv = calloc(new_argc + 1, sizeof(char *));
-        new_argv[0] = argv[1];
-        for (int i = 2; i < argc; i++)
-            new_argv[i - 1] = argv[i];
-        new_argv[new_argc - 1] = "vec0:transport=fd,fd=3";
-        new_argv[new_argc] = NULL;
+        new_argv[0] = argv[1];  /* kernel binary */
+        memcpy(&new_argv[1], &argv[2], (argc - 2) * sizeof(char *));  /* UML args */
+        new_argv[new_argc - 2] = "vec0:transport=fd,fd=3";
 
         execvp(new_argv[0], new_argv);
         perror("execvp uml");

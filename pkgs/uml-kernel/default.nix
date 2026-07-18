@@ -6,23 +6,11 @@
   version,
   modDirVersion,
   src,
+  smp ? false,
 }:
 
-(linuxKernel.buildLinux {
-  inherit version src modDirVersion;
-  pname = "linux-uml";
-  kernelArch = "um";
-  target = "linux";
-  defconfig = "allnoconfig";
-  enableCommonConfig = false;
-  autoModules = false;
-  ignoreConfigErrors = true;
-  extraMakeFlags = [
-    "ARCH=um"
-    "SUBARCH=x86_64"
-    "CC=${lib.getExe stdenv.cc}"
-  ];
-  structuredExtraConfig = with lib.kernel; {
+let
+  baseConfig = with lib.kernel; {
     BINFMT_ELF = yes;
     BINFMT_SCRIPT = yes;
 
@@ -92,9 +80,28 @@
     AUTOFS_FS = yes;
     CONFIGFS_FS = yes;
   };
-  extraConfig = ''
-    CONFIG_LSM=yama,landlock,integrity,bpf
-  '';
+
+  smpConfig = lib.optionalAttrs smp (with lib.kernel; {
+    SMP = yes;
+    NR_CPUS = freeform "64";
+  });
+in
+
+(linuxKernel.buildLinux {
+  inherit version src modDirVersion;
+  pname = "linux-uml";
+  kernelArch = "um";
+  target = "linux";
+  defconfig = "allnoconfig";
+  enableCommonConfig = false;
+  autoModules = false;
+  ignoreConfigErrors = true;
+  extraMakeFlags = [
+    "ARCH=um"
+    "SUBARCH=x86_64"
+    "CC=${lib.getExe stdenv.cc}"
+  ];
+  structuredExtraConfig = baseConfig // smpConfig;
   extraMeta.platforms = lib.platforms.linux;
 }).overrideAttrs (_: {
   installTargets = [ ];
