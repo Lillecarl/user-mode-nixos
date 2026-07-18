@@ -70,7 +70,31 @@
 
     SECURITY = yes;
     SECURITYFS = yes;
+    SECCOMP = yes;
+    SECCOMP_FILTER = yes;
+    SECURITY_YAMA = yes;
+    SECURITY_LANDLOCK = yes;
+    INTEGRITY = yes;
+
+    BPF = yes;
+    BPF_SYSCALL = yes;
+    BPF_JIT = yes;
+    CGROUP_BPF = yes;
+    BPF_LSM = yes;
+
+    PERF_EVENTS = yes;
+
+    MEMCG = yes;
+
+    PSI = yes;
+    AUDIT = yes;
+
+    AUTOFS_FS = yes;
+    CONFIGFS_FS = yes;
   };
+  extraConfig = ''
+    CONFIG_LSM=yama,landlock,integrity,bpf
+  '';
   extraMeta.platforms = lib.platforms.linux;
 }).overrideAttrs (_: {
   installTargets = [ ];
@@ -79,5 +103,6 @@
     mkdir -p $out $dev $modules
     cp -v linux $out/
     cp -v System.map $out/
+    cp -v .config $out/config
   '';
 })

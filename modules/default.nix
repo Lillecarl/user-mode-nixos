@@ -29,6 +29,7 @@ in
 
   systemd.services.systemd-random-seed.enable = false;
   systemd.services.nsncd.enable = false;
+  system.activationScripts.modprobe.text = lib.mkForce "";
 
 
   services.openssh = {
@@ -54,6 +55,11 @@ in
       echo "vec0: $(ip -4 -br addr show vec0)"
       echo "canhazip: $(curl -s --max-time 10 https://canhazip.com || echo FAILED)"
       echo "example: $(curl -s --max-time 10 -o /dev/null -w '%{http_code}' https://example.com || echo FAILED)"
+      echo ""
+      echo "=== LSM ==="
+      cat /sys/kernel/security/lsm 2>/dev/null || echo "no lsm"
+      echo "=== BPF ==="
+      ls /sys/fs/bpf 2>/dev/null | head -5 || echo "no bpf"
       echo "=== END ==="
     '';
   };
