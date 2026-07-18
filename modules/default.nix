@@ -30,7 +30,7 @@ mkdir -p /host/nix/store
 mount -t hostfs none /host/nix/store -o /nix/store
 
 echo "Overlaying /nix/store (lower=host, upper=ubd) ..."
-mkdir -p /nix/.store-upper /nix/.store-work
+mkdir -p /nix/.store-upper /nix/.store-work /nix/store
 mount -t overlay overlay \
   -o lowerdir=/host/nix/store,upperdir=/nix/.store-upper,workdir=/nix/.store-work \
   /nix/store
