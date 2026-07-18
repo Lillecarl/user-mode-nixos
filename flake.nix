@@ -19,18 +19,19 @@
         inherit (latestKernel) version modDirVersion src;
       };
       umlRunner = pkgs.callPackage ./pkgs/uml-runner { };
+      umlPasstBridge = pkgs.callPackage ./pkgs/uml-passt-bridge { };
     in
     {
       packages.${system} = {
-        inherit umlKernel vdeplug4 libvdeslirp vdeplug_slirp vdeNet umlRunner;
+        inherit umlKernel vdeplug4 libvdeslirp vdeplug_slirp vdeNet umlRunner umlPasstBridge;
       };
 
       nixosConfigurations.umn = inputs.nixpkgs.lib.nixosSystem {
         inherit system;
         specialArgs = {
-          vdeNet = vdeNet;
           umlKernel = umlKernel;
           umlRunner = umlRunner;
+          umlPasstBridge = umlPasstBridge;
         };
         modules = [ ./modules ];
       };

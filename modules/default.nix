@@ -1,4 +1,4 @@
-{ config, pkgs, lib, umlRunner, vdeNet, umlKernel, ... }:
+{ config, pkgs, lib, umlRunner, umlPasstBridge, umlKernel, ... }:
 let
   imageSize = "512"; # MiB
 in
@@ -7,8 +7,11 @@ in
   networking.useDHCP = false;
   networking.dhcpcd.enable = false;
   networking.firewall.enable = false;
+  networking.useNetworkd = true;
   networking.interfaces.vec0.useDHCP = true;
   systemd.services.resolvconf.enable = false;
+  systemd.services.systemd-networkd.enable = true;
+  systemd.services.systemd-networkd-wait-online.enable = lib.mkForce false;
 
   users.users.root.initialPassword = "Flagpole3.Equinox.Grasp";
 
@@ -27,16 +30,40 @@ in
   systemd.services.nsncd.enable = false;
 
 
-  services.openssh = {
-    enable = true;
-    ports = [ 4325 ];
-    startWhenNeeded = false;
-    settings = {
-      PermitRootLogin = "yes";
-      PasswordAuthentication = true;
+  # socat test: prove passt port forwarding reaches the guest
+  systemd.services.echo-tcp = {
+    description = "Echo TCP test on 4325";
+    wantedBy = [ "multi-user.target" ];
+    after = [ "network.target" ];
+    serviceConfig = {
+      Type = "simple";
+      ExecStart = "${pkgs.socat}/bin/socat tcp-listen:4325,reuseaddr,fork exec:'${pkgs.coreutils}/bin/cat',pty,stderr";
     };
   };
-  users.users.root.openssh.authorizedKeys.keys = [];
+
+  systemd.services.uml-connectivity-test = {
+    description = "Test outbound connectivity from UML";
+    wantedBy = [ "multi-user.target" ];
+    after = [ "network-online.target" ];
+    serviceConfig.Type = "oneshot";
+    path = [ pkgs.curl pkgs.iproute2 ];
+    script = ''
+      exec >/dev/console 2>&1
+      echo "=== CONNECTIVITY ==="
+      echo "vec0: $(ip -4 -br addr show vec0)"
+      echo "canhazip: $(curl -s --max-time 10 https://canhazip.com || echo FAILED)"
+      echo "example: $(curl -s --max-time 10 -o /dev/null -w '%{http_code}' https://example.com || echo FAILED)"
+      echo ""
+      echo "=== SSHD CONFIG ==="
+      ${pkgs.gnugrep}/bin/grep -v '^#' /etc/ssh/sshd_config | grep -v '^$'
+      echo "=== PASSWD ==="
+      ${pkgs.gnugrep}/bin/grep ^root /etc/shadow | cut -d: -f1,2
+      echo ""
+      echo "=== SSHD LISTENING ==="
+      ${pkgs.iproute2}/bin/ss -tlnp 2>/dev/null || true
+      echo "=== END ==="
+    '';
+  };
 
   systemd.services.uml-shutdown = {
     description = "Shutdown UML after boot";
@@ -101,7 +128,8 @@ HEREDOC
       exec uml-runner \
         --kernel ${umlKernel}/linux \
         --root-image ${config.system.build.umlRootImage} \
-        --vde-net ${vdeNet}
+        --bridge ${umlPasstBridge}/bin/uml-passt-bridge \
+        --passt ${pkgs.passt}/bin/passt
     '';
   };
 }

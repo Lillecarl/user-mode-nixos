@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""UML kernel runner with async SSH probing.
+"""UML kernel runner with TCP echo probe.
 
-Starts a UML kernel with VDE slirp networking, monitors its output for
-the SSH daemon starting, then connects via SSH over the slirp-forwarded
-loopback to verify connectivity.
+Starts a UML kernel via uml-passt-bridge which connects the fd vector
+transport to passt for unprivileged NAT + port forwarding, monitors
+output for the echo service starting, then connects via TCP to verify
+port forwarding.
 """
 
 import argparse
@@ -16,27 +17,13 @@ import tempfile
 from asyncio import subprocess
 from pathlib import Path
 
-import asyncssh
-
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
-SSH_READY_RE = re.compile(r"Started\s+SSH Daemon")
-SSH_PORT = 4325
-SSH_PASSWORD = "Flagpole3.Equinox.Grasp"
-SLIRP_GUEST_IP = "10.0.2.15"
+READY_RE = re.compile(r"Started Echo TCP")
+TEST_PORT = 4325
 
 
 def strip_ansi(line: str) -> str:
     return ANSI_RE.sub("", line)
-
-
-async def read_stream(stream: asyncio.StreamReader, prefix: str) -> None:
-    while True:
-        line = await stream.readline()
-        if not line:
-            break
-        text = line.decode(errors="replace").rstrip()
-        if text:
-            print(f"[{prefix}] {text}", flush=True)
 
 
 class UmlRunner:
@@ -44,15 +31,16 @@ class UmlRunner:
         self,
         kernel: Path,
         root_image: Path,
-        vde_net: Path,
+        bridge: Path,
+        passt_bin: Path,
     ):
         self.kernel = kernel
         self.root_image = root_image
-        self.vde_net = vde_net
+        self.bridge = bridge
+        self.passt_bin = passt_bin
         self.rundir: Path | None = None
         self.uml_process: subprocess.Process | None = None
-        self.ssh_ready = asyncio.Event()
-        self._done = asyncio.Event()
+        self.ready_event = asyncio.Event()
 
     def _cleanup_rundir(self) -> None:
         if self.rundir and self.rundir.exists():
@@ -75,10 +63,9 @@ class UmlRunner:
                 text = line.decode(errors="replace").rstrip()
                 plain = strip_ansi(text)
                 if plain:
-                    # Print only meaningful lines (not empty after stripping)
                     print(f"[uml] {plain}", flush=True)
-                if SSH_READY_RE.search(plain):
-                    self.ssh_ready.set()
+                if READY_RE.search(plain):
+                    self.ready_event.set()
 
         if self.uml_process.stdout and self.uml_process.stderr:
             await asyncio.gather(
@@ -88,23 +75,27 @@ class UmlRunner:
         elif self.uml_process.stdout:
             await _read_and_detect(self.uml_process.stdout, "out")
 
-    async def _try_ssh(self) -> str | None:
-        print("[runner] SSH daemon detected, attempting connection ...", flush=True)
+    async def _test_echo(self) -> str | None:
+        """Test that passt port forwarding reaches the guest."""
+        print("[runner] Echo service started, testing port forward ...", flush=True)
         await asyncio.sleep(1)
+        TEST_TEXT = b"HELLO_FROM_HOST\n"
         for attempt in range(5):
             try:
-                async with asyncssh.connect(
-                    host="127.0.0.1",
-                    port=SSH_PORT,
-                    username="root",
-                    password=SSH_PASSWORD,
-                    known_hosts=None,
-                    connect_timeout=5,
-                ) as conn:
-                    result = await conn.run("echo SSH_OK && hostname && ip addr show vec0", check=True)
-                    return result.stdout.strip()
-            except (OSError, asyncssh.Error) as e:
-                print(f"[runner] SSH attempt {attempt + 1}/5 failed: {e}", flush=True)
+                reader, writer = await asyncio.open_connection(
+                    "127.0.0.1", TEST_PORT
+                )
+                writer.write(TEST_TEXT)
+                await writer.drain()
+                data = await asyncio.wait_for(reader.readline(), timeout=5)
+                writer.close()
+                await writer.wait_closed()
+                resp = data.decode().strip()
+                print(f"[runner] Echo response: '{resp}'", flush=True)
+                return f"echo response: {resp}"
+            except (OSError, asyncio.TimeoutError) as e:
+                detail = str(e) or repr(e)
+                print(f"[runner] Echo attempt {attempt + 1}/5 failed: {detail}", flush=True)
                 if attempt < 4:
                     await asyncio.sleep(2)
         return None
@@ -113,26 +104,20 @@ class UmlRunner:
         self.rundir = Path(tempfile.mkdtemp(prefix="uml-run-"))
 
         env = os.environ.copy()
-        env["LD_LIBRARY_PATH"] = str(self.vde_net / "lib")
-        env["VDEPLUGIN_PATH"] = str(self.vde_net / "lib" / "vdeplug")
-        env["PATH"] = f"{self.vde_net / 'bin'}:{env.get('PATH', '')}"
+        env["PATH"] = f"{self.passt_bin.parent}:{env.get('PATH', '')}"
 
         cow = self.rundir / "cow"
-        ubd_arg = f"ubd0={cow},{self.root_image}"
 
         cmd = [
+            str(self.bridge),
             str(self.kernel),
-            ubd_arg,
+            f"ubd0={cow},{self.root_image}",
             "root=/dev/ubda",
             "rw",
             "init=/init",
-            "vec0:transport=vde,vnl=slirp:///tcpfwd={ssh_port}:{guest_ip}:{ssh_port}".format(
-                ssh_port=SSH_PORT,
-                guest_ip=SLIRP_GUEST_IP,
-            ),
         ]
 
-        print(f"[runner] booting UML: {' '.join(cmd)}", flush=True)
+        print("[runner] booting UML via passt bridge", flush=True)
 
         try:
             self.uml_process = await subprocess.create_subprocess_exec(
@@ -147,25 +132,23 @@ class UmlRunner:
             self._cleanup_rundir()
             return 1
 
-        loop = asyncio.get_running_loop()
-
         monitor_task = asyncio.create_task(self._monitor_output())
 
         try:
-            await asyncio.wait_for(self.ssh_ready.wait(), timeout=60)
+            await asyncio.wait_for(self.ready_event.wait(), timeout=60)
         except asyncio.TimeoutError:
-            print("[runner] timed out waiting for SSH daemon", flush=True)
+            print("[runner] timed out waiting for echo service", flush=True)
             monitor_task.cancel()
             self._terminate_uml()
             self._cleanup_rundir()
             return 1
 
-        ssh_output = await self._try_ssh()
+        echo_output = await self._test_echo()
 
-        if ssh_output is None:
-            print("[runner] SSH connection failed after retries", flush=True)
+        if echo_output is None:
+            print("[runner] Echo test FAILED — port forwarding did not reach guest", flush=True)
         else:
-            print(f"[runner] SSH connected successfully:\n{ssh_output}", flush=True)
+            print(f"[runner] Echo test SUCCESS — port forwarding works: {echo_output}", flush=True)
 
         print("[runner] waiting for UML to shut down (30s sleep) ...", flush=True)
         try:
@@ -177,7 +160,7 @@ class UmlRunner:
         self._cleanup_rundir()
         rc = self.uml_process.returncode or 0
         print(f"[runner] UML exited with code {rc}", flush=True)
-        return 0 if ssh_output else 1
+        return 0 if echo_output else 1
 
     def _terminate_uml(self) -> None:
         if self.uml_process and self.uml_process.returncode is None:
@@ -188,13 +171,14 @@ class UmlRunner:
 
 
 async def main() -> int:
-    parser = argparse.ArgumentParser(description="UML kernel runner with SSH probe")
+    parser = argparse.ArgumentParser(description="UML kernel runner with echo probe")
     parser.add_argument("--kernel", type=Path, required=True)
     parser.add_argument("--root-image", type=Path, required=True)
-    parser.add_argument("--vde-net", type=Path, required=True)
+    parser.add_argument("--bridge", type=Path, required=True)
+    parser.add_argument("--passt", type=Path, required=True)
     args = parser.parse_args()
 
-    runner = UmlRunner(args.kernel, args.root_image, args.vde_net)
+    runner = UmlRunner(args.kernel, args.root_image, args.bridge, args.passt)
     return await runner.run()
 
 

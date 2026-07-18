@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "uml-runner"
 version = "0.1.0"
 requires-python = ">=3.10"
-dependencies = ["asyncssh"]
+dependencies = []
 
 [project.scripts]
 uml-runner = "uml_runner:main_cli"
