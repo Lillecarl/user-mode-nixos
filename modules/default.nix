@@ -24,14 +24,14 @@ in
   system.build.umlInit = pkgs.runCommand "uml-init" { } ''
     mkdir -p $out
     cat > $out/init <<'HEREDOC'
-#!/bin/busybox sh
+#!/bin/sh
 echo "Mounting host /nix/store via hostfs ..."
 mkdir -p /host/nix/store
-/bin/busybox mount -t hostfs none /host/nix/store -o /nix/store
+mount -t hostfs none /host/nix/store -o /nix/store
 
-echo "Overlaying writable /nix/store (lower=host, upper=ubd) ..."
+echo "Overlaying /nix/store (lower=host, upper=ubd) ..."
 mkdir -p /nix/.store-upper /nix/.store-work
-/bin/busybox mount -t overlay overlay \
+mount -t overlay overlay \
   -o lowerdir=/host/nix/store,upperdir=/nix/.store-upper,workdir=/nix/.store-work \
   /nix/store
 
@@ -53,6 +53,9 @@ HEREDOC
 
     cp ${pkgs.pkgsStatic.busybox}/bin/busybox root/bin/busybox
     chmod 0555 root/bin/busybox
+    for cmd in sh mkdir mount echo cat; do
+      ln -s busybox root/bin/$cmd
+    done
 
     ln -sf ${config.system.build.toplevel}/init root/sbin/init
 
