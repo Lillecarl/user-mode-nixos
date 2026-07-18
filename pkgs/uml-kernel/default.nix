@@ -22,6 +22,7 @@ in
   pname = "linux-uml";
   kernelArch = "um";
   target = "linux";
+  defconfig = "allnoconfig";
   enableCommonConfig = false;
   autoModules = false;
   ignoreConfigErrors = true;
@@ -30,7 +31,48 @@ in
     "SUBARCH=x86_64"
     "CC=${lib.getExe stdenv.cc}"
   ];
-  structuredExtraConfig = with lib.kernel; { };
+  structuredExtraConfig = with lib.kernel; {
+    BINFMT_ELF = yes;
+    BINFMT_SCRIPT = yes;
+
+    TTY = yes;
+    VT = yes;
+    UNIX98_PTYS = yes;
+
+    PROC_FS = yes;
+    SYSFS = yes;
+    TMPFS = yes;
+    SHMEM = yes;
+    DEVTMPFS = yes;
+
+    EXT4_FS = yes;
+    OVERLAY_FS = yes;
+    HOSTFS = yes;
+
+    NET = yes;
+    INET = yes;
+    UNIX = yes;
+    PACKET = yes;
+    UML_NET = yes;
+    UML_NET_SLIRP = yes;
+
+    BLOCK = yes;
+    BLK_DEV_LOOP = yes;
+    TUN = yes;
+    PRINTK = yes;
+    EARLY_PRINTK = yes;
+
+    MULTIUSER = yes;
+    ADVISE_SYSCALLS = yes;
+    MEMBARRIER = yes;
+    SIGNALFD = yes;
+    TIMERFD = yes;
+    EPOLL = yes;
+    EVENTFD = yes;
+    INOTIFY_USER = yes;
+    FHANDLE = yes;
+    CGROUPS = yes;
+  };
   extraMeta.platforms = lib.platforms.linux;
 }).overrideAttrs (_: {
   installTargets = [ ];
