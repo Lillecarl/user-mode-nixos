@@ -3,17 +3,9 @@ let
   imageSize = "512"; # MiB
 in
 {
-  boot.isContainer = true;
-
   networking.hostName = "umn";
   networking.useDHCP = false;
   networking.firewall.enable = false;
-
-  systemd.network.enable = true;
-  systemd.network.networks."10-eth0" = {
-    matchConfig.Name = "eth0";
-    networkConfig.DHCP = "yes";
-  };
 
   users.users.root.initialPassword = "";
 
@@ -22,11 +14,15 @@ in
   documentation.enable = false;
   documentation.nixos.enable = false;
 
+  boot.kernel.enable = true;
+  boot.initrd.enable = false;
+  boot.loader.grub.enable = false;
+  boot.loader.systemd-boot.enable = false;
+  system.build.installBootLoader = "${pkgs.coreutils}/bin/true";
+
   systemd.services.systemd-random-seed.enable = false;
   systemd.services.nsncd.enable = false;
-
-  security.wrappers = { };
-  system.activationScripts.wrappers = "";
+  systemd.services.resolvconf.enable = false;
 
   systemd.services.uml-shutdown = {
     description = "Shutdown UML after boot";
@@ -93,7 +89,7 @@ HEREDOC
       trap cleanup EXIT
 
       echo "Booting UML kernel (root on ubd+cow) ..."
-      exec "$KERNEL" ubd0="$RUNDIR/cow,$BASE" root=/dev/ubda rw init=/init eth0=slirp
+      exec "$KERNEL" ubd0="$RUNDIR/cow,$BASE" root=/dev/ubda rw init=/init
     '';
   };
 }
