@@ -5,6 +5,7 @@
 
   networking.hostName = "umn";
   networking.useDHCP = false;
+  networking.firewall.enable = false;
 
   users.users.root.initialPassword = "";
 
@@ -13,12 +14,22 @@
   documentation.enable = false;
   documentation.nixos.enable = false;
 
+  systemd.services.systemd-random-seed.enable = false;
+  systemd.services.nsncd.enable = false;
+
+  security.wrappers = { };
+
   system.build.umlInit = pkgs.runCommand "uml-init" { } ''
     mkdir -p $out
     cat > $out/init <<'HEREDOC'
 #!/bin/busybox sh
 echo "Mounting host /nix/store ..."
 /bin/busybox mount -t hostfs none /nix/store -o /nix/store
+
+echo "Setting up writable /etc overlay ..."
+mkdir -p /run/uml-etc-upper /run/uml-etc-work
+/bin/busybox mount -t overlay overlay -o lowerdir=/etc,upperdir=/run/uml-etc-upper,workdir=/run/uml-etc-work /etc
+
 echo "Starting NixOS init..."
 exec /sbin/init
 HEREDOC
@@ -65,7 +76,7 @@ HEREDOC
       tar xf "$ROOTFS" -C "$ROOT"
 
       echo "Booting UML kernel..."
-      exec "$KERNEL" rootfstype=hostfs rootflags="$ROOT" rw init=/init
+      exec "$KERNEL" rootfstype=hostfs rootflags="$ROOT" rw init=/init eth0=slirp
     '';
   };
 }
