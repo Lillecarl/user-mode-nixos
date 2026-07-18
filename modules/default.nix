@@ -9,6 +9,12 @@ in
   networking.useDHCP = false;
   networking.firewall.enable = false;
 
+  systemd.network.enable = true;
+  systemd.network.networks."10-eth0" = {
+    matchConfig.Name = "eth0";
+    networkConfig.DHCP = "yes";
+  };
+
   users.users.root.initialPassword = "";
 
   system.stateVersion = "25.05";
@@ -20,6 +26,15 @@ in
   systemd.services.nsncd.enable = false;
 
   security.wrappers = { };
+  system.activationScripts.wrappers = "";
+
+  systemd.services.uml-shutdown = {
+    description = "Shutdown UML after boot";
+    wantedBy = [ "multi-user.target" ];
+    after = [ "multi-user.target" ];
+    serviceConfig.Type = "oneshot";
+    script = "${pkgs.systemd}/bin/shutdown -h now";
+  };
 
   system.build.umlInit = pkgs.runCommand "uml-init" { } ''
     mkdir -p $out
