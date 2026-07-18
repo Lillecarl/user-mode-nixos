@@ -1,4 +1,4 @@
-{ config, pkgs, lib, vdeNet, umlKernel, ... }:
+{ config, pkgs, lib, umlRunner, vdeNet, umlKernel, ... }:
 let
   imageSize = "512"; # MiB
 in
@@ -30,6 +30,7 @@ in
   services.openssh = {
     enable = true;
     ports = [ 4325 ];
+    startWhenNeeded = false;
     settings = {
       PermitRootLogin = "yes";
       PasswordAuthentication = true;
@@ -95,21 +96,12 @@ HEREDOC
 
   system.build.umlRunner = pkgs.writeShellApplication {
     name = "run-uml";
-    runtimeInputs = with pkgs; [ coreutils ];
+    runtimeInputs = [ umlRunner ];
     text = ''
-      KERNEL=${umlKernel}/linux
-      BASE=${config.system.build.umlRootImage}
-
-      RUNDIR=$(mktemp -d /tmp/uml-run-XXXXXX)
-      cleanup() { rm -rf "$RUNDIR"; }
-      trap cleanup EXIT
-
-      export LD_LIBRARY_PATH=${vdeNet}/lib
-      export VDEPLUGIN_PATH=${vdeNet}/lib/vdeplug
-      export PATH=${vdeNet}/bin:$PATH
-
-      echo "Booting UML kernel (root on ubd+cow, vec0 via vde slirp) ..."
-      exec "$KERNEL" ubd0="$RUNDIR/cow,$BASE" root=/dev/ubda rw init=/init vec0:transport=vde,vnl=slirp://
+      exec uml-runner \
+        --kernel ${umlKernel}/linux \
+        --root-image ${config.system.build.umlRootImage} \
+        --vde-net ${vdeNet}
     '';
   };
 }

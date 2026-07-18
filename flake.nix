@@ -18,10 +18,11 @@
       umlKernel = pkgs.callPackage ./pkgs/uml-kernel {
         inherit (latestKernel) version modDirVersion src;
       };
+      umlRunner = pkgs.callPackage ./pkgs/uml-runner { };
     in
     {
       packages.${system} = {
-        inherit umlKernel vdeplug4 libvdeslirp vdeplug_slirp vdeNet;
+        inherit umlKernel vdeplug4 libvdeslirp vdeplug_slirp vdeNet umlRunner;
       };
 
       nixosConfigurations.umn = inputs.nixpkgs.lib.nixosSystem {
@@ -29,6 +30,7 @@
         specialArgs = {
           vdeNet = vdeNet;
           umlKernel = umlKernel;
+          umlRunner = umlRunner;
         };
         modules = [ ./modules ];
       };

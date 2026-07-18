@@ -1,0 +1,15 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "uml-runner"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = ["asyncssh"]
+
+[project.scripts]
+uml-runner = "uml_runner:main_cli"
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]
