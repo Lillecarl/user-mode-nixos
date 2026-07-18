@@ -1,11 +1,12 @@
-{ config, pkgs, lib, umlKernel, ... }:
+{ config, pkgs, lib, umlKernel, umlNetHelper, ... }:
 let
   imageSize = "512"; # MiB
 in
 {
   networking.hostName = "umn";
-  networking.useDHCP = false;
+  networking.useDHCP = true;
   networking.firewall.enable = false;
+  networking.interfaces.vec0.useDHCP = true;
 
   users.users.root.initialPassword = "";
 
@@ -22,7 +23,7 @@ in
 
   systemd.services.systemd-random-seed.enable = false;
   systemd.services.nsncd.enable = false;
-  systemd.services.resolvconf.enable = false;
+
 
   systemd.services.uml-shutdown = {
     description = "Shutdown UML after boot";
@@ -82,14 +83,15 @@ HEREDOC
     runtimeInputs = with pkgs; [ coreutils ];
     text = ''
       KERNEL=${umlKernel}/linux
+      HELPER=${umlNetHelper}/bin/slirp-helper
       BASE=${config.system.build.umlRootImage}
 
       RUNDIR=$(mktemp -d /tmp/uml-run-XXXXXX)
       cleanup() { rm -rf "$RUNDIR"; }
       trap cleanup EXIT
 
-      echo "Booting UML kernel (root on ubd+cow) ..."
-      exec "$KERNEL" ubd0="$RUNDIR/cow,$BASE" root=/dev/ubda rw init=/init
+      echo "Booting UML kernel (root on ubd+cow, vec0 slirp) ..."
+      exec "$HELPER" -- "$KERNEL" ubd0="$RUNDIR/cow,$BASE" root=/dev/ubda rw init=/init
     '';
   };
 }

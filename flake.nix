@@ -10,12 +10,16 @@
     kernelsJson = "${inputs.nixpkgs}/pkgs/os-specific/linux/kernel/kernels-org.json";
 
     umlKernel = pkgs.callPackage ./pkgs/uml-kernel { inherit kernelsJson; };
+    umlNetHelper = pkgs.callPackage ./pkgs/uml-net-helper { };
   in {
-    packages.${system}.umlKernel = umlKernel;
+    packages.${system} = {
+      umlKernel = umlKernel;
+      umlNetHelper = umlNetHelper;
+    };
 
     nixosConfigurations.umn = inputs.nixpkgs.lib.nixosSystem {
       inherit system;
-      specialArgs = { inherit umlKernel; };
+      specialArgs = { inherit umlKernel umlNetHelper; };
       modules = [ ./modules ];
     };
   };
