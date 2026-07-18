@@ -47,15 +47,14 @@
     runtimeInputs = with pkgs; [ coreutils gnutar ];
     text = ''
       KERNEL=${umlKernel}/linux
-      ROOTFS_DIR=${config.system.build.umlRootfs}
-      ROOTFS_FILE=$(echo "$ROOTFS_DIR"/*.tar.xz)
+      ROOTFS=${config.system.build.umlRootfs}/tarball/nixos-uml-rootfs-x86_64-linux.tar.xz
 
       ROOT=$(mktemp -d /tmp/uml-root-XXXXXX)
       cleanup() { rm -rf "$ROOT"; }
       trap cleanup EXIT
 
       echo "Extracting rootfs to $ROOT ..."
-      tar xf "$ROOTFS_FILE" -C "$ROOT"
+      tar xf "$ROOTFS" -C "$ROOT"
 
       echo "Booting UML kernel..."
       exec "$KERNEL" rootfstype=hostfs rootflags="$ROOT" rw init=/sbin/init
