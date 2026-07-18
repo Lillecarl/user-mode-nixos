@@ -15,6 +15,7 @@
 
     nixosConfigurations.umn = inputs.nixpkgs.lib.nixosSystem {
       inherit system;
+      specialArgs = { inherit umlKernel; };
       modules = [ ./modules ];
     };
   };

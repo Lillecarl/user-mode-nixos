@@ -1,4 +1,4 @@
-{ config, pkgs, lib, ... }:
+{ config, pkgs, lib, umlKernel, ... }:
 {
   boot.isContainer = true;
   boot.loader.initScript.enable = true;
@@ -41,4 +41,22 @@
 
     extraCommands = "mkdir -p proc sys dev tmp run";
   };
+
+  system.build.umlRunner = pkgs.writeShellScript "run-uml" ''
+    set -euo pipefail
+
+    KERNEL=${umlKernel}/linux
+    ROOTFS_DIR=${config.system.build.umlRootfs}
+    ROOTFS_FILE=$(echo "$ROOTFS_DIR"/*.tar.xz)
+
+    ROOT=$(mktemp -d /tmp/uml-root-XXXXXX)
+    cleanup() { rm -rf "$ROOT"; }
+    trap cleanup EXIT
+
+    echo "Extracting rootfs to $ROOT ..."
+    tar xf "$ROOTFS_FILE" -C "$ROOT"
+
+    echo "Booting UML kernel..."
+    exec "$KERNEL" rootfstype=hostfs rootflags="$ROOT" rw init=/sbin/init
+  '';
 }
