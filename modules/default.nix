@@ -69,12 +69,12 @@ HEREDOC
       KERNEL=${umlKernel}/linux
       BASE=${config.system.build.umlRootImage}
 
-      COW=$(mktemp /tmp/uml-cow-XXXXXX)
-      cleanup() { rm -f "$COW"; }
+      RUNDIR=$(mktemp -d /tmp/uml-run-XXXXXX)
+      cleanup() { rm -rf "$RUNDIR"; }
       trap cleanup EXIT
 
       echo "Booting UML kernel (root on ubd+cow) ..."
-      exec "$KERNEL" ubd0="$COW,$BASE" root=/dev/ubda rw init=/init eth0=slirp
+      exec "$KERNEL" ubd0="$RUNDIR/cow,$BASE" root=/dev/ubda rw init=/init eth0=slirp
     '';
   };
 }
