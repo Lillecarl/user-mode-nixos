@@ -12,6 +12,6 @@ let
 in
 {
   inherit (outputs.nixosConfigurations) umn;
-  inherit (outputs.packages.${system}) umlKernel slirp;
+  inherit (outputs.packages.${system}) umlKernel slirp umlPasstBridge;
   inherit umlRootfs toplevel;
 }

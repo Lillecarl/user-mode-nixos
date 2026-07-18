@@ -9,19 +9,22 @@
       system = "x86_64-linux";
       pkgs = import inputs.nixpkgs { inherit system; };
 
-      kernelsJson = "${inputs.nixpkgs}/pkgs/os-specific/linux/kernel/kernels-org.json";
+      latestKernel = pkgs.linuxPackages_latest.kernel;
 
-      umlKernel = pkgs.callPackage ./pkgs/uml-kernel { inherit kernelsJson; };
+      umlKernel = pkgs.callPackage ./pkgs/uml-kernel {
+        inherit (latestKernel) version modDirVersion src;
+      };
       slirp = pkgs.callPackage ./pkgs/slirp { };
+      umlPasstBridge = pkgs.callPackage ./pkgs/uml-passt-bridge { };
     in
     {
       packages.${system} = {
-        inherit umlKernel slirp;
+        inherit umlKernel slirp umlPasstBridge;
       };
 
       nixosConfigurations.umn = inputs.nixpkgs.lib.nixosSystem {
         inherit system;
-        specialArgs = { inherit umlKernel slirp; };
+        specialArgs = { inherit umlKernel slirp umlPasstBridge; };
         modules = [ ./modules ];
       };
     };

@@ -1,4 +1,4 @@
-{ config, pkgs, lib, umlKernel, slirp, ... }:
+{ config, pkgs, lib, umlKernel, slirp, umlPasstBridge, ... }:
 let
   imageSize = "512"; # MiB
 in
@@ -7,10 +7,10 @@ in
   networking.useDHCP = false;
   networking.dhcpcd.enable = false;
   networking.firewall.enable = false;
-  networking.interfaces.eth0.useDHCP = true;
+  networking.interfaces.vec0.useDHCP = true;
   systemd.services.resolvconf.enable = false;
 
-  users.users.root.initialPassword = "";
+  users.users.root.initialPassword = "Flagpole3.Equinox.Grasp";
 
   system.stateVersion = "25.05";
 
@@ -27,12 +27,25 @@ in
   systemd.services.nsncd.enable = false;
 
 
+  services.openssh = {
+    enable = true;
+    ports = [ 4325 ];
+    settings = {
+      PermitRootLogin = "yes";
+      PasswordAuthentication = true;
+    };
+  };
+  users.users.root.openssh.authorizedKeys.keys = [];
+
   systemd.services.uml-shutdown = {
     description = "Shutdown UML after boot";
     wantedBy = [ "multi-user.target" ];
     after = [ "multi-user.target" ];
     serviceConfig.Type = "oneshot";
-    script = "${pkgs.systemd}/bin/shutdown -h now";
+    script = ''
+      sleep 30
+      ${pkgs.systemd}/bin/shutdown -h now
+    '';
   };
 
   system.build.umlInit = pkgs.runCommand "uml-init" { } ''
@@ -82,17 +95,18 @@ HEREDOC
 
   system.build.umlRunner = pkgs.writeShellApplication {
     name = "run-uml";
-    runtimeInputs = with pkgs; [ coreutils ] ++ [ slirp ];
+    runtimeInputs = with pkgs; [ coreutils passt ];
     text = ''
       KERNEL=${umlKernel}/linux
+      BRIDGE=${umlPasstBridge}/bin/uml-passt-bridge
       BASE=${config.system.build.umlRootImage}
 
       RUNDIR=$(mktemp -d /tmp/uml-run-XXXXXX)
       cleanup() { rm -rf "$RUNDIR"; }
       trap cleanup EXIT
 
-      echo "Booting UML kernel (root on ubd+cow, eth0=slirp) ..."
-      exec "$KERNEL" ubd0="$RUNDIR/cow,$BASE" root=/dev/ubda rw init=/init eth0=slirp
+      echo "Booting UML kernel (root on ubd+cow, vec0 via passt) ..."
+      exec "$BRIDGE" "$KERNEL" ubd0="$RUNDIR/cow,$BASE" root=/dev/ubda rw init=/init
     '';
   };
 }

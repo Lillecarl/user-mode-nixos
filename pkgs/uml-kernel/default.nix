@@ -3,20 +3,11 @@
   lib,
   fetchurl,
   linuxKernel,
-  kernelsJson,
+  version,
+  modDirVersion,
+  src,
 }:
 
-let
-  allKernels = builtins.fromJSON (builtins.readFile kernelsJson);
-  k = allKernels."6.12";
-  version = k.version;
-  modDirVersion = lib.versions.pad 3 version;
-
-  src = fetchurl {
-    url = "mirror://kernel/linux/kernel/v${lib.versions.major version}.x/linux-${version}.tar.xz";
-    hash = k.hash;
-  };
-in
 (linuxKernel.buildLinux {
   inherit version src modDirVersion;
   pname = "linux-uml";
@@ -54,7 +45,7 @@ in
     UNIX = yes;
     PACKET = yes;
     UML_NET = yes;
-    UML_NET_SLIRP = yes;
+    UML_NET_VECTOR = yes;
 
     BLOCK = yes;
     BLK_DEV = yes;
