@@ -1,4 +1,4 @@
-{ config, pkgs, lib, umlKernel, umlNetHelper, slirp, ... }:
+{ config, pkgs, lib, umlKernel, slirp, ... }:
 let
   imageSize = "512"; # MiB
 in
