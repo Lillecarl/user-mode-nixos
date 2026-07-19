@@ -12,7 +12,14 @@ let
   imageSize = "512"; # MiB
 in
 {
-  boot.kernelPackages = pkgs.linuxPackages_latest;
+  options.boot.uml.sshPort = lib.mkOption {
+    type = lib.types.int;
+    default = 4325;
+    description = "SSH port for the UML guest";
+  };
+
+  config = {
+    boot.kernelPackages = pkgs.linuxPackages_latest;
 
   networking.hostName = "umn";
   networking.useDHCP = false;
@@ -45,7 +52,7 @@ in
 
   services.openssh = {
     enable = true;
-    ports = [ 4325 ];
+    ports = [ config.boot.uml.sshPort ];
     startWhenNeeded = false;
     settings = {
       PermitRootLogin = "yes";
@@ -139,7 +146,9 @@ HEREDOC
         --kernel ${umlKernel}/linux \
         --root-image ${config.system.build.umlRootImage} \
         --bridge ${umlPasstBridge}/bin/uml-passt-bridge \
-        --passt ${pkgs.passt}/bin/passt
+        --passt ${pkgs.passt}/bin/passt \
+        --ssh-port ${builtins.toString config.boot.uml.sshPort}
     '';
+  };
   };
 }

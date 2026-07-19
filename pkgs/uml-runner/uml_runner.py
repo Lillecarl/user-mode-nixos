@@ -400,6 +400,7 @@ async def _main_single() -> int:
     parser.add_argument("--root-image", type=Path, required=True)
     parser.add_argument("--bridge", type=Path, required=True)
     parser.add_argument("--passt", type=Path, required=True)
+    parser.add_argument("--ssh-port", type=int, default=SSH_PORT)
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
 
@@ -409,6 +410,7 @@ async def _main_single() -> int:
         root_image=args.root_image,
         bridge=args.bridge,
         passt_bin=args.passt,
+        ssh_port=args.ssh_port,
     )
     if args.debug:
         print(f"[debug] kernel={m.kernel} root_image={m.root_image}")
