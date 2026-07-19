@@ -37,8 +37,8 @@ in
 
     system.activationScripts.cni-install = {
       text = ''
-        ${lib.getExe pkgs.rsync} --archive \
-          ${pkgs.cni-plugins}/bin/ /opt/cni/bin/
+        mkdir -p /opt/cni/bin
+        cp -r ${pkgs.cni-plugins}/bin/. /opt/cni/bin/
       '';
       deps = [];
     };
@@ -64,12 +64,13 @@ in
 
     environment.etc."ssl/certs/ca-certificates.crt".enable = false;
 
-    system.activationScripts.certs.text = ''
-      mkdir -p /etc/ssl/certs
-      ${lib.getExe pkgs.rsync} --archive \
-        ${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt \
-        /etc/ssl/certs/ca-certificates.crt
-    '';
+    system.activationScripts.certs = {
+      text = ''
+        mkdir -p /etc/ssl/certs
+        cp ${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt /etc/ssl/certs/ca-certificates.crt
+      '';
+      deps = [];
+    };
 
     # ── kubelet ─────────────────────────────────────────────────
 

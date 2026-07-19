@@ -71,6 +71,15 @@ let
     CGROUP_BPF = yes;
     BPF_LSM = yes;
 
+    CGROUP_SCHED = yes;
+    CGROUP_CPUACCT = yes;
+    CGROUP_CPUSET = yes;
+    CGROUP_PIDS = yes;
+    CGROUP_HUGETLB = yes;
+    BLK_CGROUP = yes;
+    CGROUP_DEVICE = yes;
+    CGROUP_FREEZER = yes;
+
     PERF_EVENTS = yes;
 
     MEMCG = yes;
