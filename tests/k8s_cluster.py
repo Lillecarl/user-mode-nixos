@@ -43,7 +43,7 @@ def _make_ssl_pair(host_target: int, uml_target: int) -> tuple[int, int]:
     return host_fd, uml_fd
 
 
-async def _run(orch, leader, follower, leader_ip, follower_ip):
+async def _run(orch, leader, follower, leader_ip, follower_ip, k8s_version):
     print("[k8s] booting VMs ...")
     await orch.start_all(sequential=False)
 
@@ -56,8 +56,6 @@ async def _run(orch, leader, follower, leader_ip, follower_ip):
     await leader.wait_for_unit_rpyc("k8s-load-images.service", timeout=60)
 
     # ── kubeadm init on leader ─────────────────────────────────
-
-    k8s_version = "v1.33.6"  # matches pkgs.kubernetes.version
 
     init_config = f'''apiVersion: kubeadm.k8s.io/v1beta3
 kind: InitConfiguration
@@ -73,7 +71,6 @@ patches:
 ---
 apiVersion: kubeadm.k8s.io/v1beta3
 kind: ClusterConfiguration
-kubernetesVersion: {k8s_version}
 imageRepository: registry.k8s.io
 networking:
   podSubnet: 10.244.0.0/16
@@ -166,6 +163,7 @@ async def main() -> int:
     p.add_argument("--passt", type=Path, required=True)
     p.add_argument("--leader-image", type=Path, required=True)
     p.add_argument("--follower-image", type=Path, required=True)
+    p.add_argument("--k8s-version", type=str, required=True)
     args = p.parse_args()
 
     orch = UmlOrchestrator()
@@ -221,7 +219,7 @@ async def main() -> int:
     leader_ip = "10.100.0.1"
     follower_ip = "10.100.0.2"
 
-    await _run(orch, leader, follower, leader_ip, follower_ip)
+    await _run(orch, leader, follower, leader_ip, follower_ip, args.k8s_version)
     return 0
 
 

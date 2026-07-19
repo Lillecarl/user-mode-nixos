@@ -126,6 +126,7 @@
 
       k8s-test = let
         runner = k8sLeaderCfg.config.system.build.umlRunnerPackage;
+        k8sVersion = pkgs.kubernetes.version;
       in pkgs.runCommand "uml-k8s-test"
         {
           nativeBuildInputs = with pkgs; [
@@ -143,7 +144,8 @@
             --bridge ${k8sLeaderCfg.config.system.build.umlPasstBridge}/bin/uml-passt-bridge \
             --passt ${pkgs.passt}/bin/passt \
             --leader-image ${k8sLeaderCfg.config.system.build.umlRootImage} \
-            --follower-image ${k8sFollowerCfg.config.system.build.umlRootImage}
+            --follower-image ${k8sFollowerCfg.config.system.build.umlRootImage} \
+            --k8s-version v${k8sVersion}
 
           touch $out
         '';
