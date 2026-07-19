@@ -154,7 +154,10 @@ class UmlMachine:
 
             def _do_rpyc_connect():
                 stream = rpyc.SocketStream(self._ssl_sock)
-                return rpyc.connect_stream(stream)
+                print(f"  [{self.name}] DEBUG: rpyc connecting via ssl_fd={self.ssl_fd}", flush=True)
+                conn = rpyc.connect_stream(stream)
+                print(f"  [{self.name}] DEBUG: rpyc connected, root={conn.root}", flush=True)
+                return conn
 
             loop = asyncio.get_event_loop()
             self._rpyc_conn = await loop.run_in_executor(
@@ -423,13 +426,17 @@ class UmlMachine:
         timeout = timeout or self.timeout
 
         if self._rpyc_conn is not None:
+            print(f"  [{self.name}] DEBUG: using rpyc for: {command}", flush=True)
             rc, stdout = await self.execute_rpyc(command, timeout=timeout)
+            print(f"  [{self.name}] DEBUG: rpyc result rc={rc!r} stdout={stdout!r}", flush=True)
         elif self.cmddir and self.cmddir.exists():
+            print(f"  [{self.name}] DEBUG: using shared-dir for: {command}", flush=True)
             try:
                 rc, stdout = await self.execute_shared(command, timeout=timeout)
             except MachineError:
                 rc, stdout = await self._execute_ssh(command, timeout=timeout)
         else:
+            print(f"  [{self.name}] DEBUG: using SSH for: {command}", flush=True)
             rc, stdout = await self._execute_ssh(command, timeout=timeout)
 
         if check and rc != 0:
