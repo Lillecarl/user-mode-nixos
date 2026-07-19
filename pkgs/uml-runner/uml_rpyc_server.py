@@ -34,8 +34,11 @@ class TtyStream(rpyc.core.stream.Stream):
     def fileno(self):
         return self._fd
 
-    def poll(self, timeout: float) -> bool:
-        r, _, _ = select.select([self._fd], [], [], timeout)
+    def poll(self, timeout: float | None) -> bool:
+        try:
+            r, _, _ = select.select([self._fd], [], [], timeout)
+        except (TypeError, ValueError):
+            r, _, _ = select.select([self._fd], [], [], 0.0)
         return bool(r)
 
     def read(self, count: int) -> bytes:
