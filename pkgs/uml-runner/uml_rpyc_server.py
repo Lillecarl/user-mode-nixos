@@ -35,7 +35,8 @@ class UmlRpycService(Service):
             text=True,
             timeout=timeout,
         )
-        return (result.returncode, result.stdout.rstrip("\n"))
+        stdout = (result.stdout + result.stderr).rstrip("\n")
+        return (result.returncode, stdout)
 
     def exposed_list_units(self, pattern: str = "*") -> list[dict]:
         result = subprocess.run(
