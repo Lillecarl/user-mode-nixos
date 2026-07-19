@@ -2,6 +2,14 @@
 let
   kubernetes = pkgs.kubernetes;
   k8sImages = pkgs.callPackage ./k8s-images.nix { };
+
+  # Extract image version constants from kubeadm source.
+  _constantsSrc = builtins.readFile "${kubernetes.src}/cmd/kubeadm/app/constants/constants.go";
+  _extract = name:
+    let m = builtins.match ".*${name}[ \t]*=[ \t]*\"([^\"]+)\".*" _constantsSrc;
+    in if m == null then "unknown" else builtins.head m;
+  coreDNSTag = _extract "CoreDNSVersion";
+  etcdTag = _extract "SupportedEtcdVersion";
 in
 {
   config = {
@@ -117,11 +125,11 @@ in
         podSubnet: 10.244.0.0/16
       dns:
         imageRepository: registry.k8s.io/coredns
-        imageTag: v${pkgs.kubernetes.version}
+        imageTag: ${coreDNSTag}
       etcd:
         local:
           imageRepository: registry.k8s.io
-          imageTag: v${pkgs.kubernetes.version}
+          imageTag: ${etcdTag}
     '';
 
     system.activationScripts.cni-install = {

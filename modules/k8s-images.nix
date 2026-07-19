@@ -22,6 +22,15 @@ let
   k8s = pkgs.kubernetes;
   version = k8s.version;
 
+  # Extract image version constants from kubeadm source.
+  _constantsSrc = builtins.readFile "${k8s.src}/cmd/kubeadm/app/constants/constants.go";
+  _extract = name:
+    let m = builtins.match ".*${name}[ \t]*=[ \t]*\"([^\"]+)\".*" _constantsSrc;
+    in if m == null then "unknown" else builtins.head m;
+  pauseTag = _extract "PauseVersion";
+  coreDNSTag = _extract "CoreDNSVersion";
+  etcdTag = _extract "SupportedEtcdVersion";
+
   mkBinLayer = name: bin: pkgs.runCommand "${builtins.replaceStrings ["/"] ["-"] name}-layer" { } ''
     mkdir -p $out/$(dirname ${name})
     cp ${bin} $out/${name}
@@ -51,12 +60,13 @@ let
     (mkImage {
       imageName = "etcd";
       bin = "${pkgs.etcd}/bin/etcd";
+      tag = etcdTag;
       args = [ "--listen-client-urls=http://127.0.0.1:2379" "--advertise-client-urls=http://127.0.0.1:2379" ];
     })
-    (mkImage { imageName = "coredns/coredns"; bin = "${pkgs.coredns}/bin/coredns"; })
+    (mkImage { imageName = "coredns/coredns"; bin = "${pkgs.coredns}/bin/coredns"; tag = coreDNSTag; })
     (dockerTools.buildLayeredImage {
       name = "registry.k8s.io/pause";
-      tag = "3.10";
+      tag = pauseTag;
       contents = [ pkgs.kubernetes.pause nixStoreLayer ];
       config.Entrypoint = [ "/bin/pause" ];
       includeStorePaths = false;
