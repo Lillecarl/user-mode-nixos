@@ -63,6 +63,7 @@ class UmlMachine:
         kernel_args: list[str] | None = None,
         vec_arg: str | None = None,
         extra_passt_ports: list[int] | None = None,
+        pass_fds: tuple[int, ...] = (),
         timeout: int = 60,
     ):
         self.name = name
