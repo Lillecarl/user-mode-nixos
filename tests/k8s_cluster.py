@@ -65,6 +65,20 @@ async def _run(orch, leader, follower, leader_ip, follower_ip):
         timeout=300,
     )
     if rc != 0:
+        # Diagnose why kubeadm failed.
+        print("[k8s] diagnose: crictl pods:")
+        rc2, pods = await leader.execute("crictl pods 2>&1 || true", timeout=30)
+        print(f"  {pods}")
+        print("[k8s] diagnose: kubelet journal tail:")
+        rc2, log = await leader.execute(
+            "journalctl -u kubelet --no-pager -n 30 2>&1 || true", timeout=30
+        )
+        print(f"  {log}")
+        print("[k8s] diagnose: containerd images:")
+        rc2, imgs = await leader.execute(
+            "ctr -n k8s.io images ls -q 2>&1 || true", timeout=30
+        )
+        print(f"  {imgs}")
         raise MachineError(f"[leader] kubeadm init failed:\n{stdout}")
     print(f"[k8s] kubeadm init OK")
 
@@ -161,6 +175,7 @@ async def main() -> int:
         pass_fds=(vec_leader_fd, ssl_leader_uml),
         ssl_fd=ssl_leader_host,
         kernel_args=[
+            "mem=1024M",
             f"vec1:transport=fd,fd={vec_leader_fd}",
             f"ssl0=fd:{ssl_leader_uml}",
         ],
@@ -177,6 +192,7 @@ async def main() -> int:
         pass_fds=(vec_follower_fd, ssl_follower_uml),
         ssl_fd=ssl_follower_host,
         kernel_args=[
+            "mem=1024M",
             f"vec1:transport=fd,fd={vec_follower_fd}",
             f"ssl0=fd:{ssl_follower_uml}",
         ],
