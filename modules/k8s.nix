@@ -29,12 +29,19 @@ in
 
     # ── CNI plugins ─────────────────────────────────────────────
 
-    environment.etc."cni/net.d".source = null;
+    # Pre-create CNI directories; Flannel/kubeadm will populate them.
+    systemd.tmpfiles.rules = [
+      "d /opt/cni/bin 0755 root root -"
+      "d /etc/cni/net.d 0755 root root -"
+    ];
 
-    system.activationScripts.cni-install.text = ''
-      mkdir -p /opt/cni/bin /etc/cni/net.d
-      ${lib.getExe pkgs.rsync} --archive ${pkgs.cni-plugins}/bin/ /opt/cni/bin/
-    '';
+    system.activationScripts.cni-install = {
+      text = ''
+        ${lib.getExe pkgs.rsync} --archive \
+          ${pkgs.cni-plugins}/bin/ /opt/cni/bin/
+      '';
+      deps = [];
+    };
 
     # ── kernel tuning ───────────────────────────────────────────
 
