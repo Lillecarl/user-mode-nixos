@@ -57,7 +57,7 @@ async def _run(orch, leader, follower, leader_ip, follower_ip):
         "kubeadm init "
         f"--apiserver-advertise-address {leader_ip} "
         "--pod-network-cidr=10.244.0.0/16 "
-        "--ignore-preflight-errors=NumCPU,Mem,Swap,FileContent--proc-sys-net-bridge-bridge-nf-call-iptables",
+        "--ignore-preflight-errors=all",
         timeout=300,
     )
     if rc != 0:

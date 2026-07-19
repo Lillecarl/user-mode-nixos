@@ -76,6 +76,7 @@ let
     CGROUP_CPUSET = yes;
     CGROUP_PIDS = yes;
     CGROUP_HUGETLB = yes;
+    HUGETLBFS = yes;
     BLK_CGROUP = yes;
     CGROUP_DEVICE = yes;
     CGROUP_FREEZER = yes;
