@@ -12,6 +12,8 @@ let
   imageSize = "512"; # MiB
 in
 {
+  boot.kernelPackages = pkgs.linuxPackages_latest;
+
   networking.hostName = "umn";
   networking.useDHCP = false;
   networking.dhcpcd.enable = false;
