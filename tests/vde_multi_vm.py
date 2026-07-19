@@ -17,6 +17,9 @@ from pathlib import Path
 
 from uml_runner import UmlOrchestrator, UmlMachine
 import inspect
+import os
+print(f"DEBUG: PYTHONPATH={os.environ.get('PYTHONPATH', 'unset')}", flush=True)
+print(f"DEBUG: UmlMachine from {UmlMachine.__module__}", flush=True)
 print(f"DEBUG: UmlMachine.__init__ signature: {list(inspect.signature(UmlMachine.__init__).parameters.keys())}", flush=True)
 
 

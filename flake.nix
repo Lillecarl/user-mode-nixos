@@ -51,16 +51,19 @@
       };
     in {
       vde-test = pkgs.runCommand "uml-vde-test"
+        let
+          runner = serverCfg.config.system.build.umlRunnerPackage;
+        in
         {
           nativeBuildInputs = with pkgs; [
             python3
             (python3.withPackages (ps: [ ps.asyncssh ]))
-            serverCfg.config.system.build.umlRunnerPackage
           ];
         }
         ''
           export HOME="$TMPDIR"
-          export PYTHONPATH="${serverCfg.config.system.build.umlRunnerPackage}/${pkgs.python3.sitePackages}:$PYTHONPATH"
+          echo "runner=${runner}" >> /dev/stderr
+          export PYTHONPATH="${runner}/${pkgs.python3.sitePackages}:$PYTHONPATH"
 
           python3 ${./tests/vde_multi_vm.py} \
             --kernel ${serverCfg.config.system.build.umlKernel}/linux \
