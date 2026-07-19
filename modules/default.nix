@@ -197,6 +197,7 @@ in
       ExecStart = "${rpycPyEnv}/bin/python3 ${../pkgs/uml-runner/uml_rpyc_server.py}";
       StandardOutput = "journal+console";
       StandardError = "journal+console";
+      Environment = "PATH=/run/current-system/sw/bin";
     };
   };
 
