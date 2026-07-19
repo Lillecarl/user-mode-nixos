@@ -257,6 +257,15 @@ class AsyncConnection:
         self._root_proxy = _RemoteRoot(self)
         service.on_connect(self)
 
+    async def _reader_loop(self) -> None:
+        try:
+            while not self._closed:
+                await self.serve()
+        except EOFError:
+            pass
+        except Exception:
+            pass
+
     @property
     def root(self) -> _RemoteRoot:
         return self._root_proxy
@@ -434,13 +443,10 @@ async def arpyc_connect_fd(
     """Connect an async rpyc client over a plain fd (host-side socketpair)."""
     if loop is None:
         loop = asyncio.get_event_loop()
-    print(f"  arpyc: creating AsyncFdStream for fd {fd}", flush=True)
     stream = AsyncFdStream(fd, loop)
-    print(f"  arpyc: creating channel", flush=True)
     channel = AsyncChannel(stream)
-    print(f"  arpyc: creating connection", flush=True)
     conn = AsyncConnection(Service(), channel)
-    print(f"  arpyc: connection created", flush=True)
+    asyncio.create_task(conn._reader_loop())
     return conn
 
 
