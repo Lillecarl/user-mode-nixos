@@ -2,7 +2,7 @@
 
 python3Packages.buildPythonApplication {
   pname = "uml-runner";
-  version = "0.1.0";
+  version = "0.1.0";  # bump triggers rebuild
 
   src = ./.;
 
