@@ -85,7 +85,7 @@ class UmlRpycService(rpyc.Service):
             text=True,
             timeout=timeout,
         )
-        return (result.returncode, result.stdout)
+        return (result.returncode, result.stdout.rstrip("\n"))
 
     def exposed_list_units(self, pattern: str = "*") -> list[dict]:
         """List systemd units matching pattern. Returns list of dicts."""
