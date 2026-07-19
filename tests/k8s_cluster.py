@@ -60,13 +60,46 @@ async def _run(orch, leader, follower, leader_ip, follower_ip):
 
     # ── kubeadm init on leader ─────────────────────────────────
 
+    k8s_version = "v1.33.6"  # matches pkgs.kubernetes.version
+
+    init_config = f'''apiVersion: kubeadm.k8s.io/v1beta3
+kind: InitConfiguration
+localAPIEndpoint:
+  advertiseAddress: {leader_ip}
+nodeRegistration:
+  name: k8s-leader
+  criSocket: unix:///run/containerd/containerd.sock
+  ignorePreflightErrors:
+  - all
+patches:
+  directory: /etc/kubernetes/patches
+---
+apiVersion: kubeadm.k8s.io/v1beta3
+kind: ClusterConfiguration
+kubernetesVersion: {k8s_version}
+imageRepository: registry.k8s.io
+networking:
+  podSubnet: 10.244.0.0/16
+dns:
+  imageRepository: registry.k8s.io/coredns
+  imageTag: {k8s_version}
+etcd:
+  local:
+    imageRepository: registry.k8s.io
+    imageTag: {k8s_version}
+'''
+
+    print("[k8s] leader: writing kubeadm init config ...")
+    rc, _ = await leader.execute(
+        f"cat > /root/kubeadm-init.yaml << 'KUBEADM_EOF'\n{init_config}\nKUBEADM_EOF",
+        timeout=10,
+    )
+    if rc != 0:
+        raise MachineError("[leader] failed to write kubeadm config")
+
     print("[k8s] leader: running kubeadm init (this takes a minute) ...")
     rc, stdout = await leader.execute(
-        "kubeadm init "
-        f"--apiserver-advertise-address {leader_ip} "
-        "--pod-network-cidr=10.244.0.0/16 "
-        "--ignore-preflight-errors=all "
-        "--patches /etc/kubernetes/patches",
+        "kubeadm init --config /root/kubeadm-init.yaml",
         timeout=300,
     )
     if rc != 0:

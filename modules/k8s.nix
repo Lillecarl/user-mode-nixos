@@ -149,6 +149,8 @@ in
       script = ''
         echo "k8s-load-images: importing images ..."
         ctr -n k8s.io image import ${k8sImages} 2>&1
+        echo "k8s-load-images: imported. Loaded images:"
+        ctr -n k8s.io images ls -q 2>&1
         echo "k8s-load-images: OK"
       '';
     };
