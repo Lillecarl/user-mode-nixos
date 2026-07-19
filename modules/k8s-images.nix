@@ -27,14 +27,20 @@ let
     cp ${bin} $out/${name}
   '';
 
+  # Bind-mount target: Nix store must exist in the container rootfs.
+  nixStoreLayer = pkgs.runCommand "nix-store-layer" { } ''
+    mkdir -p $out/nix/store
+  '';
+
   mkImage =
     { imageName, bin, tag ? "v${version}", args ? [ ] }:
     dockerTools.buildLayeredImage {
       name = "registry.k8s.io/${imageName}";
       inherit tag;
-      contents = [ (mkBinLayer imageName bin) ];
+      contents = [ (mkBinLayer imageName bin) nixStoreLayer ];
       config.Entrypoint = [ "/${imageName}" ];
       config.Cmd = args;
+      includeStorePaths = false;
     };
 
   images = [
@@ -51,8 +57,9 @@ let
     (dockerTools.buildLayeredImage {
       name = "registry.k8s.io/pause";
       tag = "3.10";
-      contents = [ pkgs.kubernetes.pause ];
+      contents = [ pkgs.kubernetes.pause nixStoreLayer ];
       config.Entrypoint = [ "/bin/pause" ];
+      includeStorePaths = false;
     })
   ];
 in

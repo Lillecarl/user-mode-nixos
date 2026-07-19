@@ -30,11 +30,70 @@ in
 
     # ── CNI plugins ─────────────────────────────────────────────
 
-    # Pre-create CNI directories; Flannel/kubeadm will populate them.
+    # Pre-create CNI directories and kubeadm patches directory.
     systemd.tmpfiles.rules = [
       "d /opt/cni/bin 0755 root root -"
       "d /etc/cni/net.d 0755 root root -"
+      "d /etc/kubernetes/patches 0755 root root -"
     ];
+
+    # ── kubeadm patches: mount /nix/store into static pods ──────
+
+    # Strategic merge patches add a hostPath volume for /nix/store
+    # to each control-plane static pod so dynamically-linked binaries
+    # can find their libraries at runtime.
+    environment.etc."kubernetes/patches/kube-apiserver0+merge.yaml".text = ''
+      spec:
+        volumes:
+        - name: nix-store
+          hostPath:
+            path: /nix/store
+            type: Directory
+        containers:
+        - name: kube-apiserver
+          volumeMounts:
+          - name: nix-store
+            mountPath: /nix/store
+    '';
+    environment.etc."kubernetes/patches/kube-controller-manager0+merge.yaml".text = ''
+      spec:
+        volumes:
+        - name: nix-store
+          hostPath:
+            path: /nix/store
+            type: Directory
+        containers:
+        - name: kube-controller-manager
+          volumeMounts:
+          - name: nix-store
+            mountPath: /nix/store
+    '';
+    environment.etc."kubernetes/patches/kube-scheduler0+merge.yaml".text = ''
+      spec:
+        volumes:
+        - name: nix-store
+          hostPath:
+            path: /nix/store
+            type: Directory
+        containers:
+        - name: kube-scheduler
+          volumeMounts:
+          - name: nix-store
+            mountPath: /nix/store
+    '';
+    environment.etc."kubernetes/patches/etcd0+merge.yaml".text = ''
+      spec:
+        volumes:
+        - name: nix-store
+          hostPath:
+            path: /nix/store
+            type: Directory
+        containers:
+        - name: etcd
+          volumeMounts:
+          - name: nix-store
+            mountPath: /nix/store
+    '';
 
     system.activationScripts.cni-install = {
       text = ''

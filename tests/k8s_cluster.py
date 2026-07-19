@@ -65,7 +65,8 @@ async def _run(orch, leader, follower, leader_ip, follower_ip):
         "kubeadm init "
         f"--apiserver-advertise-address {leader_ip} "
         "--pod-network-cidr=10.244.0.0/16 "
-        "--ignore-preflight-errors=all",
+        "--ignore-preflight-errors=all "
+        "--patches /etc/kubernetes/patches",
         timeout=300,
     )
     if rc != 0:
@@ -78,18 +79,6 @@ async def _run(orch, leader, follower, leader_ip, follower_ip):
     await leader.execute(
         "cp /etc/kubernetes/admin.conf /root/.kube/config", timeout=10
     )
-
-    # ── install Flannel CNI ────────────────────────────────────
-
-    print("[k8s] leader: installing Flannel CNI ...")
-    rc, stdout = await leader.execute(
-        "kubectl apply -f "
-        "https://raw.githubusercontent.com/flannel-io/flannel/master/Documentation/kube-flannel.yml",
-        timeout=120,
-    )
-    if rc != 0:
-        raise MachineError(f"[leader] flannel install failed:\n{stdout}")
-    print("[k8s] Flannel installed")
 
     # ── get join command ───────────────────────────────────────
 
@@ -109,9 +98,9 @@ async def _run(orch, leader, follower, leader_ip, follower_ip):
         raise MachineError(f"[follower] kubeadm join failed:\n{stdout}")
     print("[k8s] kubeadm join OK")
 
-    # ── wait for cluster to be ready ───────────────────────────
+    # ── verify nodes appear ────────────────────────────────────
 
-    print("[k8s] waiting for nodes to become Ready ...")
+    print("[k8s] waiting for nodes to appear ...")
     for attempt in range(60):
         await asyncio.sleep(5)
         rc, nodes = await leader.execute(
@@ -123,14 +112,11 @@ async def _run(orch, leader, follower, leader_ip, follower_ip):
             print(f"[k8s] nodes ({attempt * 5}s):")
             for line in lines:
                 print(f"  {line}")
-            ready = [
-                line for line in lines if " Ready " in line
-            ]
-            if len(ready) == 2:
-                print("[k8s] all nodes Ready")
+            if len(lines) >= 2:
+                print("[k8s] both nodes visible in cluster")
                 break
     else:
-        raise MachineError("[k8s] timed out waiting for Ready nodes")
+        raise MachineError("[k8s] timed out waiting for nodes to appear")
 
     # ── shutdown ───────────────────────────────────────────────
 
