@@ -150,7 +150,9 @@ class UmlMachine:
         await asyncio.sleep(1)
 
         if self.ssl_fd is not None:
+            print(f"  [{self.name}] arpyc: connecting on fd {self.ssl_fd}", flush=True)
             self._arpyc_conn = await arpyc_connect_fd(self.ssl_fd)
+            print(f"  [{self.name}] arpyc: connected", flush=True)
 
     async def shutdown(self) -> None:
         """Gracefully shut down the VM and clean up."""

@@ -434,9 +434,13 @@ async def arpyc_connect_fd(
     """Connect an async rpyc client over a plain fd (host-side socketpair)."""
     if loop is None:
         loop = asyncio.get_event_loop()
+    print(f"  arpyc: creating AsyncFdStream for fd {fd}", flush=True)
     stream = AsyncFdStream(fd, loop)
+    print(f"  arpyc: creating channel", flush=True)
     channel = AsyncChannel(stream)
+    print(f"  arpyc: creating connection", flush=True)
     conn = AsyncConnection(Service(), channel)
+    print(f"  arpyc: connection created", flush=True)
     return conn
 
 
