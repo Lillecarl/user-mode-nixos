@@ -117,7 +117,7 @@ class UmlMachine:
         cmd.extend(["--passt-port", str(self.ssh_port)])
         cmd.append(str(self.kernel))
         cmd.append(f"ubd0={cow},{self.root_image}")
-        cmd.extend(["root=/dev/ubda", "rw", "init=/init"])
+        cmd.extend(["root=/dev/ubda", "rw", "init=/init", "mem=128M"])
         cmd.extend(self.kernel_args)
         cmd.append(f"uml_shared={self.cmddir}")
 
