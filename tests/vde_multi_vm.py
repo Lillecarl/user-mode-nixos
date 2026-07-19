@@ -10,11 +10,14 @@ Architecture:
 """
 
 import asyncio
+import inspect
 import socket
 import sys
 from pathlib import Path
 
-from uml_runner import UmlOrchestrator
+from uml_runner import UmlOrchestrator, UmlMachine
+import inspect
+print(f"DEBUG: UmlMachine.__init__ signature: {list(inspect.signature(UmlMachine.__init__).parameters.keys())}", flush=True)
 
 
 async def test_multi(
