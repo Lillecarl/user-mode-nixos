@@ -20,7 +20,7 @@
         modules = [{
           networking.hostName = "server";
           boot.uml.sshPort = 4325;
-          boot.uml.vde = { enable = true; ip = "192.168.99.2/24"; };
+          boot.uml.vde = { enable = true; ip = "192.168.99.2/24"; peer = "192.168.99.3"; };
           boot.uml.autoShutdown = false;
         }];
       };
@@ -29,7 +29,7 @@
         modules = [{
           networking.hostName = "client";
           boot.uml.sshPort = 4326;
-          boot.uml.vde = { enable = true; ip = "192.168.99.3/24"; };
+          boot.uml.vde = { enable = true; ip = "192.168.99.3/24"; peer = "192.168.99.2"; };
           boot.uml.autoShutdown = false;
         }];
       };
@@ -40,7 +40,7 @@
         modules = [{
           networking.hostName = "server";
           boot.uml.sshPort = 4325;
-          boot.uml.vde = { enable = true; ip = "192.168.99.2/24"; };
+          boot.uml.vde = { enable = true; ip = "192.168.99.2/24"; peer = "192.168.99.3"; };
           boot.uml.autoShutdown = false;
         }];
       };
@@ -48,7 +48,7 @@
         modules = [{
           networking.hostName = "client";
           boot.uml.sshPort = 4326;
-          boot.uml.vde = { enable = true; ip = "192.168.99.3/24"; };
+          boot.uml.vde = { enable = true; ip = "192.168.99.3/24"; peer = "192.168.99.2"; };
           boot.uml.autoShutdown = false;
         }];
       };
@@ -73,7 +73,8 @@
             --server-image ${serverCfg.config.system.build.umlRootImage} \
             --server-ssh-port 4325 \
             --client-image ${clientCfg.config.system.build.umlRootImage} \
-            --client-ssh-port 4326
+            --client-ssh-port 4326 \
+            --console-only
 
           touch $out
         '';

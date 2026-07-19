@@ -28,6 +28,12 @@ in
             example = "192.168.99.2/24";
             description = "Static IP/CIDR on vec1 (VDE interface)";
           };
+          peer = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            example = "192.168.99.3";
+            description = "Peer IP to ping in console-based inter-VM test";
+          };
         };
       };
       default = { };
@@ -48,16 +54,18 @@ in
   networking.firewall.enable = false;
   networking.useNetworkd = true;
   networking.interfaces.vec0.useDHCP = true;
-  networking.interfaces.vec1 = lib.mkIf config.boot.uml.vde.enable {
-    useDHCP = false;
-  } // lib.optionalAttrs (config.boot.uml.vde.ip != null) {
-    ipv4.addresses = let
-      parts = lib.splitString "/" config.boot.uml.vde.ip;
-    in [{
-      address = builtins.elemAt parts 0;
-      prefixLength = lib.toIntBase10 (builtins.elemAt parts 1);
-    }];
-  };
+  networking.interfaces.vec1 = lib.mkIf config.boot.uml.vde.enable (
+    {
+      useDHCP = false;
+    } // lib.optionalAttrs (config.boot.uml.vde.ip != null) {
+      ipv4.addresses = let
+        parts = lib.splitString "/" config.boot.uml.vde.ip;
+      in [{
+        address = builtins.elemAt parts 0;
+        prefixLength = lib.toIntBase10 (builtins.elemAt parts 1);
+      }];
+    }
+  );
   systemd.services.resolvconf.enable = false;
   systemd.services.systemd-networkd.enable = true;
   systemd.services.systemd-networkd-wait-online.enable = lib.mkForce false;
@@ -112,6 +120,24 @@ in
       echo "=== BPF ==="
       ls /sys/fs/bpf 2>/dev/null | head -5 || echo "no bpf"
       echo "=== END ==="
+    '';
+  };
+
+  systemd.services.uml-vde-test = lib.mkIf (config.boot.uml.vde.enable && config.boot.uml.vde.peer != null) {
+    description = "UML VDE inter-VM console test";
+    wantedBy = [ "multi-user.target" ];
+    after = [ "network.target" "systemd-networkd.service" ];
+    serviceConfig.Type = "oneshot";
+    path = [ pkgs.iproute2 pkgs.iputils ];
+    script = ''
+      exec >/dev/console 2>&1
+      echo "=== VDE TEST: vec1 $(ip -4 -br addr show vec1 2>/dev/null || echo 'no vec1') ==="
+      for i in 1 2 3 4 5; do
+        ping -c1 -W2 ${config.boot.uml.vde.peer} && echo "=== VDE PING OK ===" && exit 0
+        echo "=== VDE PING attempt $i/5 failed, retrying ==="
+        sleep 2
+      done
+      echo "=== VDE PING FAILED ==="
     '';
   };
 

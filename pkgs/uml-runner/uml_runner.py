@@ -19,6 +19,7 @@ Multi-VM usage (Python):
 
 import argparse
 import asyncio
+import collections
 import os
 import re
 import signal
@@ -65,6 +66,7 @@ class UmlMachine:
         extra_passt_ports: list[int] | None = None,
         pass_fds: tuple[int, ...] = (),
         timeout: int = 60,
+        ready_pattern: str | re.Pattern | None = "Started SSH Daemon",
     ):
         self.name = name
         self.kernel = kernel
@@ -78,16 +80,18 @@ class UmlMachine:
         self.extra_passt_ports = extra_passt_ports or []
         self.pass_fds = pass_fds
         self.timeout = timeout
+        self.ready_pattern = ready_pattern
         self.rundir: Path | None = None
         self._process: subprocess.Process | None = None
         self._output_lines: asyncio.Queue[str] = asyncio.Queue()
+        self._output_history: collections.deque[str] = collections.deque(maxlen=2000)
         self._monitor_task: asyncio.Task | None = None
         self._started = False
 
     # ── lifecycle ──────────────────────────────────────────────────
 
     async def start(self) -> None:
-        """Boot the UML VM and wait for SSH to become available."""
+        """Boot the UML VM and wait for the ready pattern."""
         if self._started:
             return
 
@@ -120,13 +124,18 @@ class UmlMachine:
         self._monitor_task = asyncio.create_task(self._monitor_output())
         self._started = True
 
-        ssh_ready = re.compile(r"Started SSH Daemon")
-        try:
-            await asyncio.wait_for(
-                self._wait_for_line(ssh_ready), timeout=self.timeout
-            )
-        except asyncio.TimeoutError:
-            raise MachineError(f"[{self.name}] timed out waiting for SSH daemon")
+        pattern = self.ready_pattern
+        if isinstance(pattern, str):
+            pattern = re.compile(pattern)
+        if pattern:
+            try:
+                await asyncio.wait_for(
+                    self._wait_for_line(pattern), timeout=self.timeout
+                )
+            except asyncio.TimeoutError:
+                raise MachineError(
+                    f"[{self.name}] timed out waiting for ready pattern"
+                )
 
         await asyncio.sleep(1)
 
@@ -134,13 +143,13 @@ class UmlMachine:
         """Gracefully shut down the VM and clean up."""
         if self._process and self._process.returncode is None:
             try:
-                await self.execute("systemctl poweroff", timeout=10, check=False)
+                self._terminate()
             except Exception:
                 pass
             try:
                 await asyncio.wait_for(self._process.wait(), timeout=30)
             except asyncio.TimeoutError:
-                self._terminate()
+                pass
 
         if self._monitor_task:
             self._monitor_task.cancel()
@@ -161,7 +170,10 @@ class UmlMachine:
     def _cleanup_rundir(self) -> None:
         if self.rundir and self.rundir.exists():
             import shutil
+
             shutil.rmtree(self.rundir, ignore_errors=True)
+
+    # ── console I/O ─────────────────────────────────────────────────
 
     # ── output monitoring ──────────────────────────────────────────
 
@@ -176,11 +188,15 @@ class UmlMachine:
             if plain:
                 print(plain, flush=True)
                 self._output_lines.put_nowait(plain)
+                self._output_history.append(plain)
 
     async def _wait_for_line(self, pattern: re.Pattern | str) -> str:
-        """Wait for a line matching *pattern* in kernel output."""
+        """Wait for a line matching *pattern* in past or future output."""
         if isinstance(pattern, str):
             pattern = re.compile(pattern)
+        for line in self._output_history:
+            if pattern.search(line):
+                return line
         while True:
             try:
                 line = await asyncio.wait_for(
@@ -260,7 +276,9 @@ class UmlMachine:
         """Execute a command, raising MachineError on success. Returns combined output."""
         rc, stdout = await self.execute(command, timeout=timeout)
         if rc == 0:
-            raise MachineError(f"[{self.name}] command unexpectedly succeeded: {command}")
+            raise MachineError(
+                f"[{self.name}] command unexpectedly succeeded: {command}"
+            )
         return stdout
 
     async def wait_for_unit(
@@ -326,6 +344,7 @@ class UmlOrchestrator:
         extra_passt_ports: list[int] | None = None,
         pass_fds: tuple[int, ...] = (),
         timeout: int = 60,
+        ready_pattern: str | None = None,
     ) -> UmlMachine:
         if ssh_port is None:
             ssh_port = SSH_PORT + len(self.machines)
@@ -341,6 +360,7 @@ class UmlOrchestrator:
             extra_passt_ports=extra_passt_ports,
             pass_fds=pass_fds,
             timeout=timeout,
+            ready_pattern=ready_pattern,
         )
         self.machines.append(m)
         return m
@@ -385,7 +405,8 @@ class UmlOrchestrator:
 
         proc = await subprocess.create_subprocess_exec(
             str(self._vde_switch),
-            "--sock", str(sock),
+            "--sock",
+            str(sock),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
