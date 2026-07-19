@@ -81,7 +81,7 @@ in
     after = [ "multi-user.target" ];
     serviceConfig.Type = "oneshot";
     script = ''
-      sleep 30
+      sleep 60
       ${pkgs.systemd}/bin/shutdown -h now
     '';
   };

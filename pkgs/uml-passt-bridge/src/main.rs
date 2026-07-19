@@ -43,8 +43,41 @@ fn read_exact(fd: i32, buf: &mut [u8]) -> io::Result<()> {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    if args.len() < 2 {
-        eprintln!("Usage: {} UML_BINARY [UML_ARGS...]", args[0]);
+    let mut passt_ports: Vec<String> = Vec::new();
+    let mut vec_arg = "vec0:transport=fd,fd=3".to_string();
+    let mut kernel_idx = 1;
+
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--vec" => {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("--vec requires an argument");
+                    exit(1);
+                }
+                vec_arg = args[i].clone();
+                kernel_idx = i + 1;
+            }
+            "--passt-port" => {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("--passt-port requires an argument");
+                    exit(1);
+                }
+                passt_ports.push(args[i].clone());
+                kernel_idx = i + 1;
+            }
+            _ => break,
+        }
+        i += 1;
+    }
+
+    if kernel_idx >= args.len() {
+        eprintln!(
+            "Usage: {} [--vec VEC_ARG] [--passt-port PORT] UML_BINARY [UML_ARGS...]",
+            args[0]
+        );
         exit(1);
     }
 
@@ -63,7 +96,17 @@ fn main() {
     )
     .expect("socketpair passt");
 
-    // Fork passt — connects its end of the passt socketpair to fd 4.
+    let mut passt_args: Vec<String> = vec![
+        "--one-off".into(),
+        "--foreground".into(),
+        "--fd".into(),
+        "4".into(),
+    ];
+    for port in &passt_ports {
+        passt_args.push("-t".into());
+        passt_args.push(port.clone());
+    }
+
     match unsafe { unistd::fork() }.expect("fork passt") {
         ForkResult::Child => {
             drop(uml_a);
@@ -71,16 +114,14 @@ fn main() {
             drop(passt_a);
             unistd::dup2(passt_b.as_raw_fd(), PASST_FD).expect("dup2 passt");
             drop(passt_b);
-            let err = process::Command::new("passt")
-                .args(["--one-off", "--foreground", "--fd", "4", "-t", "4325"])
-                .exec();
+            let passt_argv: Vec<&str> = passt_args.iter().map(|s| s.as_str()).collect();
+            let err = process::Command::new("passt").args(&passt_argv).exec();
             eprintln!("exec passt: {}", err);
             exit(1);
         }
         ForkResult::Parent { .. } => {}
     }
 
-    // Fork UML — connects its end of the uml socketpair to fd 3.
     match unsafe { unistd::fork() }.expect("fork uml") {
         ForkResult::Child => {
             drop(passt_a);
@@ -91,9 +132,9 @@ fn main() {
             fcntl::fcntl(UML_FD, fcntl::FcntlArg::F_SETFD(fcntl::FdFlag::empty()))
                 .expect("fcntl uml");
 
-            let kernel = &args[1];
-            let mut full_args: Vec<String> = args.iter().skip(2).cloned().collect();
-            full_args.push("vec0:transport=fd,fd=3".to_string());
+            let kernel = &args[kernel_idx];
+            let mut full_args: Vec<String> = args.iter().skip(kernel_idx + 1).cloned().collect();
+            full_args.push(vec_arg.clone());
             let err = process::Command::new(kernel).args(&full_args).exec();
             eprintln!("exec uml {}: {}", kernel, err);
             exit(1);
