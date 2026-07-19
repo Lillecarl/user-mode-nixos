@@ -304,9 +304,10 @@ class UmlMachine:
 class UmlOrchestrator:
     """Manages multiple UML VMs and VDE switches (if any)."""
 
-    def __init__(self):
+    def __init__(self, vde_switch: Path | None = None):
         self.machines: list[UmlMachine] = []
         self._vde_processes: list[subprocess.Process] = []
+        self._vde_switch = vde_switch or Path("vde_switch")
 
     def create_machine(
         self,
@@ -355,14 +356,20 @@ class UmlOrchestrator:
                     raise result
 
     async def shutdown_all(self) -> None:
-        """Shut down all VMs and clean up."""
-        await asyncio.gather(*(m.shutdown() for m in self.machines), return_exceptions=True)
+        """Shut down all VMs and clean up VDE switches."""
+        await asyncio.gather(
+            *(m.shutdown() for m in self.machines), return_exceptions=True
+        )
         for p in self._vde_processes:
             if p.returncode is None:
                 try:
                     p.terminate()
-                except ProcessLookupError:
-                    pass
+                    await asyncio.wait_for(p.wait(), timeout=5)
+                except (ProcessLookupError, asyncio.TimeoutError):
+                    try:
+                        p.kill()
+                    except ProcessLookupError:
+                        pass
 
     # ── VDE networking ─────────────────────────────────────────────
 
@@ -370,19 +377,17 @@ class UmlOrchestrator:
         """Start a vde_switch for a VLAN. Returns the control socket path."""
         sockdir = Path(tempfile.mkdtemp(prefix=f"vde-vlan{vlan_id}-"))
         sock = sockdir / "ctl"
-        data = sockdir / "data"
-        mgmt = sockdir / "mgmt"
 
         proc = await subprocess.create_subprocess_exec(
-            "vde_switch",
+            str(self._vde_switch),
             "--sock", str(sock),
-            "--datapath", str(data),
-            "--mgmt", str(mgmt),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
         self._vde_processes.append(proc)
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.3)
+        if not sock.exists():
+            raise MachineError(f"vde_switch failed to create socket {sock}")
         return sock
 
 
