@@ -150,9 +150,14 @@ class UmlMachine:
         await asyncio.sleep(1)
 
         if self.ssl_fd is not None:
-            reader, writer = await asyncio.open_connection(
-                sock=socket.socket(fileno=self.ssl_fd)
+            sock = socket.socket(fileno=self.ssl_fd)
+            reader = asyncio.StreamReader()
+            protocol = asyncio.StreamReaderProtocol(reader)
+            loop = asyncio.get_event_loop()
+            transport, _ = await loop.create_connection(
+                lambda: protocol, sock=sock
             )
+            writer = asyncio.StreamWriter(transport, protocol, reader, loop)
             self._arpyc_conn = await arpyc_connect(reader, writer)
 
     async def shutdown(self) -> None:
