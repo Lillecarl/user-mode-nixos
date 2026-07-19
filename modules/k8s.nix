@@ -1,6 +1,7 @@
 { pkgs, lib, config, ... }:
 let
   kubernetes = pkgs.kubernetes;
+  k8sImages = pkgs.callPackage ./k8s-images.nix { };
 in
 {
   config = {
@@ -72,13 +73,13 @@ in
       deps = [];
     };
 
-    # ── pre-pull images at boot ─────────────────────────────────
+    # ── load pre-built images into containerd ────────────────────
 
-    systemd.services.kubeadm-pull-images = {
-      description = "Pre-pull kubeadm container images";
+    systemd.services.k8s-load-images = {
+      description = "Load kubeadm container images into containerd";
       wantedBy = [ "multi-user.target" ];
       before = [ "kubelet.service" ];
-      after = [ "network-online.target" "containerd.service" ];
+      after = [ "containerd.service" ];
       requires = [ "containerd.service" ];
       path = [ pkgs.kubernetes ];
       serviceConfig = {
@@ -87,18 +88,9 @@ in
         Environment = "PATH=/run/current-system/sw/bin";
       };
       script = ''
-        max_attempts=10
-        for i in $(seq $max_attempts); do
-          if kubeadm config images pull --kubernetes-version=${kubernetes.version} \
-               --ignore-preflight-errors=all 2>&1; then
-            echo "kubeadm-pull-images: OK"
-            exit 0
-          fi
-          echo "kubeadm-pull-images: attempt $i/$max_attempts failed, retrying in 5s"
-          sleep 5
-        done
-        echo "kubeadm-pull-images: FAILED after $max_attempts attempts"
-        exit 1
+        echo "k8s-load-images: importing images ..."
+        ctr -n k8s.io image import ${k8sImages} 2>&1
+        echo "k8s-load-images: OK"
       '';
     };
 
