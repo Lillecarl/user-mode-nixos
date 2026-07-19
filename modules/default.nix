@@ -9,6 +9,11 @@ let
   umlRunner = pkgs.callPackage ../pkgs/uml-runner { };
   umlPasstBridge = pkgs.callPackage ../pkgs/uml-passt-bridge { };
 
+  rpycPyEnv = pkgs.python3.withPackages (ps: [
+    ps.rpyc
+    ps.systemd-python
+  ]);
+
   imageSize = "512"; # MiB
 in
 {
@@ -182,40 +187,17 @@ in
     '';
   };
 
-  systemd.services.uml-serial-runner = {
-    description = "Execute commands from UML SSL serial line";
+  systemd.services.uml-rpyc-server = {
+    description = "RPyC server on UML SSL serial line";
     wantedBy = [ "multi-user.target" ];
     after = [ "dev-ttyS0.device" ];
     bindsTo = [ "dev-ttyS0.device" ];
-    serviceConfig.Type = "simple";
-    path = with pkgs; [
-      coreutils
-      bash
-      iproute2
-      iputils
-      inetutils
-      procps
-      gnugrep
-      gnused
-      gawk
-    ];
-    script = ''
-      exec >/dev/console 2>&1
-      echo "uml-serial-runner: waiting for /dev/ttyS0"
-      while ! [ -c /dev/ttyS0 ]; do sleep 0.5; done
-      exec 3<>/dev/ttyS0
-      stty raw -echo <&3
-      echo "uml-serial-runner: ready on /dev/ttyS0"
-      while read -r cmd <&3; do
-        [ -z "$cmd" ] && continue
-        echo "uml-serial-runner: cmd=$cmd"
-        output=$(sh -c "$cmd" 2>&1)
-        rc=$?
-        printf '%d\n' "$rc" >&3
-        printf '%s\n' "$output" >&3
-        printf '%s\n' "__END__" >&3
-      done
-    '';
+    serviceConfig = {
+      Type = "simple";
+      ExecStart = "${rpycPyEnv}/bin/python3 ${../pkgs/uml-runner/uml_rpyc_server.py}";
+      StandardOutput = "journal+console";
+      StandardError = "journal+console";
+    };
   };
 
   systemd.services.uml-shutdown = lib.mkIf config.boot.uml.autoShutdown {

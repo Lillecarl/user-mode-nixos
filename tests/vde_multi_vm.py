@@ -87,7 +87,7 @@ async def test_multi(
             f"vec1:transport=fd,fd={vec_server_fd}",
             f"ssl0=fd:{ssl_server_uml}",
         ],
-        ready_pattern="uml-serial-runner: ready",
+        ready_pattern="uml-rpyc-server: ready",
     )
     client = orch.create_machine(
         "client",
@@ -103,7 +103,7 @@ async def test_multi(
             f"vec1:transport=fd,fd={vec_client_fd}",
             f"ssl0=fd:{ssl_client_uml}",
         ],
-        ready_pattern="uml-serial-runner: ready",
+        ready_pattern="uml-rpyc-server: ready",
     )
 
     print("[test] starting VMs (parallel) ...")

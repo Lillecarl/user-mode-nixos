@@ -9,7 +9,10 @@ python3Packages.buildPythonApplication {
   pyproject = true;
 
   nativeBuildInputs = [ python3Packages.hatchling ];
-  propagatedBuildInputs = [ python3Packages.asyncssh ];
+  propagatedBuildInputs = [
+    python3Packages.asyncssh
+    python3Packages.rpyc
+  ];
 
   meta = with lib; {
     description = "Async UML kernel runner with SSH probe";

@@ -26,12 +26,14 @@ import signal
 import socket
 import sys
 import tempfile
+import time
 from asyncio import subprocess
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Callable
 
 import asyncssh
+import rpyc
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
 SSH_PORT = 4325
@@ -40,19 +42,6 @@ SSH_PASSWORD = "Flagpole3.Equinox.Grasp"
 
 def strip_ansi(line: str) -> str:
     return ANSI_RE.sub("", line)
-
-
-async def _readline(sock: socket.socket, loop) -> bytes:
-    """Read a line from a non-blocking socket using the event loop."""
-    buf = bytearray()
-    while True:
-        ch = await loop.sock_recv(sock, 1)
-        if not ch:
-            raise ConnectionError("SSL serial line closed")
-        if ch == b"\n":
-            break
-        buf.extend(ch)
-    return bytes(buf)
 
 
 class MachineError(Exception):
@@ -104,6 +93,7 @@ class UmlMachine:
         self._output_history: collections.deque[str] = collections.deque(maxlen=2000)
         self._monitor_task: asyncio.Task | None = None
         self._ssl_sock: socket.socket | None = None
+        self._rpyc_conn: rpyc.Connection | None = None
         self._started = False
 
     # ── lifecycle ──────────────────────────────────────────────────
@@ -161,11 +151,24 @@ class UmlMachine:
 
         if self.ssl_fd is not None:
             self._ssl_sock = socket.socket(fileno=self.ssl_fd)
-            self._ssl_sock.setblocking(False)
-            self._ssl_sock.sendall(b"\n")
+
+            def _do_rpyc_connect():
+                stream = rpyc.SocketStream(self._ssl_sock)
+                return rpyc.connect_stream(stream)
+
+            loop = asyncio.get_event_loop()
+            self._rpyc_conn = await loop.run_in_executor(
+                None, _do_rpyc_connect
+            )
 
     async def shutdown(self) -> None:
         """Gracefully shut down the VM and clean up."""
+        if self._rpyc_conn:
+            try:
+                self._rpyc_conn.close()
+            except Exception:
+                pass
+            self._rpyc_conn = None
         if self._ssl_sock:
             self._ssl_sock.close()
             self._ssl_sock = None
@@ -278,42 +281,75 @@ class UmlMachine:
                     await asyncio.sleep(1)
         raise MachineError(f"[{self.name}] SSH connection failed after retries")
 
-    # ── shared-directory command execution ─────────────────────────
+    # ── rpyc command execution ──────────────────────────────────────
 
-    async def execute_serial(
+    async def execute_rpyc(
         self, command: str, timeout: int | None = None
     ) -> tuple[int, str]:
-        """Execute a command via UML SSL serial line.
+        """Execute a shell command via rpyc in the guest.
 
         Returns (exit_code, stdout).
         """
-        if self._ssl_sock is None:
-            raise MachineError(f"[{self.name}] SSL serial line not available")
+        if self._rpyc_conn is None:
+            raise MachineError(f"[{self.name}] rpyc not connected")
 
         timeout = timeout or self.timeout
         loop = asyncio.get_event_loop()
 
-        await loop.sock_sendall(
-            self._ssl_sock, (command + "\n").encode()
+        def _run():
+            return self._rpyc_conn.root.run(command, timeout=timeout)
+
+        rc, stdout = await loop.run_in_executor(None, _run)
+        return rc, stdout
+
+    async def list_units(self, pattern: str = "*") -> list[dict]:
+        """List systemd units via rpyc."""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None, lambda: self._rpyc_conn.root.list_units(pattern)
         )
 
-        async def _read_until_marker() -> tuple[int, str]:
-            rc_line = await asyncio.wait_for(
-                _readline(self._ssl_sock, loop), timeout=timeout
-            )
-            rc = int(rc_line.strip())
-            lines = []
-            while True:
-                line = await asyncio.wait_for(
-                    _readline(self._ssl_sock, loop), timeout=timeout
-                )
-                stripped = line.strip()
-                if stripped == b"__END__":
-                    break
-                lines.append(line.decode(errors="replace"))
-            return rc, "".join(lines).rstrip("\n")
+    async def get_unit_info_rpyc(self, unit_name: str) -> dict[str, str]:
+        """Get systemd unit properties via rpyc."""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None, lambda: self._rpyc_conn.root.get_unit_info(unit_name)
+        )
 
-        return await _read_until_marker()
+    async def get_unit_state_rpyc(self, unit_name: str) -> str:
+        """Get ActiveState of a systemd unit via rpyc."""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None, lambda: self._rpyc_conn.root.get_unit_state(unit_name)
+        )
+
+    async def journal_messages(
+        self, unit: str | None = None, count: int = 50
+    ) -> list[str]:
+        """Get journal messages via rpyc."""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None, lambda: self._rpyc_conn.root.journal_messages(unit, count)
+        )
+
+    async def wait_for_unit_rpyc(
+        self, unit: str, timeout: int = 900
+    ) -> None:
+        """Wait for a systemd unit to become active, via rpyc."""
+        deadline = asyncio.get_event_loop().time() + timeout
+        while True:
+            state = await self.get_unit_state_rpyc(unit)
+            if state == "active":
+                return
+            if state == "failed":
+                raise MachineError(
+                    f"[{self.name}] unit '{unit}' entered failed state"
+                )
+            if asyncio.get_event_loop().time() > deadline:
+                raise MachineError(
+                    f"[{self.name}] timed out waiting for unit '{unit}'"
+                )
+            await asyncio.sleep(0.5)
 
     async def execute_shared(
         self, command: str, timeout: int | None = None
@@ -386,8 +422,8 @@ class UmlMachine:
         """
         timeout = timeout or self.timeout
 
-        if self._ssl_sock is not None:
-            rc, stdout = await self.execute_serial(command, timeout=timeout)
+        if self._rpyc_conn is not None:
+            rc, stdout = await self.execute_rpyc(command, timeout=timeout)
         elif self.cmddir and self.cmddir.exists():
             try:
                 rc, stdout = await self.execute_shared(command, timeout=timeout)
