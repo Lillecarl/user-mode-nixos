@@ -21,6 +21,7 @@
           networking.hostName = "server";
           boot.uml.sshPort = 4325;
           boot.uml.vde = { enable = true; ip = "192.168.99.2/24"; };
+          boot.uml.autoShutdown = false;
         }];
       };
 
@@ -29,6 +30,7 @@
           networking.hostName = "client";
           boot.uml.sshPort = 4326;
           boot.uml.vde = { enable = true; ip = "192.168.99.3/24"; };
+          boot.uml.autoShutdown = false;
         }];
       };
     };
@@ -39,6 +41,7 @@
           networking.hostName = "server";
           boot.uml.sshPort = 4325;
           boot.uml.vde = { enable = true; ip = "192.168.99.2/24"; };
+          boot.uml.autoShutdown = false;
         }];
       };
       clientCfg = mkUmlVM {
@@ -46,6 +49,7 @@
           networking.hostName = "client";
           boot.uml.sshPort = 4326;
           boot.uml.vde = { enable = true; ip = "192.168.99.3/24"; };
+          boot.uml.autoShutdown = false;
         }];
       };
     in {

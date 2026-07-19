@@ -32,6 +32,11 @@ in
       };
       default = { };
     };
+    autoShutdown = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = "Shutdown UML automatically 60s after boot";
+    };
   };
 
   config = {
@@ -71,6 +76,8 @@ in
   boot.loader.systemd-boot.enable = false;
   system.build.installBootLoader = "${pkgs.coreutils}/bin/true";
 
+  security.wrappers.enable = false;
+
   systemd.services.systemd-random-seed.enable = false;
   systemd.services.nsncd.enable = false;
   system.activationScripts.modprobe.text = lib.mkForce "";
@@ -108,7 +115,7 @@ in
     '';
   };
 
-  systemd.services.uml-shutdown = {
+  systemd.services.uml-shutdown = lib.mkIf config.boot.uml.autoShutdown {
     description = "Shutdown UML after boot";
     wantedBy = [ "multi-user.target" ];
     after = [ "multi-user.target" ];
