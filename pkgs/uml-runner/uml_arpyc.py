@@ -45,6 +45,54 @@ FLUSHER = b"\n"
 # ── async streams ──────────────────────────────────────────────────
 
 
+class AsyncFdStream:
+    """Async stream over a plain fd — read via add_reader, write via os.write.
+
+    Used when the fd is already a connected bidirectional stream (e.g.
+    socketpair), no termios/tty setup needed.
+    """
+
+    MAX_IO_CHUNK = consts.STREAM_CHUNK
+
+    def __init__(self, fd: int, loop: asyncio.AbstractEventLoop) -> None:
+        self._fd = fd
+        self._loop = loop
+        self._closed = False
+        self._reader = asyncio.StreamReader()
+        loop.add_reader(fd, self._on_readable)
+
+    def _on_readable(self) -> None:
+        try:
+            data = os.read(self._fd, 65536)
+        except OSError:
+            self._reader.feed_eof()
+            return
+        if not data:
+            self._reader.feed_eof()
+        else:
+            self._reader.feed_data(data)
+
+    async def read(self, count: int) -> bytes:
+        return await self._reader.readexactly(count)
+
+    async def write(self, data: bytes) -> None:
+        while data:
+            n = os.write(self._fd, data)
+            if n <= 0:
+                raise EOFError("fd write failed")
+            data = data[n:]
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    def close(self) -> None:
+        self._closed = True
+        self._loop.remove_reader(self._fd)
+        self._reader.feed_eof()
+        os.close(self._fd)
+
+
 class AsyncSocketStream:
     """Stream over asyncio reader/writer (host-side socketpair)."""
 
@@ -132,7 +180,7 @@ class AsyncChannel:
     """Async copy of rpyc's Channel — same frame format, async I/O."""
 
     def __init__(
-        self, stream: AsyncSocketStream | AsyncTtyStream
+        self, stream: AsyncFdStream | AsyncSocketStream | AsyncTtyStream
     ) -> None:
         self._stream = stream
 
@@ -374,6 +422,19 @@ async def arpyc_connect(
         rc, stdout = await conn.root.run("hostname")
     """
     stream = AsyncSocketStream(reader, writer)
+    channel = AsyncChannel(stream)
+    conn = AsyncConnection(Service(), channel)
+    return conn
+
+
+async def arpyc_connect_fd(
+    fd: int,
+    loop: asyncio.AbstractEventLoop | None = None,
+) -> AsyncConnection:
+    """Connect an async rpyc client over a plain fd (host-side socketpair)."""
+    if loop is None:
+        loop = asyncio.get_event_loop()
+    stream = AsyncFdStream(fd, loop)
     channel = AsyncChannel(stream)
     conn = AsyncConnection(Service(), channel)
     return conn
