@@ -1,72 +1,87 @@
 #!/usr/bin/env python3
-"""Multi-VM VDE integration test.
+"""Multi-VM integration test with inter-VM networking.
 
-Two UML VMs on a shared VDE virtual network, each with passt for SSH
-from the host. Tests inter-VM connectivity via L2 VDE + L3 ping.
+Two UML VMs connected directly via a Unix socketpair passed as fd transport.
+Tests inter-VM L2 connectivity with ping.
 
-Requirements:
-  vde_switch (from vde2 package)
-  Two UML VMs with the same root image
+Architecture:
+  vec0 = passt fd  (DHCP from passt, SSH from host)
+  vec1 = fd pair   (direct VM-to-VM L2 via socketpair)
 """
 
 import asyncio
+import socket
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "pkgs" / "uml-runner"))
 from uml_runner import UmlOrchestrator
 
 
-async def test_vde(
+async def test_multi(
     kernel: Path,
-    root_image: Path,
     bridge: Path,
     passt_bin: Path,
-    vde_switch: Path,
+    server_image: Path,
+    server_ssh_port: int,
+    client_image: Path,
+    client_ssh_port: int,
 ):
-    orch = UmlOrchestrator(vde_switch=vde_switch)
+    orch = UmlOrchestrator()
 
-    vlan_sock = await orch.create_vlan(1)
-    print(f"[test] VDE switch started, sock={vlan_sock}")
+    # Create Unix socketpair for inter-VM L2 link
+    a, b = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+    a.set_inheritable(True)
+    b.set_inheritable(True)
+    a_fd = a.fileno()
+    b_fd = b.fileno()
 
-    m1 = orch.create_machine(
-        "vm1",
+    server = orch.create_machine(
+        "server",
         kernel=kernel,
-        root_image=root_image,
+        root_image=server_image,
         bridge=bridge,
         passt_bin=passt_bin,
-        ssh_port=4325,
-        kernel_args=[f"vec1:transport=vde,sock={vlan_sock}"],
+        ssh_port=server_ssh_port,
+        timeout=120,
+        pass_fds=(a_fd,),
+        kernel_args=[f"vec1:transport=fd,fd={a_fd}"],
     )
-    m2 = orch.create_machine(
-        "vm2",
+    client = orch.create_machine(
+        "client",
         kernel=kernel,
-        root_image=root_image,
+        root_image=client_image,
         bridge=bridge,
         passt_bin=passt_bin,
-        ssh_port=4326,
-        kernel_args=[f"vec1:transport=vde,sock={vlan_sock}"],
+        ssh_port=client_ssh_port,
+        timeout=120,
+        pass_fds=(b_fd,),
+        kernel_args=[f"vec1:transport=fd,fd={b_fd}"],
     )
 
-    print("[test] starting VMs ...")
-    await orch.start_all()
+    print("[test] starting VMs (sequential) ...")
+    await orch.start_all(sequential=True)
 
-    print("[test] configuring VDE IPs ...")
-    await m1.succeed("ip addr add 192.168.99.2/24 dev vec1")
-    await m1.succeed("ip link set vec1 up")
-    await m2.succeed("ip addr add 192.168.99.3/24 dev vec1")
-    await m2.succeed("ip link set vec1 up")
+    h1 = await server.succeed("hostname")
+    h2 = await client.succeed("hostname")
+    print(f"[test] hostnames: server={h1}, client={h2}")
 
-    print("[test] testing inter-VM ping ...")
-    await m1.succeed("ping -c2 192.168.99.3")
+    print("[test] checking vec1 IPs ...")
+    s1 = await server.succeed("ip -4 -br addr show vec1")
+    s2 = await client.succeed("ip -4 -br addr show vec1")
+    print(f"[test] server vec1: {s1}")
+    print(f"[test] client vec1: {s2}")
+
+    print("[test] testing inter-VM ping via socketpair ...")
+    await server.succeed("ping -c2 192.168.99.3")
+    await client.succeed("ping -c2 192.168.99.2")
     print("[test] ping OK")
 
-    out1 = await m1.succeed("hostname")
-    out2 = await m2.succeed("hostname")
-    print(f"[test] vm1={out1} vm2={out2}")
-
     print("[test] shutting down ...")
+    await server.execute("systemctl poweroff", check=False)
+    await client.execute("systemctl poweroff", check=False)
     await orch.shutdown_all()
+    a.close()
+    b.close()
     print("[test] done")
 
 
@@ -75,13 +90,23 @@ async def main() -> int:
 
     p = argparse.ArgumentParser()
     p.add_argument("--kernel", type=Path, required=True)
-    p.add_argument("--root-image", type=Path, required=True)
     p.add_argument("--bridge", type=Path, required=True)
     p.add_argument("--passt", type=Path, required=True)
-    p.add_argument("--vde-switch", type=Path, required=True)
+    p.add_argument("--server-image", type=Path, required=True)
+    p.add_argument("--server-ssh-port", type=int, required=True)
+    p.add_argument("--client-image", type=Path, required=True)
+    p.add_argument("--client-ssh-port", type=int, required=True)
     args = p.parse_args()
 
-    await test_vde(args.kernel, args.root_image, args.bridge, args.passt, args.vde_switch)
+    await test_multi(
+        args.kernel,
+        args.bridge,
+        args.passt,
+        args.server_image,
+        args.server_ssh_port,
+        args.client_image,
+        args.client_ssh_port,
+    )
     return 0
 
 

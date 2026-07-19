@@ -11,6 +11,7 @@ let
   inherit (outputs.nixosConfigurations.umn.config.system.build) umlRootfs toplevel;
 in
 {
-  inherit (outputs.nixosConfigurations) umn;
+  inherit (outputs.nixosConfigurations) umn server client;
+  inherit (outputs.packages.${system}) vde-test;
   inherit umlRootfs toplevel;
 }

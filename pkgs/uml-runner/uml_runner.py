@@ -75,6 +75,7 @@ class UmlMachine:
         self.kernel_args = kernel_args or []
         self.vec_arg = vec_arg or "vec0:transport=fd,fd=3"
         self.extra_passt_ports = extra_passt_ports or []
+        self.pass_fds = pass_fds
         self.timeout = timeout
         self.rundir: Path | None = None
         self._process: subprocess.Process | None = None
@@ -113,6 +114,7 @@ class UmlMachine:
             stderr=subprocess.STDOUT,
             env=env,
             preexec_fn=os.setsid,
+            pass_fds=self.pass_fds,
         )
         self._monitor_task = asyncio.create_task(self._monitor_output())
         self._started = True
@@ -321,6 +323,7 @@ class UmlOrchestrator:
         kernel_args: list[str] | None = None,
         vec_arg: str | None = None,
         extra_passt_ports: list[int] | None = None,
+        pass_fds: tuple[int, ...] = (),
         timeout: int = 60,
     ) -> UmlMachine:
         if ssh_port is None:
@@ -335,6 +338,7 @@ class UmlOrchestrator:
             kernel_args=kernel_args,
             vec_arg=vec_arg,
             extra_passt_ports=extra_passt_ports,
+            pass_fds=pass_fds,
             timeout=timeout,
         )
         self.machines.append(m)

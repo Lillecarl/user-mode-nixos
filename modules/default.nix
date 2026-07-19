@@ -12,21 +12,47 @@ let
   imageSize = "512"; # MiB
 in
 {
-  options.boot.uml.sshPort = lib.mkOption {
-    type = lib.types.int;
-    default = 4325;
-    description = "SSH port for the UML guest";
+  options.boot.uml = {
+    sshPort = lib.mkOption {
+      type = lib.types.int;
+      default = 4325;
+      description = "SSH port for the UML guest";
+    };
+    vde = lib.mkOption {
+      type = lib.types.submodule {
+        options = {
+          enable = lib.mkEnableOption "VDE networking between UML VMs";
+          ip = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            example = "192.168.99.2/24";
+            description = "Static IP/CIDR on vec1 (VDE interface)";
+          };
+        };
+      };
+      default = { };
+    };
   };
 
   config = {
     boot.kernelPackages = pkgs.linuxPackages_latest;
 
-  networking.hostName = "umn";
+  networking.hostName = lib.mkDefault "umn";
   networking.useDHCP = false;
   networking.dhcpcd.enable = false;
   networking.firewall.enable = false;
   networking.useNetworkd = true;
   networking.interfaces.vec0.useDHCP = true;
+  networking.interfaces.vec1 = lib.mkIf config.boot.uml.vde.enable {
+    useDHCP = false;
+  } // lib.optionalAttrs (config.boot.uml.vde.ip != null) {
+    ipv4.addresses = let
+      parts = lib.splitString "/" config.boot.uml.vde.ip;
+    in [{
+      address = builtins.elemAt parts 0;
+      prefixLength = lib.toIntBase10 (builtins.elemAt parts 1);
+    }];
+  };
   systemd.services.resolvconf.enable = false;
   systemd.services.systemd-networkd.enable = true;
   systemd.services.systemd-networkd-wait-online.enable = lib.mkForce false;
@@ -92,6 +118,10 @@ in
       ${pkgs.systemd}/bin/shutdown -h now
     '';
   };
+
+  system.build.umlKernel = umlKernel;
+  system.build.umlPasstBridge = umlPasstBridge;
+  system.build.umlRunnerPackage = umlRunner;
 
   system.build.umlInit = pkgs.runCommand "uml-init" { } ''
     mkdir -p $out

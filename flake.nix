@@ -5,10 +5,73 @@
   };
   outputs = inputs: let
     system = "x86_64-linux";
+    pkgs = import inputs.nixpkgs { inherit system; };
+
+    mkUmlVM = { modules ? [], ... }@args:
+      inputs.nixpkgs.lib.nixosSystem ({
+        inherit system;
+        modules = [ ./modules ] ++ modules;
+      } // builtins.removeAttrs args [ "modules" ]);
   in {
-    nixosConfigurations.umn = inputs.nixpkgs.lib.nixosSystem {
-      inherit system;
-      modules = [ ./modules ];
+    nixosConfigurations = {
+      umn = mkUmlVM { };
+
+      server = mkUmlVM {
+        modules = [{
+          networking.hostName = "server";
+          boot.uml.sshPort = 4325;
+          boot.uml.vde = { enable = true; ip = "192.168.99.2/24"; };
+        }];
+      };
+
+      client = mkUmlVM {
+        modules = [{
+          networking.hostName = "client";
+          boot.uml.sshPort = 4326;
+          boot.uml.vde = { enable = true; ip = "192.168.99.3/24"; };
+        }];
+      };
+    };
+
+    packages.${system} = let
+      serverCfg = mkUmlVM {
+        modules = [{
+          networking.hostName = "server";
+          boot.uml.sshPort = 4325;
+          boot.uml.vde = { enable = true; ip = "192.168.99.2/24"; };
+        }];
+      };
+      clientCfg = mkUmlVM {
+        modules = [{
+          networking.hostName = "client";
+          boot.uml.sshPort = 4326;
+          boot.uml.vde = { enable = true; ip = "192.168.99.3/24"; };
+        }];
+      };
+    in {
+      vde-test = pkgs.runCommand "uml-vde-test"
+        {
+          nativeBuildInputs = with pkgs; [
+            python3
+            (python3.withPackages (ps: [ ps.asyncssh ]))
+            serverCfg.config.system.build.umlRunnerPackage
+          ];
+        }
+        ''
+          export HOME="$TMPDIR"
+          export PYTHONPATH="${serverCfg.config.system.build.umlRunnerPackage}/${pkgs.python3.sitePackages}:$PYTHONPATH"
+
+          python3 ${./tests/vde_multi_vm.py} \
+            --kernel ${serverCfg.config.system.build.umlKernel}/linux \
+            --bridge ${serverCfg.config.system.build.umlPasstBridge}/bin/uml-passt-bridge \
+            --passt ${pkgs.passt}/bin/passt \
+            --server-image ${serverCfg.config.system.build.umlRootImage} \
+            --server-ssh-port 4325 \
+            --client-image ${clientCfg.config.system.build.umlRootImage} \
+            --client-ssh-port 4326
+
+          touch $out
+        '';
     };
   };
 }
