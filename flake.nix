@@ -3,6 +3,7 @@
     flake-compatish.url = "github:lillecarl/flake-compatish";
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
   };
+  # v2: socketpair-based inter-VM networking
   outputs = inputs: let
     system = "x86_64-linux";
     pkgs = import inputs.nixpkgs { inherit system; };
