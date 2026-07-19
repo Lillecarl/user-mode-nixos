@@ -82,6 +82,7 @@ class UmlMachine:
         self.timeout = timeout
         self.ready_pattern = ready_pattern
         self.rundir: Path | None = None
+        self.cmddir: Path | None = None
         self._process: subprocess.Process | None = None
         self._output_lines: asyncio.Queue[str] = asyncio.Queue()
         self._output_history: collections.deque[str] = collections.deque(maxlen=2000)
@@ -96,6 +97,7 @@ class UmlMachine:
             return
 
         self.rundir = Path(tempfile.mkdtemp(prefix=f"uml-{self.name}-"))
+        self.cmddir = Path(tempfile.mkdtemp(prefix=f"uml-cmd-{self.name}-"))
         env = os.environ.copy()
         env["PATH"] = f"{self.passt_bin.parent}:{env.get('PATH', '')}"
 
@@ -110,6 +112,7 @@ class UmlMachine:
         cmd.append(f"ubd0={cow},{self.root_image}")
         cmd.extend(["root=/dev/ubda", "rw", "init=/init"])
         cmd.extend(self.kernel_args)
+        cmd.append(f"uml_shared={self.cmddir}")
 
         print(f"[{self.name}] cmd: {' '.join(cmd)}", flush=True)
 
@@ -172,6 +175,10 @@ class UmlMachine:
             import shutil
 
             shutil.rmtree(self.rundir, ignore_errors=True)
+        if self.cmddir and self.cmddir.exists():
+            import shutil
+
+            shutil.rmtree(self.cmddir, ignore_errors=True)
 
     # ── console I/O ─────────────────────────────────────────────────
 
@@ -246,25 +253,101 @@ class UmlMachine:
                     await asyncio.sleep(1)
         raise MachineError(f"[{self.name}] SSH connection failed after retries")
 
+    # ── shared-directory command execution ─────────────────────────
+
+    async def execute_shared(
+        self, command: str, timeout: int | None = None
+    ) -> tuple[int, str]:
+        """Execute a command via shared hostfs directory.
+
+        Works in sandbox environments where TCP/SSH are blocked.
+        Returns (exit_code, stdout).
+        """
+        if self.cmddir is None or not self.cmddir.exists():
+            raise MachineError(f"[{self.name}] shared command dir not available")
+
+        timeout = timeout or self.timeout
+        cmd_file = self.cmddir / "cmd_in"
+        done_file = self.cmddir / "done"
+        out_file = self.cmddir / "out"
+        exit_file = self.cmddir / "exit_code"
+        ready_file = self.cmddir / "guest-ready"
+
+        # Wait for guest to signal readiness
+        deadline = asyncio.get_event_loop().time() + 30
+        while not ready_file.exists():
+            if asyncio.get_event_loop().time() > deadline:
+                raise MachineError(f"[{self.name}] guest never signaled ready")
+            await asyncio.sleep(0.2)
+        print(f"[{self.name}] guest ready", flush=True)
+
+        done_file.unlink(missing_ok=True)
+        for f in (cmd_file, out_file, exit_file):
+            f.unlink(missing_ok=True)
+
+        cmd_file.write_text(command + "\n")
+
+        deadline = asyncio.get_event_loop().time() + timeout
+        while not done_file.exists():
+            if asyncio.get_event_loop().time() > deadline:
+                cmd_file.unlink(missing_ok=True)
+                raise MachineError(
+                    f"[{self.name}] shared command timed out: {command}"
+                )
+            await asyncio.sleep(0.2)
+
+        print(f"[{self.name}] guest ready", flush=True)
+
+        rc = 0
+        try:
+            rc = int(exit_file.read_text().strip())
+        except (ValueError, FileNotFoundError):
+            pass
+
+        stdout = ""
+        try:
+            stdout = out_file.read_text().strip()
+        except FileNotFoundError:
+            pass
+
+        for f in (done_file, cmd_file, out_file, exit_file):
+            f.unlink(missing_ok=True)
+
+        return rc, stdout
+
     # ── test API (nixosTest-compatible) ────────────────────────────
 
     async def execute(
         self, command: str, timeout: int | None = None, check: bool = False
     ) -> tuple[int, str]:
-        """Execute a command via SSH. Returns (exit_code, stdout).
+        """Execute a command. Tries shared-directory first, falls back to SSH.
 
         If *check* is True, raises MachineError on non-zero exit.
         """
         timeout = timeout or self.timeout
+
+        if self.cmddir and self.cmddir.exists():
+            try:
+                rc, stdout = await self.execute_shared(command, timeout=timeout)
+            except MachineError:
+                rc, stdout = await self._execute_ssh(command, timeout=timeout)
+        else:
+            rc, stdout = await self._execute_ssh(command, timeout=timeout)
+
+        if check and rc != 0:
+            raise MachineError(
+                f"[{self.name}] command failed (exit {rc}): "
+                f"{command}\nstdout: {stdout}"
+            )
+        return rc, stdout
+
+    async def _execute_ssh(
+        self, command: str, timeout: int | None = None
+    ) -> tuple[int, str]:
+        timeout = timeout or self.timeout
         async with self._ssh(timeout=timeout) as conn:
             result = await conn.run(command, check=False, timeout=timeout)
             stdout = result.stdout.strip() if result.stdout else ""
-            if check and result.exit_status != 0:
-                stderr = result.stderr.strip() if result.stderr else ""
-                raise MachineError(
-                    f"[{self.name}] command failed (exit {result.exit_status}): "
-                    f"{command}\nstdout: {stdout}\nstderr: {stderr}"
-                )
             return result.exit_status, stdout
 
     async def succeed(self, command: str, timeout: int | None = None) -> str:

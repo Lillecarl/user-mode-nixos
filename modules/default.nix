@@ -141,6 +141,45 @@ in
     '';
   };
 
+  systemd.services.uml-cmd-runner = {
+    description = "Execute commands from host shared directory";
+    wantedBy = [ "multi-user.target" ];
+    after = [ "local-fs.target" ];
+    serviceConfig.Type = "simple";
+    path = with pkgs; [
+      coreutils
+      bash
+      iproute2
+      iputils
+      inetutils
+      procps
+      gnugrep
+      gnused
+      gawk
+    ];
+    script = ''
+      exec >/dev/console 2>&1
+      SHARED=/mnt/uml-shared
+      if ! [ -d "$SHARED" ]; then
+        echo "uml-cmd-runner: shared dir not mounted, exiting"
+        exit 0
+      fi
+      echo "uml-cmd-runner: polling $SHARED/cmd_in"
+      while true; do
+        if ls "$SHARED/cmd_in" >/dev/null 2>&1; then
+          echo "uml-cmd-runner: found cmd_in"
+          rc=0
+          sh -c "$(cat "$SHARED/cmd_in")" </dev/null >"$SHARED/out" 2>"$SHARED/err" || rc=$?
+          echo "$rc" > "$SHARED/exit_code"
+          touch "$SHARED/done"
+          rm -f "$SHARED/cmd_in"
+          echo "uml-cmd-runner: command complete (rc=$rc)"
+        fi
+        sleep 0.2
+      done
+    '';
+  };
+
   systemd.services.uml-shutdown = lib.mkIf config.boot.uml.autoShutdown {
     description = "Shutdown UML after boot";
     wantedBy = [ "multi-user.target" ];
@@ -161,6 +200,11 @@ in
     cat > $out/init <<'HEREDOC'
 #!/bin/sh
 export PATH=/bin
+
+# /proc is needed for /proc/cmdline (init params)
+mkdir -p /proc
+mount -t proc none /proc
+
 echo "Mounting host /nix/store via hostfs ..."
 mkdir -p /host/nix/store
 mount -t hostfs none /host/nix/store -o /nix/store
@@ -170,6 +214,20 @@ mkdir -p /nix/store /nix/.store-upper /nix/.store-work
 mount -t overlay overlay \
   -o lowerdir=/host/nix/store,upperdir=/nix/.store-upper,workdir=/nix/.store-work \
   /nix/store
+
+# Mount shared directory for host-guest communication
+SHARED=""
+for arg in $(cat /proc/cmdline); do
+  case "$arg" in
+    uml_shared=*) SHARED=$(echo "$arg" | cut -d= -f2-) ;;
+  esac
+done
+if [ -n "$SHARED" ]; then
+  echo "Mounting shared dir $SHARED via hostfs ..."
+  mkdir -p /mnt/uml-shared
+  mount -t hostfs none /mnt/uml-shared -o "$SHARED"
+  echo "guest-ping" > /mnt/uml-shared/guest-ready
+fi
 
 echo "Starting NixOS init..."
 exec /sbin/init
@@ -189,7 +247,7 @@ HEREDOC
 
     cp ${pkgs.pkgsStatic.busybox}/bin/busybox root/bin/busybox
     chmod 0555 root/bin/busybox
-    for cmd in sh mkdir mount cat echo ls; do
+    for cmd in sh mkdir mount cat echo ls cut grep sed; do
       ln -sf busybox "root/bin/$cmd"
     done
 

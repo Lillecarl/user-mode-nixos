@@ -73,8 +73,7 @@
             --server-image ${serverCfg.config.system.build.umlRootImage} \
             --server-ssh-port 4325 \
             --client-image ${clientCfg.config.system.build.umlRootImage} \
-            --client-ssh-port 4326 \
-            --console-only
+            --client-ssh-port 4326
 
           touch $out
         '';
