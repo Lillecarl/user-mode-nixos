@@ -51,7 +51,11 @@ class TtyStream(rpyc.core.stream.Stream):
         return bytes(buf)
 
     def write(self, data: bytes) -> None:
-        os.writev(self._fd, [data])
+        while data:
+            n = os.write(self._fd, data)
+            if n <= 0:
+                raise EOFError("TTY write failed")
+            data = data[n:]
 
 
 class UmlRpycService(rpyc.Service):
