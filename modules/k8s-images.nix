@@ -44,7 +44,7 @@ let
       }
     '';
     dontUnpack = true;
-    buildPhase = "gcc -Wall -static -o pause pause.c";
+    buildPhase = "gcc -Wall -static -o pause $src";
     installPhase = "mkdir -p $out; cp pause $out/";
   };
 
