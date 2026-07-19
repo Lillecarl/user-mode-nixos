@@ -16,18 +16,27 @@ import termios
 import tty
 
 import rpyc
+from rpyc.core.consts import STREAM_CHUNK
 from systemd import journal
 
 
 class TtyStream(rpyc.core.stream.Stream):
     """Stream backed by a TTY device in raw mode."""
 
+    MAX_IO_CHUNK = STREAM_CHUNK
+
     def __init__(self, fd: int):
         self._fd = fd
+        self._closed = False
         self._saved = termios.tcgetattr(fd)
         tty.setraw(fd)
 
+    @property
+    def closed(self):
+        return self._closed
+
     def close(self):
+        self._closed = True
         termios.tcsetattr(self._fd, termios.TCSANOW, self._saved)
         os.close(self._fd)
 
