@@ -61,10 +61,11 @@
         }
         ''
           export HOME="$TMPDIR"
+          export PYTHONDONTWRITEBYTECODE=1
           echo "runner=${runner}" >&2
           export PYTHONPATH="${runner}/${pkgs.python3.sitePackages}:$PYTHONPATH"
 
-          python3 ${./tests/vde_multi_vm.py} \
+          python3 -B ${./tests/vde_multi_vm.py} \
             --kernel ${serverCfg.config.system.build.umlKernel}/linux \
             --bridge ${serverCfg.config.system.build.umlPasstBridge}/bin/uml-passt-bridge \
             --passt ${pkgs.passt}/bin/passt \
