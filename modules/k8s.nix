@@ -10,7 +10,7 @@ in
     virtualisation.containerd = {
       enable = true;
       settings = {
-        version = 3;
+        version = lib.mkForce 3;
         plugins."io.containerd.grpc.v1.cri" = {
           containerd.runtimes.runc.options.SystemdCgroup = true;
           cni.bin_dir = "/opt/cni/bin";
