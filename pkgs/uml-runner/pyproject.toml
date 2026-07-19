@@ -11,6 +11,7 @@ dependencies = ["asyncssh", "rpyc", "systemd-python"]
 [project.scripts]
 uml-runner = "uml_runner:main_cli"
 uml-rpyc-server = "uml_rpyc_server:main_cli"
+uml-units = "uml_units:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["."]

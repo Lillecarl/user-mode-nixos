@@ -123,6 +123,15 @@ async def test_multi(
     await client.succeed("ping -c2 192.168.99.2")
     print("[test] ping OK")
 
+    print("[test] arpyc: listing server systemd units ...")
+    units = await server.list_units("*.service")
+    for u in units[:8]:
+        sub = u.get("sub", "")
+        flag = {"running": "+", "exited": "o", "failed": "!"}.get(sub, " ")
+        print(f"  {flag} {u['name'][:30]:30s} {sub:10s}")
+    unit_state = await server.get_unit_state_rpyc("uml-rpyc-server.service")
+    print(f"[test] uml-rpyc-server state: {unit_state}")
+
     print("[test] shutting down ...")
     await server.execute("systemctl poweroff", check=False)
     await client.execute("systemctl poweroff", check=False)
