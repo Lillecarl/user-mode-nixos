@@ -22,38 +22,6 @@ let
   k8s = pkgs.kubernetes;
   version = k8s.version;
 
-  pauseBin = pkgs.buildGoModule {
-    name = "pause";
-    src = pkgs.runCommand "pause-src" { } ''
-      mkdir -p $out
-      cat > $out/main.go <<'GO'
-      package main
-      import (
-        "os"
-        "os/signal"
-        "syscall"
-      )
-      func main() {
-        ch := make(chan os.Signal, 16)
-        signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM, syscall.SIGCHLD)
-        for s := range ch {
-          if s == syscall.SIGCHLD {
-            var ws syscall.WaitStatus
-            syscall.Wait4(-1, &ws, syscall.WNOHANG, nil)
-            continue
-          }
-          os.Exit(0)
-        }
-      }
-      GO
-      cat > $out/go.mod <<'GM'
-      module pause
-      go 1.23
-      GM
-    '';
-    vendorHash = null;
-  };
-
   mkBinLayer = name: bin: pkgs.runCommand "${builtins.replaceStrings ["/"] ["-"] name}-layer" { } ''
     mkdir -p $out/$(dirname ${name})
     cp ${bin} $out/${name}
@@ -83,8 +51,8 @@ let
     (dockerTools.buildLayeredImage {
       name = "registry.k8s.io/pause";
       tag = "3.10";
-      contents = [ pauseBin ];
-      config.Entrypoint = [ "/pause" ];
+      contents = [ pkgs.kubernetes.pause ];
+      config.Entrypoint = [ "/bin/pause" ];
     })
   ];
 in
