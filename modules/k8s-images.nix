@@ -43,7 +43,8 @@ let
         return 0;
       }
     '';
-    buildPhase = "${pkgs.stdenv.cc.targetPrefix}gcc -Wall -static -o pause $src";
+    dontUnpack = true;
+    buildPhase = "gcc -Wall -static -o pause pause.c";
     installPhase = "mkdir -p $out; cp pause $out/";
   };
 
