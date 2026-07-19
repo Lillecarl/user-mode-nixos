@@ -51,7 +51,7 @@ let
       go 1.23
       GM
     '';
-    vendorHash = "";
+    vendorHash = null;
   };
 
   mkBinLayer = name: bin: pkgs.runCommand "${builtins.replaceStrings ["/"] ["-"] name}-layer" { } ''
