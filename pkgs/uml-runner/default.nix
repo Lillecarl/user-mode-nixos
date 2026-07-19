@@ -12,6 +12,7 @@ python3Packages.buildPythonApplication {
   propagatedBuildInputs = [
     python3Packages.asyncssh
     python3Packages.rpyc
+    python3Packages.systemd-python
   ];
 
   meta = with lib; {

@@ -127,5 +127,9 @@ async def main() -> None:
     await arpyc_serve(fd, service)
 
 
-if __name__ == "__main__":
+def main_cli() -> None:
     asyncio.run(main())
+
+
+if __name__ == "__main__":
+    main_cli()

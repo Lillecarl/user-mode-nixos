@@ -9,19 +9,6 @@ let
   umlRunner = pkgs.callPackage ../pkgs/uml-runner { };
   umlPasstBridge = pkgs.callPackage ../pkgs/uml-passt-bridge { };
 
-  arpycSrc = builtins.path {
-    path = ../pkgs/uml-runner;
-    name = "uml-rpyc-scripts";
-    filter = path: type: builtins.elem (baseNameOf path) ["uml_rpyc_server.py" "uml_arpyc.py"];
-  };
-
-  rpycPyEnv = pkgs.python3.withPackages (ps: [
-    ps.rpyc
-    ps.systemd-python
-  ]);
-
-  rpycServerScript = "${arpycSrc}/uml_rpyc_server.py";
-
   imageSize = "512"; # MiB
 in
 {
@@ -202,7 +189,7 @@ in
     bindsTo = [ "dev-ttyS0.device" ];
     serviceConfig = {
       Type = "simple";
-      ExecStart = "${rpycPyEnv}/bin/python3 ${rpycServerScript}";
+      ExecStart = "${umlRunner}/bin/uml-rpyc-server";
       StandardOutput = "journal+console";
       StandardError = "journal+console";
       Environment = "PATH=/run/current-system/sw/bin";

@@ -6,10 +6,11 @@ build-backend = "hatchling.build"
 name = "uml-runner"
 version = "0.1.0"
 requires-python = ">=3.10"
-dependencies = ["asyncssh"]
+dependencies = ["asyncssh", "rpyc", "systemd-python"]
 
 [project.scripts]
 uml-runner = "uml_runner:main_cli"
+uml-rpyc-server = "uml_rpyc_server:main_cli"
 
 [tool.hatch.build.targets.wheel]
 packages = ["."]
