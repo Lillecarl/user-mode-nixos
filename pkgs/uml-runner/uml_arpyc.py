@@ -225,10 +225,10 @@ class AsyncConnection:
         }
 
     def _handle_method(
-        self, method: str, args: tuple, kwargs: dict
+        self, method: str, args: tuple, kwargs: tuple
     ) -> Any:
         func = getattr(self._service, "exposed_" + method)
-        return func(*args, **kwargs)
+        return func(*args, **dict(kwargs))
 
     # ── box / unbox ───────────────────────────────────────────
 
@@ -329,7 +329,8 @@ class AsyncConnection:
         self, name: str, args: tuple, kwargs: dict
     ) -> Any:
         """Call ``exposed_<name>`` on the remote service."""
-        return await self.sync_request(HANDLE_METHOD, name, args, kwargs)
+        kw_tuples = tuple(kwargs.items())
+        return await self.sync_request(HANDLE_METHOD, name, args, kw_tuples)
 
     # ── lifecycle ─────────────────────────────────────────────
 
