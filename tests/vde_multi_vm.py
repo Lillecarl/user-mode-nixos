@@ -28,7 +28,6 @@ async def test_multi(
 ):
     orch = UmlOrchestrator()
 
-    # Create Unix socketpair for inter-VM L2 link
     a, b = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
     a.set_inheritable(True)
     b.set_inheritable(True)
