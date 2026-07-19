@@ -72,6 +72,36 @@ in
       deps = [];
     };
 
+    # ── pre-pull images at boot ─────────────────────────────────
+
+    systemd.services.kubeadm-pull-images = {
+      description = "Pre-pull kubeadm container images";
+      wantedBy = [ "multi-user.target" ];
+      before = [ "kubelet.service" ];
+      after = [ "network-online.target" "containerd.service" ];
+      requires = [ "containerd.service" ];
+      path = [ pkgs.kubernetes ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        Environment = "PATH=/run/current-system/sw/bin";
+      };
+      script = ''
+        max_attempts=10
+        for i in $(seq $max_attempts); do
+          if kubeadm config images pull --kubernetes-version=${kubernetes.version} \
+               --ignore-preflight-errors=all 2>&1; then
+            echo "kubeadm-pull-images: OK"
+            exit 0
+          fi
+          echo "kubeadm-pull-images: attempt $i/$max_attempts failed, retrying in 5s"
+          sleep 5
+        done
+        echo "kubeadm-pull-images: FAILED after $max_attempts attempts"
+        exit 1
+      '';
+    };
+
     # ── kubelet ─────────────────────────────────────────────────
 
     systemd.services.kubelet = {

@@ -50,6 +50,14 @@ async def _run(orch, leader, follower, leader_ip, follower_ip):
     _, hostname = await leader.execute("hostname")
     print(f"[k8s] leader: {hostname}")
 
+    # ── wait for pre-pulled images ─────────────────────────────
+
+    print("[k8s] leader: waiting for image pre-pull ...")
+    state = await leader.get_unit_state_rpyc("kubeadm-pull-images.service")
+    print(f"[k8s] leader: kubeadm-pull-images state={state}")
+    if state == "failed":
+        raise MachineError("[leader] kubeadm-pull-images failed")
+
     # ── kubeadm init on leader ─────────────────────────────────
 
     print("[k8s] leader: running kubeadm init (this takes a minute) ...")
