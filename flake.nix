@@ -59,7 +59,7 @@
         {
           nativeBuildInputs = with pkgs; [
             python3
-            (python3.withPackages (ps: [ ps.asyncssh ]))
+            (python3.withPackages (ps: [ ps.asyncssh ps.rpyc ]))
           ];
         }
         ''
