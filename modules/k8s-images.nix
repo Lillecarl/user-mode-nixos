@@ -22,30 +22,36 @@ let
   k8s = pkgs.kubernetes;
   version = k8s.version;
 
-  pauseBin = pkgs.stdenv.mkDerivation {
+  pauseBin = pkgs.buildGoModule {
     name = "pause";
-    src = writeText "pause.c" ''
-      #include <signal.h>
-      #include <stdio.h>
-      #include <stdlib.h>
-      #include <string.h>
-      #include <sys/wait.h>
-      #include <unistd.h>
-      static void sigdown(int signo) { exit(0); }
-      static void sigreap(int signo) {
-        while (waitpid(-1, NULL, WNOHANG) > 0);
+    src = pkgs.runCommand "pause-src" { } ''
+      mkdir -p $out
+      cat > $out/main.go <<'GO'
+      package main
+      import (
+        "os"
+        "os/signal"
+        "syscall"
+      )
+      func main() {
+        ch := make(chan os.Signal, 16)
+        signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM, syscall.SIGCHLD)
+        for s := range ch {
+          if s == syscall.SIGCHLD {
+            var ws syscall.WaitStatus
+            syscall.Wait4(-1, &ws, syscall.WNOHANG, nil)
+            continue
+          }
+          os.Exit(0)
+        }
       }
-      int main() {
-        if (signal(SIGINT, sigdown) == SIG_ERR) return 1;
-        if (signal(SIGTERM, sigdown) == SIG_ERR) return 1;
-        if (signal(SIGCHLD, sigreap) == SIG_ERR) return 1;
-        for (;;) pause();
-        return 0;
-      }
+      GO
+      cat > $out/go.mod <<'GM'
+      module pause
+      go 1.23
+      GM
     '';
-    dontUnpack = true;
-    buildPhase = "gcc -Wall -static -o pause $src";
-    installPhase = "mkdir -p $out; cp pause $out/";
+    vendorHash = "";
   };
 
   mkBinLayer = name: bin: pkgs.runCommand "${builtins.replaceStrings ["/"] ["-"] name}-layer" { } ''
