@@ -76,7 +76,7 @@ in
   boot.loader.systemd-boot.enable = false;
   system.build.installBootLoader = "${pkgs.coreutils}/bin/true";
 
-  security.wrappers.enable = false;
+  security.enableWrappers = false;
 
   systemd.services.systemd-random-seed.enable = false;
   systemd.services.nsncd.enable = false;
