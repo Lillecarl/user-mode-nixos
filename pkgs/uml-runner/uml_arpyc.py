@@ -294,7 +294,11 @@ class AsyncConnection:
             return consts.LABEL_VALUE, obj
         if type(obj) is tuple:
             return consts.LABEL_TUPLE, tuple(self._box(item) for item in obj)
-        # Fallback: pass by value (only simple types expected)
+        if isinstance(obj, list):
+            return consts.LABEL_TUPLE, tuple(self._box(item) for item in obj)
+        if isinstance(obj, dict):
+            items = tuple((k, self._box(v)) for k, v in obj.items())
+            return (99, items)  # 99 = dict marker
         return consts.LABEL_VALUE, obj
 
     def _unbox(self, package: tuple) -> Any:
@@ -303,10 +307,14 @@ class AsyncConnection:
             return value
         if label == consts.LABEL_TUPLE:
             return tuple(self._unbox(item) for item in value)
+        if label == 99:
+            return {k: self._unbox(v) for k, v in value}
         return value
 
     def _box_exc(self, typ: type, val: BaseException, tb: Any) -> bytes:
-        return vinegar.dump(typ, val, tb, include_local_traceback=True)
+        return vinegar.dump(typ, val, tb,
+                            include_local_traceback=True,
+                            include_local_version=True)
 
     def _unbox_exc(self, raw: bytes) -> BaseException:
         return vinegar.load(raw, import_custom_exceptions=False)
