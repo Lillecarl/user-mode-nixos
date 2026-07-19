@@ -43,7 +43,7 @@ def _make_ssl_pair(host_target: int, uml_target: int) -> tuple[int, int]:
     return host_fd, uml_fd
 
 
-async def _run(orch, leader, follower, leader_ip, follower_ip, k8s_version):
+async def _run(orch, leader, follower, leader_ip, follower_ip):
     print("[k8s] booting VMs ...")
     await orch.start_all(sequential=False)
 
@@ -57,43 +57,9 @@ async def _run(orch, leader, follower, leader_ip, follower_ip, k8s_version):
 
     # ── kubeadm init on leader ─────────────────────────────────
 
-    init_config = f'''apiVersion: kubeadm.k8s.io/v1beta3
-kind: InitConfiguration
-localAPIEndpoint:
-  advertiseAddress: {leader_ip}
-nodeRegistration:
-  name: k8s-leader
-  criSocket: unix:///run/containerd/containerd.sock
-  ignorePreflightErrors:
-  - all
-patches:
-  directory: /etc/kubernetes/patches
----
-apiVersion: kubeadm.k8s.io/v1beta3
-kind: ClusterConfiguration
-imageRepository: registry.k8s.io
-networking:
-  podSubnet: 10.244.0.0/16
-dns:
-  imageRepository: registry.k8s.io/coredns
-  imageTag: {k8s_version}
-etcd:
-  local:
-    imageRepository: registry.k8s.io
-    imageTag: {k8s_version}
-'''
-
-    print("[k8s] leader: writing kubeadm init config ...")
-    rc, _ = await leader.execute(
-        f"cat > /root/kubeadm-init.yaml << 'KUBEADM_EOF'\n{init_config}\nKUBEADM_EOF",
-        timeout=10,
-    )
-    if rc != 0:
-        raise MachineError("[leader] failed to write kubeadm config")
-
     print("[k8s] leader: running kubeadm init (this takes a minute) ...")
     rc, stdout = await leader.execute(
-        "kubeadm init --config /root/kubeadm-init.yaml",
+        "kubeadm init --config /etc/kubernetes/kubeadm-init.yaml",
         timeout=300,
     )
     if rc != 0:
@@ -163,7 +129,6 @@ async def main() -> int:
     p.add_argument("--passt", type=Path, required=True)
     p.add_argument("--leader-image", type=Path, required=True)
     p.add_argument("--follower-image", type=Path, required=True)
-    p.add_argument("--k8s-version", type=str, required=True)
     args = p.parse_args()
 
     orch = UmlOrchestrator()
@@ -219,7 +184,7 @@ async def main() -> int:
     leader_ip = "10.100.0.1"
     follower_ip = "10.100.0.2"
 
-    await _run(orch, leader, follower, leader_ip, follower_ip, args.k8s_version)
+    await _run(orch, leader, follower, leader_ip, follower_ip)
     return 0
 
 

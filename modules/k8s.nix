@@ -95,6 +95,35 @@ in
             mountPath: /nix/store
     '';
 
+    # ── kubeadm init config (overrides image tags for offline) ─
+
+    environment.etc."kubernetes/kubeadm-init.yaml".text = ''
+      apiVersion: kubeadm.k8s.io/v1beta3
+      kind: InitConfiguration
+      localAPIEndpoint:
+        advertiseAddress: 10.100.0.1
+      nodeRegistration:
+        name: k8s-leader
+        criSocket: unix:///run/containerd/containerd.sock
+        ignorePreflightErrors:
+        - all
+      patches:
+        directory: /etc/kubernetes/patches
+      ---
+      apiVersion: kubeadm.k8s.io/v1beta3
+      kind: ClusterConfiguration
+      imageRepository: registry.k8s.io
+      networking:
+        podSubnet: 10.244.0.0/16
+      dns:
+        imageRepository: registry.k8s.io/coredns
+        imageTag: v${pkgs.kubernetes.version}
+      etcd:
+        local:
+          imageRepository: registry.k8s.io
+          imageTag: v${pkgs.kubernetes.version}
+    '';
+
     system.activationScripts.cni-install = {
       text = ''
         mkdir -p /opt/cni/bin
