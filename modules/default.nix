@@ -66,6 +66,8 @@ in
       }];
     }
   );
+  systemd.services."serial-getty@".enable = false;
+  systemd.services."serial-getty@ttyS0".enable = false;
   systemd.services.resolvconf.enable = false;
   systemd.services.systemd-networkd.enable = true;
   systemd.services.systemd-networkd-wait-online.enable = lib.mkForce false;
@@ -176,6 +178,42 @@ in
           echo "uml-cmd-runner: command complete (rc=$rc)"
         fi
         sleep 0.2
+      done
+    '';
+  };
+
+  systemd.services.uml-serial-runner = {
+    description = "Execute commands from UML SSL serial line";
+    wantedBy = [ "multi-user.target" ];
+    after = [ "dev-ttyS0.device" ];
+    bindsTo = [ "dev-ttyS0.device" ];
+    serviceConfig.Type = "simple";
+    path = with pkgs; [
+      coreutils
+      bash
+      iproute2
+      iputils
+      inetutils
+      procps
+      gnugrep
+      gnused
+      gawk
+    ];
+    script = ''
+      exec >/dev/console 2>&1
+      echo "uml-serial-runner: waiting for /dev/ttyS0"
+      while ! [ -c /dev/ttyS0 ]; do sleep 0.5; done
+      exec 3<>/dev/ttyS0
+      stty raw -echo <&3
+      echo "uml-serial-runner: ready on /dev/ttyS0"
+      while read -r cmd <&3; do
+        [ -z "$cmd" ] && continue
+        echo "uml-serial-runner: cmd=$cmd"
+        output=$(sh -c "$cmd" 2>&1)
+        rc=$?
+        printf '%d\n' "$rc" >&3
+        printf '%s\n' "$output" >&3
+        printf '%s\n' "__END__" >&3
       done
     '';
   };

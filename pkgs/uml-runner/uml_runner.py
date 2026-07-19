@@ -23,6 +23,7 @@ import collections
 import os
 import re
 import signal
+import socket
 import sys
 import tempfile
 from asyncio import subprocess
@@ -39,6 +40,19 @@ SSH_PASSWORD = "Flagpole3.Equinox.Grasp"
 
 def strip_ansi(line: str) -> str:
     return ANSI_RE.sub("", line)
+
+
+async def _readline(sock: socket.socket, loop) -> bytes:
+    """Read a line from a non-blocking socket using the event loop."""
+    buf = bytearray()
+    while True:
+        ch = await loop.sock_recv(sock, 1)
+        if not ch:
+            raise ConnectionError("SSL serial line closed")
+        if ch == b"\n":
+            break
+        buf.extend(ch)
+    return bytes(buf)
 
 
 class MachineError(Exception):
@@ -65,6 +79,7 @@ class UmlMachine:
         vec_arg: str | None = None,
         extra_passt_ports: list[int] | None = None,
         pass_fds: tuple[int, ...] = (),
+        ssl_fd: int | None = None,
         timeout: int = 60,
         ready_pattern: str | re.Pattern | None = "Started SSH Daemon",
     ):
@@ -79,6 +94,7 @@ class UmlMachine:
         self.vec_arg = vec_arg or "vec0:transport=fd,fd=3"
         self.extra_passt_ports = extra_passt_ports or []
         self.pass_fds = pass_fds
+        self.ssl_fd = ssl_fd
         self.timeout = timeout
         self.ready_pattern = ready_pattern
         self.rundir: Path | None = None
@@ -87,6 +103,7 @@ class UmlMachine:
         self._output_lines: asyncio.Queue[str] = asyncio.Queue()
         self._output_history: collections.deque[str] = collections.deque(maxlen=2000)
         self._monitor_task: asyncio.Task | None = None
+        self._ssl_sock: socket.socket | None = None
         self._started = False
 
     # ── lifecycle ──────────────────────────────────────────────────
@@ -142,8 +159,16 @@ class UmlMachine:
 
         await asyncio.sleep(1)
 
+        if self.ssl_fd is not None:
+            self._ssl_sock = socket.socket(fileno=self.ssl_fd)
+            self._ssl_sock.setblocking(False)
+            self._ssl_sock.sendall(b"\n")
+
     async def shutdown(self) -> None:
         """Gracefully shut down the VM and clean up."""
+        if self._ssl_sock:
+            self._ssl_sock.close()
+            self._ssl_sock = None
         if self._process and self._process.returncode is None:
             try:
                 self._terminate()
@@ -255,6 +280,41 @@ class UmlMachine:
 
     # ── shared-directory command execution ─────────────────────────
 
+    async def execute_serial(
+        self, command: str, timeout: int | None = None
+    ) -> tuple[int, str]:
+        """Execute a command via UML SSL serial line.
+
+        Returns (exit_code, stdout).
+        """
+        if self._ssl_sock is None:
+            raise MachineError(f"[{self.name}] SSL serial line not available")
+
+        timeout = timeout or self.timeout
+        loop = asyncio.get_event_loop()
+
+        await loop.sock_sendall(
+            self._ssl_sock, (command + "\n").encode()
+        )
+
+        async def _read_until_marker() -> tuple[int, str]:
+            rc_line = await asyncio.wait_for(
+                _readline(self._ssl_sock, loop), timeout=timeout
+            )
+            rc = int(rc_line.strip())
+            lines = []
+            while True:
+                line = await asyncio.wait_for(
+                    _readline(self._ssl_sock, loop), timeout=timeout
+                )
+                stripped = line.strip()
+                if stripped == b"__END__":
+                    break
+                lines.append(line.decode(errors="replace"))
+            return rc, "".join(lines).rstrip("\n")
+
+        return await _read_until_marker()
+
     async def execute_shared(
         self, command: str, timeout: int | None = None
     ) -> tuple[int, str]:
@@ -320,13 +380,15 @@ class UmlMachine:
     async def execute(
         self, command: str, timeout: int | None = None, check: bool = False
     ) -> tuple[int, str]:
-        """Execute a command. Tries shared-directory first, falls back to SSH.
+        """Execute a command. Prefers serial, then shared-dir, then SSH.
 
         If *check* is True, raises MachineError on non-zero exit.
         """
         timeout = timeout or self.timeout
 
-        if self.cmddir and self.cmddir.exists():
+        if self._ssl_sock is not None:
+            rc, stdout = await self.execute_serial(command, timeout=timeout)
+        elif self.cmddir and self.cmddir.exists():
             try:
                 rc, stdout = await self.execute_shared(command, timeout=timeout)
             except MachineError:
@@ -426,6 +488,7 @@ class UmlOrchestrator:
         vec_arg: str | None = None,
         extra_passt_ports: list[int] | None = None,
         pass_fds: tuple[int, ...] = (),
+        ssl_fd: int | None = None,
         timeout: int = 60,
         ready_pattern: str | None = None,
     ) -> UmlMachine:
@@ -442,6 +505,7 @@ class UmlOrchestrator:
             vec_arg=vec_arg,
             extra_passt_ports=extra_passt_ports,
             pass_fds=pass_fds,
+            ssl_fd=ssl_fd,
             timeout=timeout,
             ready_pattern=ready_pattern,
         )

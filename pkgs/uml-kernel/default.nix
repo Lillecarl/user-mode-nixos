@@ -42,6 +42,7 @@ let
     BLK_DEV_LOOP = yes;
     BLK_DEV_UBD = yes;
     TUN = yes;
+    SSL = yes;
     PRINTK = yes;
     EARLY_PRINTK = yes;
 

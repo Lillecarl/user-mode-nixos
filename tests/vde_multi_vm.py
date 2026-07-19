@@ -4,13 +4,13 @@
 Two UML VMs connected directly via a Unix socketpair passed as fd transport.
 Tests inter-VM L2 connectivity with ping.
 
-Command execution uses hostfs shared-directory for sandbox safety
-(falls back to SSH outside sandbox). Inter-VM ping is verified via
-the auto-test service (uml-vde-test) and confirmed via shared-dir execute.
+Host-guest command execution uses UML SSL serial line (socketpair fd transport).
+Falls back to hostfs shared-directory, then SSH.
 
 Architecture:
-  vec0 = passt fd  (DHCP from passt, SSH from host)
-  vec1 = fd pair   (direct VM-to-VM L2 via socketpair)
+  vec0 = passt fd   (DHCP from passt)
+  vec1 = fd pair    (direct VM-to-VM L2 via socketpair)
+  ssl0 = fd pair    (host-to-guest serial line /dev/ttyS0)
 """
 
 import asyncio
@@ -23,13 +23,28 @@ from uml_runner import UmlOrchestrator
 
 _VEC_FD_SERVER = 50
 _VEC_FD_CLIENT = 51
+_SSL_SERVER_HOST = 52
+_SSL_SERVER_UML = 53
+_SSL_CLIENT_HOST = 54
+_SSL_CLIENT_UML = 55
 
 
 def _move_fd(sock: socket.socket, target_fd: int) -> int:
-    """Move a socket's fd to a specific number, returning the old fd."""
     old = sock.fileno()
     os.dup2(old, target_fd)
     return target_fd
+
+
+def _make_ssl_pair(host_target: int, uml_target: int) -> tuple[int, int]:
+    """Create a socketpair for SSL serial, move to target fds."""
+    a, b = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+    host_fd = _move_fd(a, host_target)
+    uml_fd = _move_fd(b, uml_target)
+    a.close()
+    b.close()
+    os.set_inheritable(host_fd, True)
+    os.set_inheritable(uml_fd, True)
+    return host_fd, uml_fd
 
 
 async def test_multi(
@@ -44,12 +59,19 @@ async def test_multi(
     orch = UmlOrchestrator()
 
     a, b = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
-    a_fd = _move_fd(a, _VEC_FD_SERVER)
-    b_fd = _move_fd(b, _VEC_FD_CLIENT)
+    vec_server_fd = _move_fd(a, _VEC_FD_SERVER)
+    vec_client_fd = _move_fd(b, _VEC_FD_CLIENT)
     a.close()
     b.close()
-    os.set_inheritable(a_fd, True)
-    os.set_inheritable(b_fd, True)
+    os.set_inheritable(vec_server_fd, True)
+    os.set_inheritable(vec_client_fd, True)
+
+    ssl_server_host, ssl_server_uml = _make_ssl_pair(
+        _SSL_SERVER_HOST, _SSL_SERVER_UML
+    )
+    ssl_client_host, ssl_client_uml = _make_ssl_pair(
+        _SSL_CLIENT_HOST, _SSL_CLIENT_UML
+    )
 
     server = orch.create_machine(
         "server",
@@ -59,9 +81,13 @@ async def test_multi(
         passt_bin=passt_bin,
         ssh_port=server_ssh_port,
         timeout=120,
-        pass_fds=(a_fd,),
-        kernel_args=[f"vec1:transport=fd,fd={a_fd}"],
-        ready_pattern="Reached target Multi-User System",
+        pass_fds=(vec_server_fd, ssl_server_uml),
+        ssl_fd=ssl_server_host,
+        kernel_args=[
+            f"vec1:transport=fd,fd={vec_server_fd}",
+            f"ssl0=fd:{ssl_server_uml}",
+        ],
+        ready_pattern="uml-serial-runner: ready",
     )
     client = orch.create_machine(
         "client",
@@ -71,9 +97,13 @@ async def test_multi(
         passt_bin=passt_bin,
         ssh_port=client_ssh_port,
         timeout=120,
-        pass_fds=(b_fd,),
-        kernel_args=[f"vec1:transport=fd,fd={b_fd}"],
-        ready_pattern="Reached target Multi-User System",
+        pass_fds=(vec_client_fd, ssl_client_uml),
+        ssl_fd=ssl_client_host,
+        kernel_args=[
+            f"vec1:transport=fd,fd={vec_client_fd}",
+            f"ssl0=fd:{ssl_client_uml}",
+        ],
+        ready_pattern="uml-serial-runner: ready",
     )
 
     print("[test] starting VMs (parallel) ...")
@@ -97,8 +127,6 @@ async def test_multi(
     await server.execute("systemctl poweroff", check=False)
     await client.execute("systemctl poweroff", check=False)
     await orch.shutdown_all()
-    a.close()
-    b.close()
     print("[test] done")
 
 
