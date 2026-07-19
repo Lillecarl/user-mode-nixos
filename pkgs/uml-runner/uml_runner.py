@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Callable
 
 import asyncssh
-import rpyc
+from uml_arpyc import arpyc_connect, AsyncConnection
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
 SSH_PORT = 4325
@@ -93,7 +93,7 @@ class UmlMachine:
         self._output_history: collections.deque[str] = collections.deque(maxlen=2000)
         self._monitor_task: asyncio.Task | None = None
         self._ssl_sock: socket.socket | None = None
-        self._rpyc_conn: rpyc.Connection | None = None
+        self._arpyc_conn: AsyncConnection | None = None
         self._started = False
 
     # ── lifecycle ──────────────────────────────────────────────────
@@ -150,25 +150,19 @@ class UmlMachine:
         await asyncio.sleep(1)
 
         if self.ssl_fd is not None:
-            self._ssl_sock = socket.socket(fileno=self.ssl_fd)
-
-            def _do_rpyc_connect():
-                stream = rpyc.SocketStream(self._ssl_sock)
-                return rpyc.connect_stream(stream)
-
-            loop = asyncio.get_event_loop()
-            self._rpyc_conn = await loop.run_in_executor(
-                None, _do_rpyc_connect
+            reader, writer = await asyncio.open_connection(
+                sock=socket.socket(fileno=self.ssl_fd)
             )
+            self._arpyc_conn = await arpyc_connect(reader, writer)
 
     async def shutdown(self) -> None:
         """Gracefully shut down the VM and clean up."""
-        if self._rpyc_conn:
+        if self._arpyc_conn:
             try:
-                self._rpyc_conn.close()
+                self._arpyc_conn.close()
             except Exception:
                 pass
-            self._rpyc_conn = None
+            self._arpyc_conn = None
         if self._ssl_sock:
             self._ssl_sock.close()
             self._ssl_sock = None
@@ -286,51 +280,30 @@ class UmlMachine:
     async def execute_rpyc(
         self, command: str, timeout: int | None = None
     ) -> tuple[int, str]:
-        """Execute a shell command via rpyc in the guest.
-
-        Returns (exit_code, stdout).
-        """
-        if self._rpyc_conn is None:
-            raise MachineError(f"[{self.name}] rpyc not connected")
-
+        """Execute a shell command via async rpyc in the guest."""
+        if self._arpyc_conn is None:
+            raise MachineError(f"[{self.name}] arpyc not connected")
         timeout = timeout or self.timeout
-        loop = asyncio.get_event_loop()
-
-        def _run():
-            return self._rpyc_conn.root.run(command, timeout=timeout)
-
-        rc, stdout = await loop.run_in_executor(None, _run)
+        rc, stdout = await self._arpyc_conn.root.run(command, timeout=timeout)
         return rc, stdout
 
     async def list_units(self, pattern: str = "*") -> list[dict]:
-        """List systemd units via rpyc."""
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(
-            None, lambda: self._rpyc_conn.root.list_units(pattern)
-        )
+        """List systemd units via arpyc."""
+        return await self._arpyc_conn.root.list_units(pattern)
 
     async def get_unit_info_rpyc(self, unit_name: str) -> dict[str, str]:
-        """Get systemd unit properties via rpyc."""
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(
-            None, lambda: self._rpyc_conn.root.get_unit_info(unit_name)
-        )
+        """Get systemd unit properties via arpyc."""
+        return await self._arpyc_conn.root.get_unit_info(unit_name)
 
     async def get_unit_state_rpyc(self, unit_name: str) -> str:
-        """Get ActiveState of a systemd unit via rpyc."""
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(
-            None, lambda: self._rpyc_conn.root.get_unit_state(unit_name)
-        )
+        """Get ActiveState of a systemd unit via arpyc."""
+        return await self._arpyc_conn.root.get_unit_state(unit_name)
 
     async def journal_messages(
         self, unit: str | None = None, count: int = 50
     ) -> list[str]:
-        """Get journal messages via rpyc."""
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(
-            None, lambda: self._rpyc_conn.root.journal_messages(unit, count)
-        )
+        """Get journal messages via arpyc."""
+        return await self._arpyc_conn.root.journal_messages(unit, count)
 
     async def wait_for_unit_rpyc(
         self, unit: str, timeout: int = 900
@@ -422,7 +395,7 @@ class UmlMachine:
         """
         timeout = timeout or self.timeout
 
-        if self._rpyc_conn is not None:
+        if self._arpyc_conn is not None:
             rc, stdout = await self.execute_rpyc(command, timeout=timeout)
         elif self.cmddir and self.cmddir.exists():
             try:

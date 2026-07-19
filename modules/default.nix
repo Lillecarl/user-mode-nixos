@@ -12,6 +12,7 @@ let
   rpycPyEnv = pkgs.python3.withPackages (ps: [
     ps.rpyc
     ps.systemd-python
+    umlRunner
   ]);
 
   imageSize = "512"; # MiB
