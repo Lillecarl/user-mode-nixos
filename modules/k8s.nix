@@ -218,6 +218,7 @@ in
           "--bootstrap-kubeconfig=/etc/kubernetes/bootstrap-kubelet.conf"
           + " --kubeconfig=/etc/kubernetes/kubelet.conf";
         KUBELET_CONFIG_ARGS = "--config=/var/lib/kubelet/config.yaml";
+        KUBELET_EXTRA_ARGS = "--cpu-cfs-quota=false";
       };
     };
 
