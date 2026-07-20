@@ -28,6 +28,8 @@
 
   config = lib.mkMerge [
     (lib.mkIf config.services.iperf3-server.enable {
+      systemd.services.uml-rpyc-server.path = with pkgs; [ iperf3 ];
+
       systemd.services.iperf3-server = {
         description = "iperf3 server";
         wantedBy = [ "multi-user.target" ];
@@ -70,6 +72,8 @@
     })
 
     (lib.mkIf config.services.speedtest.enable {
+      systemd.services.uml-rpyc-server.path = with pkgs; [ speedtest-cli ];
+
       systemd.services.speedtest = {
         description = "speedtest-cli";
         wantedBy = [ "multi-user.target" ];
