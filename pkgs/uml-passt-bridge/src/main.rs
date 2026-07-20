@@ -44,8 +44,8 @@ fn read_exact(fd: i32, buf: &mut [u8]) -> io::Result<()> {
 fn main() {
     let args: Vec<String> = env::args().collect();
     let mut passt_ports: Vec<String> = Vec::new();
-    let mut vec_arg = "vec0:transport=fd,fd=3".to_string();
-    let mut kernel_idx = 1;
+    let mut vec_arg = "vec0:transport=fd,fd=3,depth=512,gro=1".to_string();
+    let mut passt_one_off = true;
 
     let mut i = 1;
     while i < args.len() {
@@ -57,7 +57,6 @@ fn main() {
                     exit(1);
                 }
                 vec_arg = args[i].clone();
-                kernel_idx = i + 1;
             }
             "--passt-port" => {
                 i += 1;
@@ -66,14 +65,16 @@ fn main() {
                     exit(1);
                 }
                 passt_ports.push(args[i].clone());
-                kernel_idx = i + 1;
+            }
+            "--no-passt-one-off" => {
+                passt_one_off = false;
             }
             _ => break,
         }
         i += 1;
     }
 
-    if kernel_idx >= args.len() {
+    if i >= args.len() {
         eprintln!(
             "Usage: {} [--vec VEC_ARG] [--passt-port PORT] UML_BINARY [UML_ARGS...]",
             args[0]
@@ -83,7 +84,7 @@ fn main() {
 
     let (uml_a, uml_b) = socket::socketpair(
         AddressFamily::Unix,
-        SockType::Stream,
+        SockType::SeqPacket,
         None,
         SockFlag::empty(),
     )
@@ -96,12 +97,11 @@ fn main() {
     )
     .expect("socketpair passt");
 
-    let mut passt_args: Vec<String> = vec![
-        "--one-off".into(),
-        "--foreground".into(),
-        "--fd".into(),
-        "4".into(),
-    ];
+    let mut passt_args: Vec<String> = if passt_one_off {
+        vec!["--one-off".into(), "--foreground".into(), "--fd".into(), "4".into()]
+    } else {
+        vec!["--foreground".into(), "--fd".into(), "4".into()]
+    };
     for port in &passt_ports {
         passt_args.push("-t".into());
         passt_args.push(port.clone());
@@ -132,8 +132,8 @@ fn main() {
             fcntl::fcntl(UML_FD, fcntl::FcntlArg::F_SETFD(fcntl::FdFlag::empty()))
                 .expect("fcntl uml");
 
-            let kernel = &args[kernel_idx];
-            let mut full_args: Vec<String> = args.iter().skip(kernel_idx + 1).cloned().collect();
+            let kernel = &args[i];
+            let mut full_args: Vec<String> = args.iter().skip(i + 1).cloned().collect();
             full_args.push(vec_arg.clone());
             let err = process::Command::new(kernel).args(&full_args).exec();
             eprintln!("exec uml {}: {}", kernel, err);
@@ -142,15 +142,17 @@ fn main() {
         ForkResult::Parent { .. } => {}
     }
 
-    // Parent: keep reader ends, close child-side ends.
+    // Parent: keep both ends alive so socketpairs survive child exits.
     let uml_r = uml_a.as_raw_fd();
     let passt_r = passt_a.as_raw_fd();
-    drop(uml_b);
-    drop(passt_b);
+    let _uml_b = uml_b;
+    let _passt_b = passt_b;
 
     unsafe {
         signal::signal(Signal::SIGTERM, signal::SigHandler::SigIgn).ok();
         signal::signal(Signal::SIGINT, signal::SigHandler::SigIgn).ok();
+        signal::signal(Signal::SIGHUP, signal::SigHandler::SigIgn).ok();
+        signal::signal(Signal::SIGPIPE, signal::SigHandler::SigIgn).ok();
     }
 
     let mut pfds = [
@@ -174,6 +176,9 @@ fn main() {
 
         // UML -> passt: read raw frame, prepend 4-byte BE length, forward.
         if pfds[0].revents & (POLLIN | POLLERR | POLLHUP) != 0 {
+            if pfds[0].revents & (POLLHUP | POLLERR) != 0 {
+                break;
+            }
             match unistd::read(uml_r, &mut buf) {
                 Ok(n) if n > 0 => {
                     let len_be = (n as u32).to_be_bytes();
@@ -198,6 +203,9 @@ fn main() {
 
         // Passt -> UML: read 4-byte BE length, read payload, forward raw.
         if pfds[1].revents & (POLLIN | POLLERR | POLLHUP) != 0 {
+            if pfds[1].revents & (POLLHUP | POLLERR) != 0 {
+                break;
+            }
             let mut len_be = [0u8; 4];
             if read_exact(passt_r, &mut len_be).is_err() {
                 eprintln!("passt read header eof");

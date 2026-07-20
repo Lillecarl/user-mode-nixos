@@ -58,7 +58,7 @@ async def test_multi(
 ):
     orch = UmlOrchestrator()
 
-    a, b = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+    a, b = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
     vec_server_fd = _move_fd(a, _VEC_FD_SERVER)
     vec_client_fd = _move_fd(b, _VEC_FD_CLIENT)
     a.close()
@@ -84,7 +84,7 @@ async def test_multi(
         pass_fds=(vec_server_fd, ssl_server_uml),
         ssl_fd=ssl_server_host,
         kernel_args=[
-            f"vec1:transport=fd,fd={vec_server_fd}",
+            f"vec1:transport=fd,fd={vec_server_fd},depth=512,gro=1",
             f"ssl0=fd:{ssl_server_uml}",
         ],
         ready_pattern="uml-rpyc-server: ready",
@@ -100,7 +100,7 @@ async def test_multi(
         pass_fds=(vec_client_fd, ssl_client_uml),
         ssl_fd=ssl_client_host,
         kernel_args=[
-            f"vec1:transport=fd,fd={vec_client_fd}",
+            f"vec1:transport=fd,fd={vec_client_fd},depth=512,gro=1",
             f"ssl0=fd:{ssl_client_uml}",
         ],
         ready_pattern="uml-rpyc-server: ready",

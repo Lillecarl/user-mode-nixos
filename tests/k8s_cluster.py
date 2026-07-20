@@ -149,7 +149,7 @@ async def main() -> int:
 
     orch = UmlOrchestrator()
 
-    a, b = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+    a, b = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
     vec_leader_fd = _move_fd(a, _VEC_FD_LEADER)
     vec_follower_fd = _move_fd(b, _VEC_FD_FOLLOWER)
     a.close()
@@ -176,7 +176,7 @@ async def main() -> int:
         ssl_fd=ssl_leader_host,
         kernel_args=[
             "mem=1024M",
-            f"vec1:transport=fd,fd={vec_leader_fd}",
+            f"vec1:transport=fd,fd={vec_leader_fd},depth=512,gro=1",
             f"ssl0=fd:{ssl_leader_uml}",
         ],
         ready_pattern="uml-rpyc-server: ready",
@@ -193,7 +193,7 @@ async def main() -> int:
         ssl_fd=ssl_follower_host,
         kernel_args=[
             "mem=1024M",
-            f"vec1:transport=fd,fd={vec_follower_fd}",
+            f"vec1:transport=fd,fd={vec_follower_fd},depth=512,gro=1",
             f"ssl0=fd:{ssl_follower_uml}",
         ],
         ready_pattern="uml-rpyc-server: ready",

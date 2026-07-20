@@ -71,6 +71,7 @@ class UmlMachine:
         ssl_fd: int | None = None,
         timeout: int = 60,
         ready_pattern: str | re.Pattern | None = "Started SSH Daemon",
+        no_passt_one_off: bool = False,
     ):
         self.name = name
         self.kernel = kernel
@@ -80,12 +81,13 @@ class UmlMachine:
         self.ssh_port = ssh_port
         self.ssh_password = ssh_password
         self.kernel_args = kernel_args or []
-        self.vec_arg = vec_arg or "vec0:transport=fd,fd=3"
+        self.vec_arg = vec_arg or "vec0:transport=fd,fd=3,depth=512,gro=1"
         self.extra_passt_ports = extra_passt_ports or []
         self.pass_fds = pass_fds
         self.ssl_fd = ssl_fd
         self.timeout = timeout
         self.ready_pattern = ready_pattern
+        self.no_passt_one_off = no_passt_one_off
         self.rundir: Path | None = None
         self.cmddir: Path | None = None
         self._process: subprocess.Process | None = None
@@ -111,6 +113,8 @@ class UmlMachine:
         cow = self.rundir / "cow"
 
         cmd = [str(self.bridge)]
+        if self.no_passt_one_off:
+            cmd.append("--no-passt-one-off")
         cmd.extend(["--vec", self.vec_arg])
         for port in self.extra_passt_ports:
             cmd.extend(["--passt-port", str(port)])
@@ -582,6 +586,9 @@ async def _main_single() -> int:
     parser.add_argument("--bridge", type=Path, required=True)
     parser.add_argument("--passt", type=Path, required=True)
     parser.add_argument("--ssh-port", type=int, default=SSH_PORT)
+    parser.add_argument("--mem", type=str, default="128M")
+    parser.add_argument("--command", type=str, default=None)
+    parser.add_argument("--no-passt-one-off", action="store_true")
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
 
@@ -592,12 +599,21 @@ async def _main_single() -> int:
         bridge=args.bridge,
         passt_bin=args.passt,
         ssh_port=args.ssh_port,
+        kernel_args=[f"mem={args.mem}"],
+        no_passt_one_off=args.no_passt_one_off,
     )
     if args.debug:
         print(f"[debug] kernel={m.kernel} root_image={m.root_image}")
         print(f"[debug] bridge={m.bridge} passt={m.passt_bin}")
         print(f"[debug] vec_arg={m.vec_arg} ssh_port={m.ssh_port}")
     await m.start()
+    if args.command:
+        print(f"[runner] running: {args.command}", flush=True)
+        rc, stdout = await m.execute(args.command, timeout=None, check=False)
+        print(stdout, flush=True)
+        await m.execute("systemctl poweroff", check=False)
+        await m.wait_process()
+        return rc
     print(f"[runner] SSH daemon ready, connecting ...", flush=True)
     stdout = await m.succeed("echo SSH_OK && hostname && ip addr show vec0")
     print(stdout, flush=True)

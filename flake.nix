@@ -12,9 +12,21 @@
         inherit system;
         modules = [ ./modules ] ++ modules;
       } // builtins.removeAttrs args [ "modules" ]);
+    speedtestVmCfg = mkUmlVM {
+      modules = [{
+        networking.hostName = "speedtest";
+        boot.uml.sshPort = 4325;
+        boot.uml.autoShutdown = false;
+        boot.uml.memory = "512M";
+        environment.systemPackages = [ pkgs.speedtest-cli ];
+        systemd.services."getty@tty1".enable = false;
+      }];
+    };
   in {
     nixosConfigurations = {
       umn = mkUmlVM { };
+
+      speedtest-vm = speedtestVmCfg;
 
       server = mkUmlVM {
         modules = [{
@@ -68,6 +80,7 @@
           boot.uml.sshPort = 4325;
           boot.uml.vde = { enable = true; ip = "192.168.99.2/24"; peer = "192.168.99.3"; };
           boot.uml.autoShutdown = false;
+          boot.uml.inSandbox = true;
         }];
       };
       clientCfg = mkUmlVM {
@@ -76,6 +89,7 @@
           boot.uml.sshPort = 4326;
           boot.uml.vde = { enable = true; ip = "192.168.99.3/24"; peer = "192.168.99.2"; };
           boot.uml.autoShutdown = false;
+          boot.uml.inSandbox = true;
         }];
       };
       iperfServerCfg = mkUmlVM {
@@ -87,6 +101,7 @@
             boot.uml.vde = { enable = true; ip = "192.168.99.2/24"; peer = "192.168.99.3"; };
             boot.uml.autoShutdown = false;
             services.iperf3-server.enable = true;
+            boot.uml.inSandbox = true;
           }
         ];
       };
@@ -99,6 +114,7 @@
             boot.uml.vde = { enable = true; ip = "192.168.99.3/24"; peer = "192.168.99.2"; };
             boot.uml.autoShutdown = false;
             services.iperf3-server.enable = true;
+            boot.uml.inSandbox = true;
           }
         ];
       };
@@ -152,6 +168,17 @@
 
           touch $out
         '';
+    };
+
+    apps.${system} = let
+      runner = speedtestVmCfg.config.system.build.umlRunner;
+    in {
+      speedtest = {
+        type = "app";
+        program = "${pkgs.writeShellScript "uml-speedtest" ''
+          exec ${runner}/bin/run-uml --command speedtest-cli "$@"
+        ''}";
+      };
     };
   };
 }

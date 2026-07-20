@@ -43,6 +43,16 @@ in
       default = true;
       description = "Shutdown UML automatically 60s after boot";
     };
+    memory = lib.mkOption {
+      type = lib.types.str;
+      default = "128M";
+      description = "Physical memory for the UML VM (mem= kernel arg)";
+    };
+    inSandbox = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = "Whether the VM runs inside a Nix build sandbox (no internet)";
+    };
   };
 
   config = {
@@ -104,7 +114,7 @@ in
     };
   };
 
-  systemd.services.uml-connectivity-test = {
+  systemd.services.uml-connectivity-test = lib.mkIf (!config.boot.uml.inSandbox) {
     description = "Test outbound connectivity from UML";
     wantedBy = [ "multi-user.target" ];
     after = [ "network-online.target" ];
@@ -158,7 +168,7 @@ in
       gnugrep
       gnused
       gawk
-    ];
+    ] ++ config.environment.systemPackages;
     script = ''
       exec >/dev/console 2>&1
       SHARED=/mnt/uml-shared
@@ -290,11 +300,14 @@ HEREDOC
     runtimeInputs = [ umlRunner ];
     text = ''
       exec uml-runner \
+        --no-passt-one-off \
         --kernel ${umlKernel}/linux \
         --root-image ${config.system.build.umlRootImage} \
         --bridge ${umlPasstBridge}/bin/uml-passt-bridge \
         --passt ${pkgs.passt}/bin/passt \
-        --ssh-port ${builtins.toString config.boot.uml.sshPort}
+        --ssh-port ${builtins.toString config.boot.uml.sshPort} \
+        --mem ${config.boot.uml.memory} \
+        "$@"
     '';
   };
   };
