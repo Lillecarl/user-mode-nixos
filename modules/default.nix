@@ -198,6 +198,7 @@ in
       bash
       iproute2
       iputils
+      inetutils
       procps
       gnugrep
       gnused
