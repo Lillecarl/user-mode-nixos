@@ -33,30 +33,6 @@
           boot.uml.autoShutdown = false;
         }];
       };
-
-      k8s-leader = mkUmlVM {
-        modules = [
-          ./modules/k8s.nix
-          {
-            networking.hostName = "k8s-leader";
-            boot.uml.sshPort = 4330;
-            boot.uml.vde = { enable = true; ip = "10.100.0.1/24"; peer = "10.100.0.2"; };
-            boot.uml.autoShutdown = false;
-          }
-        ];
-      };
-
-      k8s-follower = mkUmlVM {
-        modules = [
-          ./modules/k8s.nix
-          {
-            networking.hostName = "k8s-follower";
-            boot.uml.sshPort = 4331;
-            boot.uml.vde = { enable = true; ip = "10.100.0.2/24"; peer = "10.100.0.1"; };
-            boot.uml.autoShutdown = false;
-          }
-        ];
-      };
     };
 
     packages.${system} = let
@@ -75,28 +51,6 @@
           boot.uml.vde = { enable = true; ip = "192.168.99.3/24"; peer = "192.168.99.2"; };
           boot.uml.autoShutdown = false;
         }];
-      };
-      k8sLeaderCfg = mkUmlVM {
-        modules = [
-          ./modules/k8s.nix
-          {
-            networking.hostName = "k8s-leader";
-            boot.uml.sshPort = 4330;
-            boot.uml.vde = { enable = true; ip = "10.100.0.1/24"; peer = "10.100.0.2"; };
-            boot.uml.autoShutdown = false;
-          }
-        ];
-      };
-      k8sFollowerCfg = mkUmlVM {
-        modules = [
-          ./modules/k8s.nix
-          {
-            networking.hostName = "k8s-follower";
-            boot.uml.sshPort = 4331;
-            boot.uml.vde = { enable = true; ip = "10.100.0.2/24"; peer = "10.100.0.1"; };
-            boot.uml.autoShutdown = false;
-          }
-        ];
       };
     in {
       vde-test = let
@@ -120,30 +74,6 @@
             --server-ssh-port 4325 \
             --client-image ${clientCfg.config.system.build.umlRootImage} \
             --client-ssh-port 4326
-
-          touch $out
-        '';
-
-      k8s-test = let
-        runner = k8sLeaderCfg.config.system.build.umlRunnerPackage;
-      in pkgs.runCommand "uml-k8s-test"
-        {
-          nativeBuildInputs = with pkgs; [
-            python3
-            (python3.withPackages (ps: [ ps.asyncssh ps.rpyc ]))
-          ];
-          timeout = 600;
-        }
-        ''
-          export HOME="$TMPDIR"
-          export PYTHONPATH="${runner}/${pkgs.python3.sitePackages}:$PYTHONPATH"
-
-          python3 ${./tests/k8s_cluster.py} \
-            --kernel ${k8sLeaderCfg.config.system.build.umlKernel}/linux \
-            --bridge ${k8sLeaderCfg.config.system.build.umlPasstBridge}/bin/uml-passt-bridge \
-            --passt ${pkgs.passt}/bin/passt \
-            --leader-image ${k8sLeaderCfg.config.system.build.umlRootImage} \
-            --follower-image ${k8sFollowerCfg.config.system.build.umlRootImage}
 
           touch $out
         '';
