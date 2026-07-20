@@ -8,145 +8,78 @@
     pkgs = import inputs.nixpkgs { inherit system; };
     lib = inputs.nixpkgs.lib;
 
-    evalConfig = import "${pkgs.path}/nixos/lib/eval-config.nix";
-
     /*
-      umlTests: typed submodules → per-instance NixOS eval → builds + tests.
+      umlTests: single lib.evalModules where each VM is a full NixOS
+      submodule (class = "nixos", complete module-list.nix).
 
       Parameters:
-        inSandbox :: Bool     — set boot.uml.inSandbox on every instance
-        instances  :: AttrSet — { <name> = { ... submodule options ... }; }
+        inSandbox :: Bool     — sets boot.uml.inSandbox on every instance
+        instances  :: AttrSet — { <name> = { config ? {}, role ? null }; }
 
-      Submodule options (each with typed defaults):
-        nixosConfig   :: deferredModule   — extra NixOS config module
-        extraModules   :: [deferredModule] — extra modules (e.g. ./modules/iperf3.nix)
-        hostName      :: str   (default: instance name)
-        sshPort       :: int   (default: 4325)
-        vdeIp         :: nullOr str  (default: null)
-        vdePeer       :: nullOr str  (default: null)
-        memory         :: str   (default: "128M")
-        autoShutdown   :: bool  (default: true)
-        role           :: nullOr str (default: instance name)
+      Each instance is a full NixOS submodule.  `config` is the raw
+      NixOS module attrset (supports `imports`, `config`, and all
+      normal module keys).  `role` controls test-CLI naming.
+
+      Peer metadata is extracted from raw config attrs before evaluation
+      and injected as `boot.uml.peers` so modules can cross-reference
+      sibling VMs.
 
       Returns:
-        configs       :: AttrSet — NixOS system configs per instance
+        configs       :: AttrSet — evaluated NixOS configs per instance
         builds        :: AttrSet — system.build outputs per instance
         mkSandboxTest :: { name, script, instances } → Derivation
     */
     umlTests = { inSandbox ? false, instances }:
     let
-      # ── Step 1: shared evalModules for typed instance metadata ──────
-      #
-      # Each instance is a submodule with proper option types and
-      # defaults.  Cross-reference info (hostName, vdeIp, etc.) is
-      # extracted AFTER evaluation — no manual default duplication.
+      baseModules = import "${pkgs.path}/nixos/modules/module-list.nix";
 
-      umlInstance = lib.types.submodule ({ name, lib, ... }: {
-        options = {
-          nixosConfig = lib.mkOption {
-            type = lib.types.deferredModule;
-            default = {};
-            description = "Arbitrary NixOS config module for this instance";
-          };
-          extraModules = lib.mkOption {
-            type = lib.types.listOf lib.types.deferredModule;
-            default = [];
-            description = "Extra NixOS modules (e.g. iperf3.nix)";
-          };
-          hostName = lib.mkOption {
-            type = lib.types.str;
-            description = "VM hostname";
-          };
-          sshPort = lib.mkOption {
-            type = lib.types.ints.between 1 65535;
-            default = 4325;
-            description = "SSH port on the host side";
-          };
-          vdeIp = lib.mkOption {
-            type = lib.types.nullOr lib.types.str;
-            default = null;
-            example = "192.168.99.2/24";
-            description = "Static IP/CIDR on the VDE interface";
-          };
-          vdePeer = lib.mkOption {
-            type = lib.types.nullOr lib.types.str;
-            default = null;
-            description = "Peer IP expected on the VDE interface";
-          };
-          memory = lib.mkOption {
-            type = lib.types.str;
-            default = "128M";
-            description = "Physical memory for the UML VM";
-          };
-          autoShutdown = lib.mkOption {
-            type = lib.types.bool;
-            default = true;
-            description = "Auto-shutdown 60s after boot";
-          };
-          role = lib.mkOption {
-            type = lib.types.nullOr lib.types.str;
-            default = null;
-            description = "Test-CLI role name (--<role>-image), defaults to instance name";
-          };
-        };
-        config = {
-          hostName = lib.mkDefault name;
-          role = lib.mkDefault name;
-        };
-      });
+      nixosNode = lib.types.submoduleWith {
+        class = "nixos";
+        specialArgs.modulesPath = "${pkgs.path}/nixos/modules";
+        modules = baseModules ++ [
+          ./modules
+          { nixpkgs.system = lib.mkDefault system; }
+        ];
+      };
 
-      metaEval = lib.evalModules {
+      mkPeer = name: def:
+        let
+          cfg = def.config or {};
+          uml = cfg.boot.uml or {};
+        in {
+          hostName = cfg.networking.hostName or name;
+          sshPort  = uml.sshPort or 4325;
+          vdeIp    = uml.vde.ip or null;
+          vdePeer  = uml.vde.peer or null;
+          memory   = uml.memory or "128M";
+        };
+
+      peers = lib.mapAttrs mkPeer instances;
+
+      mkInstanceCfg = name: def: let
+        userCfg = def.config or {};
+        userBoot = userCfg.boot.uml or {};
+      in userCfg // {
+        networking.hostName = lib.mkDefault (userCfg.networking.hostName or name);
+        boot.uml = userBoot // {
+          peers = lib.mkOverride 900 peers;
+          inSandbox = lib.mkOverride 150 inSandbox;
+        };
+      };
+
+      evaluated = lib.evalModules {
         modules = [{
           options.uml.instances = lib.mkOption {
-            type = lib.types.attrsOf umlInstance;
+            type = lib.types.attrsOf nixosNode;
             default = {};
           };
-          config.uml.instances = instances;
+          config.uml.instances = lib.mapAttrs mkInstanceCfg instances;
         }];
       };
 
-      instanceCfgs = metaEval.config.uml.instances;
+      instanceCfg = evaluated.config.uml.instances;
+      builds = lib.mapAttrs (_: ic: ic.system.build) instanceCfg;
 
-      # ── Step 2: derive peer info ────────────────────────────────────
-      peers = lib.mapAttrs (_: ic: {
-        hostName = ic.hostName;
-        sshPort = ic.sshPort;
-        vdeIp = ic.vdeIp;
-        vdePeer = ic.vdePeer;
-        memory = ic.memory;
-      }) instanceCfgs;
-
-      # ── Step 3: per-instance NixOS evaluation ───────────────────────
-      buildOne = name: ic:
-        evalConfig {
-          inherit system;
-          modules = [
-            ./modules
-            (ic.nixosConfig or {})
-            {
-              networking.hostName = lib.mkDefault ic.hostName;
-              boot.uml.sshPort = lib.mkDefault ic.sshPort;
-              boot.uml.memory = lib.mkDefault ic.memory;
-              boot.uml.inSandbox = lib.mkDefault inSandbox;
-              boot.uml.peers = lib.mkDefault peers;
-            }
-            (lib.mkIf (ic.vdeIp != null) {
-              boot.uml.vde.enable = true;
-              boot.uml.vde.ip = ic.vdeIp;
-            } // lib.optionalAttrs (ic.vdePeer != null) {
-              boot.uml.vde.peer = ic.vdePeer;
-            })
-            (lib.mkIf (!ic.autoShutdown) {
-              boot.uml.autoShutdown = false;
-            })
-          ] ++ ic.extraModules;
-        };
-
-      configs = lib.mapAttrs buildOne instanceCfgs;
-
-      builds = lib.mapAttrs (_: c: c.config.system.build) configs;
-
-      # ── Sandbox test helper ─────────────────────────────────────────
       runner = (lib.head (lib.attrValues builds)).umlRunnerPackage;
 
       testEnv = {
@@ -159,11 +92,11 @@
 
       mkImageFlags = names:
         lib.concatMapStringsSep " " (n:
-          let r = instanceCfgs.${n}.role; in
-          "--${r}-image ${builds.${n}.umlRootImage} --${r}-ssh-port ${toString instanceCfgs.${n}.sshPort}"
+          let r = instances.${n}.role or n; in
+          "--${r}-image ${builds.${n}.umlRootImage} --${r}-ssh-port ${toString instanceCfg.${n}.boot.uml.sshPort}"
         ) names;
 
-      mkSandboxTest = { name, script, instances ? (lib.attrNames configs) }:
+      mkSandboxTest = { name, script, instances ? (lib.attrNames builds) }:
         pkgs.runCommand "uml-${name}-test" {
           nativeBuildInputs = with pkgs; [
             python3
@@ -181,7 +114,8 @@
         '';
 
     in {
-      inherit configs builds mkSandboxTest;
+      configs = instanceCfg;
+      inherit builds mkSandboxTest;
     };
 
     # ── Instance definitions ──────────────────────────────────────────
@@ -190,44 +124,54 @@
       umn = {};
 
       server = {
-        sshPort = 4325;
-        vdeIp = "192.168.99.2/24";
-        vdePeer = "192.168.99.3";
-        autoShutdown = false;
         role = "server";
+        config = {
+          networking.hostName = "server";
+          boot.uml.sshPort = 4325;
+          boot.uml.vde = { enable = true; ip = "192.168.99.2/24"; peer = "192.168.99.3"; };
+          boot.uml.autoShutdown = false;
+        };
       };
 
       client = {
-        sshPort = 4326;
-        vdeIp = "192.168.99.3/24";
-        vdePeer = "192.168.99.2";
-        autoShutdown = false;
         role = "client";
+        config = {
+          networking.hostName = "client";
+          boot.uml.sshPort = 4326;
+          boot.uml.vde = { enable = true; ip = "192.168.99.3/24"; peer = "192.168.99.2"; };
+          boot.uml.autoShutdown = false;
+        };
       };
 
       iperf-server = {
-        sshPort = 4325;
-        vdeIp = "192.168.99.2/24";
-        vdePeer = "192.168.99.3";
-        autoShutdown = false;
         role = "server";
-        extraModules = [ ./modules/iperf3.nix ];
-        nixosConfig.services.iperf3-server.enable = true;
+        config = {
+          imports = [ ./modules/iperf3.nix ];
+          networking.hostName = "iperf-server";
+          boot.uml.sshPort = 4325;
+          boot.uml.vde = { enable = true; ip = "192.168.99.2/24"; peer = "192.168.99.3"; };
+          boot.uml.autoShutdown = false;
+          services.iperf3-server.enable = true;
+        };
       };
 
       iperf-client = {
-        sshPort = 4326;
-        vdeIp = "192.168.99.3/24";
-        vdePeer = "192.168.99.2";
-        autoShutdown = false;
         role = "client";
-        extraModules = [ ./modules/iperf3.nix ];
-        nixosConfig.services.iperf3-server.enable = true;
+        config = {
+          imports = [ ./modules/iperf3.nix ];
+          networking.hostName = "iperf-client";
+          boot.uml.sshPort = 4326;
+          boot.uml.vde = { enable = true; ip = "192.168.99.3/24"; peer = "192.168.99.2"; };
+          boot.uml.autoShutdown = false;
+          services.iperf3-server.enable = true;
+        };
       };
 
       speedtest-vm = {
-        memory = "512M";
-        nixosConfig = {
+        config = {
+          networking.hostName = "speedtest";
+          boot.uml.memory = "512M";
+          boot.uml.sshPort = 4325;
           environment.systemPackages = [ pkgs.speedtest-cli ];
           systemd.services."getty@tty1".enable = false;
         };
@@ -238,7 +182,7 @@
     sandbox    = umlTests { instances = instanceDefs; inSandbox = true; };
 
   in {
-    nixosConfigurations = nonSandbox.configs;
+    nixosConfigurations = lib.mapAttrs (_: ic: { config = ic; }) nonSandbox.configs;
 
     packages.${system} = let
       t = sandbox.mkSandboxTest;
