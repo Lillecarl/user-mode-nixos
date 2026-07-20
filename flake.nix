@@ -15,29 +15,46 @@
       } // builtins.removeAttrs args [ "modules" ]);
 
     /*
-      umlTestSuite: produce NixOS configs + sandbox test helpers.
+      umlTests: produce NixOS configs + sandbox test helpers + peer metadata.
 
       Parameters:
         inSandbox :: Bool     — set boot.uml.inSandbox on every instance
         instances  :: AttrSet — { <name> = { modules ? [], config ? {}, role ? null }; }
 
       Each `name` becomes `nixosConfigurations.<name>`.
-      `config` is merged as a NixOS module — plain values override
-      the default inSandbox value.
+      `config` is merged as a NixOS module — plain values override defaults.
       `role` is the test-CLI name for --<role>-image / --<role>-ssh-port
       (defaults to `name`).
+
+      Peer metadata (hostName, vdeIp, sshPort, memory) is extracted from
+      each instance's raw config and injected as `boot.uml.peers` into
+      every VM so modules can cross-reference other nodes.
 
       Returns:
         configs       :: AttrSet — NixOS system configs per instance
         builds        :: AttrSet — system.build outputs per instance
         mkSandboxTest :: { name, script, instances } → Derivation
     */
-    umlTestSuite = { inSandbox ? false, instances }:
+    umlTests = { inSandbox ? false, instances }:
     let
+      mkPeer = name: def:
+        let cfg = def.config or {}; in {
+          hostName = cfg.networking.hostName or name;
+          sshPort  = cfg.boot.uml.sshPort or 4325;
+          vdeIp    = cfg.boot.uml.vde.ip or null;
+          vdePeer  = cfg.boot.uml.vde.peer or null;
+          memory   = cfg.boot.uml.memory or "128M";
+        };
+
+      peers = lib.mapAttrs mkPeer instances;
+
       mkInstance = name: def:
         mkUmlVM {
           modules = (def.modules or []) ++ [
-            { boot.uml.inSandbox = lib.mkDefault inSandbox; }
+            {
+              boot.uml.inSandbox = lib.mkDefault inSandbox;
+              boot.uml.peers = lib.mkDefault peers;
+            }
             (def.config or {})
           ];
         };
@@ -155,8 +172,8 @@
       };
     };
 
-    nonSandbox = umlTestSuite { instances = instanceDefs; };
-    sandbox    = umlTestSuite { instances = instanceDefs; inSandbox = true; };
+    nonSandbox = umlTests { instances = instanceDefs; };
+    sandbox    = umlTests { instances = instanceDefs; inSandbox = true; };
 
   in {
     nixosConfigurations = nonSandbox.configs;

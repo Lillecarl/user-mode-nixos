@@ -170,14 +170,15 @@ class UmlMachine:
             self._ssl_sock.close()
             self._ssl_sock = None
         if self._process and self._process.returncode is None:
-            try:
-                self._terminate()
-            except Exception:
-                pass
+            self._terminate()
             try:
                 await asyncio.wait_for(self._process.wait(), timeout=30)
             except asyncio.TimeoutError:
-                pass
+                self._terminate(signal.SIGKILL)
+                try:
+                    await asyncio.wait_for(self._process.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    pass
 
         if self._monitor_task:
             self._monitor_task.cancel()
@@ -188,10 +189,10 @@ class UmlMachine:
 
         self._cleanup_rundir()
 
-    def _terminate(self) -> None:
+    def _terminate(self, sig: int = signal.SIGTERM) -> None:
         if self._process and self._process.returncode is None:
             try:
-                os.killpg(os.getpgid(self._process.pid), signal.SIGTERM)
+                os.killpg(os.getpgid(self._process.pid), sig)
             except ProcessLookupError:
                 pass
 

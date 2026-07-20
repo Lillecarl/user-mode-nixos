@@ -51,6 +51,22 @@ async def run_test(
 ):
     orch = UmlOrchestrator()
 
+    try:
+        await _test(orch, kernel, bridge, passt_bin, server_image, server_ssh_port, client_image, client_ssh_port)
+    finally:
+        await orch.shutdown_all()
+
+
+async def _test(
+    orch: UmlOrchestrator,
+    kernel: Path,
+    bridge: Path,
+    passt_bin: Path,
+    server_image: Path,
+    server_ssh_port: int,
+    client_image: Path,
+    client_ssh_port: int,
+):
     a, b = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
     vec_server_fd = _move_fd(a, _VEC_FD_SERVER)
     vec_client_fd = _move_fd(b, _VEC_FD_CLIENT)
@@ -144,7 +160,6 @@ async def run_test(
     print("[test] shutting down ...")
     await server.execute("systemctl poweroff", check=False)
     await client.execute("systemctl poweroff", check=False)
-    await orch.shutdown_all()
     print("[test] done")
 
 

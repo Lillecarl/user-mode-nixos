@@ -53,6 +53,19 @@ in
       default = false;
       description = "Whether the VM runs inside a Nix build sandbox (no internet)";
     };
+    peers = lib.mkOption {
+      type = lib.types.attrsOf (lib.types.submodule ({ ... }: {
+        options = {
+          hostName = lib.mkOption { type = lib.types.str; };
+          sshPort = lib.mkOption { type = lib.types.int; default = 4325; };
+          vdeIp = lib.mkOption { type = lib.types.nullOr lib.types.str; default = null; };
+          vdePeer = lib.mkOption { type = lib.types.nullOr lib.types.str; default = null; };
+          memory = lib.mkOption { type = lib.types.str; default = "256M"; };
+        };
+      }));
+      default = {};
+      description = "Peer UML instances (hostName, vdeIp, sshPort). Set by umlTests.";
+    };
   };
 
   config = {

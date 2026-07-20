@@ -12,15 +12,16 @@ use std::{
     os::fd::{AsRawFd, BorrowedFd},
     os::unix::process::CommandExt,
     process::{self, exit},
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 use nix::{
     fcntl,
     sys::{
-        signal::{self, Signal},
+        signal::{self, kill, Signal},
         socket::{self, AddressFamily, SockType, SockFlag},
     },
-    unistd::{self, ForkResult},
+    unistd::{self, ForkResult, Pid},
 };
 
 const POLLIN: i16 = 0x001;
@@ -28,6 +29,12 @@ const POLLERR: i16 = 0x008;
 const POLLHUP: i16 = 0x010;
 const UML_FD: i32 = 3;
 const PASST_FD: i32 = 4;
+
+static SHUTDOWN: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn handle_term(_sig: i32) {
+    SHUTDOWN.store(true, Ordering::SeqCst);
+}
 
 fn read_exact(fd: i32, buf: &mut [u8]) -> io::Result<()> {
     let mut off = 0;
@@ -107,7 +114,7 @@ fn main() {
         passt_args.push(port.clone());
     }
 
-    match unsafe { unistd::fork() }.expect("fork passt") {
+    let passt_pid = match unsafe { unistd::fork() }.expect("fork passt") {
         ForkResult::Child => {
             drop(uml_a);
             drop(uml_b);
@@ -119,10 +126,10 @@ fn main() {
             eprintln!("exec passt: {}", err);
             exit(1);
         }
-        ForkResult::Parent { .. } => {}
-    }
+        ForkResult::Parent { child } => child,
+    };
 
-    match unsafe { unistd::fork() }.expect("fork uml") {
+    let uml_pid = match unsafe { unistd::fork() }.expect("fork uml") {
         ForkResult::Child => {
             drop(passt_a);
             drop(passt_b);
@@ -139,8 +146,8 @@ fn main() {
             eprintln!("exec uml {}: {}", kernel, err);
             exit(1);
         }
-        ForkResult::Parent { .. } => {}
-    }
+        ForkResult::Parent { child } => child,
+    };
 
     // Parent: keep both ends alive so socketpairs survive child exits.
     let uml_r = uml_a.as_raw_fd();
@@ -149,10 +156,11 @@ fn main() {
     let _passt_b = passt_b;
 
     unsafe {
-        signal::signal(Signal::SIGTERM, signal::SigHandler::SigIgn).ok();
-        signal::signal(Signal::SIGINT, signal::SigHandler::SigIgn).ok();
-        signal::signal(Signal::SIGHUP, signal::SigHandler::SigIgn).ok();
+        signal::signal(Signal::SIGTERM, signal::SigHandler::Handler(handle_term)).ok();
+        signal::signal(Signal::SIGINT, signal::SigHandler::Handler(handle_term)).ok();
+        signal::signal(Signal::SIGHUP, signal::SigHandler::Handler(handle_term)).ok();
         signal::signal(Signal::SIGPIPE, signal::SigHandler::SigIgn).ok();
+        libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
     }
 
     let mut pfds = [
@@ -164,7 +172,11 @@ fn main() {
     let mut framed = vec![0u8; 65540];
 
     loop {
-        let ret = unsafe { libc::poll(pfds.as_mut_ptr(), pfds.len() as libc::nfds_t, -1) };
+        if SHUTDOWN.load(Ordering::SeqCst) {
+            break;
+        }
+
+        let ret = unsafe { libc::poll(pfds.as_mut_ptr(), pfds.len() as libc::nfds_t, 1000) };
         if ret < 0 {
             let e = io::Error::last_os_error();
             if e.raw_os_error() == Some(libc::EINTR) {
@@ -184,7 +196,6 @@ fn main() {
                     let len_be = (n as u32).to_be_bytes();
                     framed[..4].copy_from_slice(&len_be);
                     framed[4..4 + n].copy_from_slice(&buf[..n]);
-                    // unistd::write takes AsFd; BorrowedFd provides it.
                     let bfd = unsafe { BorrowedFd::borrow_raw(passt_r) };
                     match unistd::write(&bfd, &framed[..4 + n]) {
                         Ok(_) => {}
@@ -230,4 +241,8 @@ fn main() {
             }
         }
     }
+
+    // Kill children so nothing leaks.
+    let _ = kill(passt_pid, Signal::SIGKILL);
+    let _ = kill(uml_pid, Signal::SIGKILL);
 }
