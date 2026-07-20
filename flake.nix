@@ -43,7 +43,6 @@
             boot.uml.vde = { enable = true; ip = "192.168.99.2/24"; peer = "192.168.99.3"; };
             boot.uml.autoShutdown = false;
             services.iperf3-server.enable = true;
-            services.iperf3-client.peer = "192.168.99.3";
           }
         ];
       };
@@ -57,8 +56,6 @@
             boot.uml.vde = { enable = true; ip = "192.168.99.3/24"; peer = "192.168.99.2"; };
             boot.uml.autoShutdown = false;
             services.iperf3-server.enable = true;
-            services.iperf3-client.peer = "192.168.99.2";
-            services.speedtest.enable = true;
           }
         ];
       };
