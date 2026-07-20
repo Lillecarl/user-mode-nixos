@@ -192,8 +192,17 @@ in
       ExecStart = "${umlRunner}/bin/uml-rpyc-server";
       StandardOutput = "journal+console";
       StandardError = "journal+console";
-      Environment = "PATH=/run/current-system/sw/bin";
     };
+    path = with pkgs; [
+      coreutils
+      bash
+      iproute2
+      iputils
+      procps
+      gnugrep
+      gnused
+      gawk
+    ];
   };
 
   systemd.services.uml-shutdown = lib.mkIf config.boot.uml.autoShutdown {
