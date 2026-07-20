@@ -135,10 +135,10 @@ async def run_test(
     for line in (out or "").split("\n"):
         print(f"  {line}")
 
-    print("[test] === speedtest on server ===")
-    rc, out = await server.execute_rpyc("speedtest-cli", timeout=120)
+    print("[test] === speedtest on server (may fail in sandbox) ===")
+    rc, out = await server.execute_rpyc("speedtest-cli 2>&1 || echo 'speedtest not available'", timeout=60)
     print(f"[speedtest] rc={rc}")
-    for line in (out or "").split("\n"):
+    for line in (out or "").split("\n")[:5]:
         print(f"  {line}")
 
     print("[test] shutting down ...")
