@@ -71,8 +71,7 @@ in
   config = {
     boot.kernelPackages = pkgs.linuxPackages_latest;
 
-  networking.hostName = lib.mkDefault "umn";
-  networking.useDHCP = false;
+    networking.useDHCP = false;
   networking.dhcpcd.enable = false;
   networking.firewall.enable = false;
   networking.useNetworkd = true;
