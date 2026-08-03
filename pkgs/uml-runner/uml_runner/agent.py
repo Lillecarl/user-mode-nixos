@@ -17,11 +17,13 @@ import asyncio
 import os
 import subprocess
 
-from .arpyc import Service, serve
+from .arpyc import Service, listen
 
 AGENT_READY = "uml-agent: ready"
-"""Printed on the guest console once the agent is serving; the host waits
-for this line to know a guest has finished booting."""
+"""Printed on the guest console once the agent is reading ``/dev/ttyS0``;
+the host waits for this line to know a guest has finished booting, and
+connects the moment it sees it.  Nothing may be printed before the line
+is set up, or the first request races the setup and is lost."""
 
 TTY = "/dev/ttyS0"
 GUEST_PATH = "/run/current-system/sw/bin:/run/current-system/sw/sbin"
@@ -40,9 +42,6 @@ def _sh(command: str, timeout: float) -> subprocess.CompletedProcess:
 
 class Agent(Service):
     """What the host may ask this guest to do."""
-
-    def on_connect(self, conn) -> None:
-        print("uml-agent: host connected", flush=True)
 
     def on_disconnect(self, conn) -> None:
         print("uml-agent: host disconnected", flush=True)
@@ -90,9 +89,9 @@ class Agent(Service):
 
 
 async def _serve() -> None:
-    fd = os.open(TTY, os.O_RDWR)
+    conn = listen(os.open(TTY, os.O_RDWR), Agent())
     print(AGENT_READY, flush=True)
-    await serve(fd, Agent())
+    await conn.serve_forever()
 
 
 def main() -> None:

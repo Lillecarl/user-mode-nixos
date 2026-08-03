@@ -88,7 +88,10 @@ class FdStream:
         self._reader = asyncio.StreamReader()
         self._saved_tty = termios.tcgetattr(fd) if raw_tty else None
         if raw_tty:
-            tty.setraw(fd)
+            # TCSANOW, not tty.setraw's default TCSAFLUSH: this is a data
+            # channel, and discarding whatever the peer has already sent
+            # loses a request with no way to notice.
+            tty.setraw(fd, termios.TCSANOW)
         loop.add_reader(fd, self._on_readable)
 
     def _on_readable(self) -> None:
@@ -311,6 +314,12 @@ def connect(fd: int) -> AsyncConnection:
     return conn
 
 
-async def serve(fd: int, service: Service) -> None:
-    """Guest side: serve *service* on *fd* (``/dev/ttyS0``) until EOF."""
-    await _connection(service, fd, raw_tty=True).serve_forever()
+def listen(fd: int, service: Service) -> AsyncConnection:
+    """Guest side: put *fd* (``/dev/ttyS0``) in raw mode and start
+    reading it.  Call ``serve_forever`` on the result to answer.
+
+    Reading starts here rather than in ``serve_forever`` so that a guest
+    can announce itself and be certain that nothing sent afterwards is
+    missed: from this point requests queue up in the stream.
+    """
+    return _connection(service, fd, raw_tty=True)
