@@ -4,14 +4,14 @@ build-backend = "hatchling.build"
 
 [project]
 name = "uml-runner"
-version = "0.1.0"
+version = "0.2.0"
+description = "Run NixOS systems under User-Mode Linux and drive them from Python"
 requires-python = ">=3.10"
-dependencies = ["asyncssh", "rpyc", "systemd-python"]
+dependencies = ["rpyc"]
 
 [project.scripts]
-uml-runner = "uml_runner:main_cli"
-uml-rpyc-server = "uml_rpyc_server:main_cli"
-uml-units = "uml_units:main"
+run-uml = "uml_runner.cli:main"
+uml-agent = "uml_runner.agent:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["."]
+packages = ["uml_runner"]

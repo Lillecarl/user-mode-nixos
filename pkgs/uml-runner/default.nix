@@ -1,24 +1,25 @@
 { lib, python3Packages }:
 
-python3Packages.buildPythonApplication {
+python3Packages.buildPythonPackage {
   pname = "uml-runner";
-  version = "0.1.0";  # bump triggers rebuild
+  version = "0.2.0";
 
-  src = ./.;
+  src = lib.fileset.toSource {
+    root = ./.;
+    fileset = lib.fileset.unions [ ./pyproject.toml ./uml_runner ];
+  };
 
   pyproject = true;
 
-  nativeBuildInputs = [ python3Packages.hatchling ];
-  propagatedBuildInputs = [
-    python3Packages.asyncssh
-    python3Packages.rpyc
-    python3Packages.systemd-python
-  ];
+  build-system = [ python3Packages.hatchling ];
+  dependencies = [ python3Packages.rpyc ];
 
-  meta = with lib; {
-    description = "Async UML kernel runner with SSH probe";
-    license = licenses.mit;
-    platforms = platforms.linux;
-    mainProgram = "uml-runner";
+  pythonImportsCheck = [ "uml_runner" ];
+
+  meta = {
+    description = "Run NixOS systems under User-Mode Linux and drive them from Python";
+    license = lib.licenses.mit;
+    platforms = lib.platforms.linux;
+    mainProgram = "run-uml";
   };
 }
