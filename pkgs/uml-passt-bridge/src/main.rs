@@ -21,7 +21,7 @@ use nix::{
         signal::{self, kill, Signal},
         socket::{self, AddressFamily, SockType, SockFlag},
     },
-    unistd::{self, ForkResult, Pid},
+    unistd::{self, ForkResult},
 };
 
 const POLLIN: i16 = 0x001;
@@ -52,7 +52,6 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     let mut passt_ports: Vec<String> = Vec::new();
     let mut vec_arg = "vec0:transport=fd,fd=3,depth=512,gro=1".to_string();
-    let mut passt_one_off = true;
 
     let mut i = 1;
     while i < args.len() {
@@ -72,9 +71,6 @@ fn main() {
                     exit(1);
                 }
                 passt_ports.push(args[i].clone());
-            }
-            "--no-passt-one-off" => {
-                passt_one_off = false;
             }
             _ => break,
         }
@@ -104,11 +100,10 @@ fn main() {
     )
     .expect("socketpair passt");
 
-    let mut passt_args: Vec<String> = if passt_one_off {
-        vec!["--one-off".into(), "--foreground".into(), "--fd".into(), "4".into()]
-    } else {
-        vec!["--foreground".into(), "--fd".into(), "4".into()]
-    };
+    // No --one-off: we kill passt ourselves when the bridge exits, and
+    // letting it linger keeps the uplink up across a guest's reboot.
+    let mut passt_args: Vec<String> =
+        vec!["--foreground".into(), "--fd".into(), "4".into()];
     for port in &passt_ports {
         passt_args.push("-t".into());
         passt_args.push(port.clone());
