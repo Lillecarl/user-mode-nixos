@@ -183,6 +183,9 @@ class Machine:
             "rw",
             "init=/init",
             f"mem={self.spec.memory}",
+            # Without a default, UML tries to set up all 64 serial lines
+            # and complains about each one it cannot parse.
+            "ssl=none",
             f"ssl0=fd:{agent_fd}",
         ]
         if self.lan_fd is not None:
