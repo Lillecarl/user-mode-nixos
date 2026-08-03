@@ -7,6 +7,8 @@ networking, including inside a Nix build sandbox.
 
 Commands run with ``/run/current-system/sw/bin`` on ``PATH``, so whatever
 a test's NixOS config puts in ``environment.systemPackages`` is callable.
+They also run synchronously, so one guest serves one command at a time --
+a test that wants two things at once wants two guests.
 """
 
 from __future__ import annotations

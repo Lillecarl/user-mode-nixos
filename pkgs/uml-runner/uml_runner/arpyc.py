@@ -263,6 +263,12 @@ class AsyncConnection:
         finally:
             self.close()
 
+    def start_serving(self) -> None:
+        """Serve in the background, for a side that mostly calls out."""
+        if self._serving is None:
+            # Kept on the connection: a bare task may be collected.
+            self._serving = asyncio.ensure_future(self.serve_forever())
+
     # ── calling ────────────────────────────────────────────────────
 
     async def call(self, method: str, args: tuple, kwargs: dict) -> Any:
@@ -301,8 +307,7 @@ def _connection(service: Service, fd: int, *, raw_tty: bool) -> AsyncConnection:
 def connect(fd: int) -> AsyncConnection:
     """Client side: talk to a guest agent over *fd* (a socketpair end)."""
     conn = _connection(Service(), fd, raw_tty=False)
-    # Held on the connection: a bare ensure_future may be collected.
-    conn._serving = asyncio.ensure_future(conn.serve_forever())
+    conn.start_serving()
     return conn
 
 

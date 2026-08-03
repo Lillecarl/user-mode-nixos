@@ -139,17 +139,18 @@ class Machine:
         pass_fds = tuple(
             fd for fd in (self._guest_sock.fileno(), self.lan_fd) if fd is not None
         )
-        self._log(" ".join(argv))
+        self._log(f"exec: {' '.join(argv)}")
 
+        # The bridge finds passt on PATH.
         env = dict(os.environ, PATH=f"{self.tools.passt.parent}:{os.environ['PATH']}")
         self._process = await subprocess.create_subprocess_exec(
             *argv,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             env=env,
-            # Own process group: the bridge, passt and the kernel all die
-            # together when we signal it.
-            preexec_fn=os.setsid,
+            # Own process group, so the bridge, passt and the kernel all
+            # die together when we signal it.
+            start_new_session=True,
             pass_fds=pass_fds,
         )
         self._monitor = asyncio.ensure_future(self._pump_console())
