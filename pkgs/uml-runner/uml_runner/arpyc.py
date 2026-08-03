@@ -187,6 +187,7 @@ class AsyncConnection:
         self._seq = 0
         self._pending: dict[int, asyncio.Future] = {}
         self._closed = False
+        self._serving: asyncio.Task | None = None
         self.root = _RemoteRoot(self)
         service.on_connect(self)
 
@@ -300,7 +301,8 @@ def _connection(service: Service, fd: int, *, raw_tty: bool) -> AsyncConnection:
 def connect(fd: int) -> AsyncConnection:
     """Client side: talk to a guest agent over *fd* (a socketpair end)."""
     conn = _connection(Service(), fd, raw_tty=False)
-    asyncio.ensure_future(conn.serve_forever())
+    # Held on the connection: a bare ensure_future may be collected.
+    conn._serving = asyncio.ensure_future(conn.serve_forever())
     return conn
 
 

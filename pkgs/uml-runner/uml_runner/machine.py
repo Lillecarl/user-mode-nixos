@@ -90,8 +90,10 @@ class Machine:
         tools: Toolchain,
         *,
         lan_fd: int | None = None,
-        boot_timeout: float = 120,
-        command_timeout: float = 60,
+        boot_timeout: float = 180,
+        # Generous, because several guests on a loaded builder are slow
+        # in a way that looks exactly like a hang.
+        command_timeout: float = 120,
     ) -> None:
         self.spec = spec
         self.tools = tools
@@ -183,9 +185,6 @@ class Machine:
             "rw",
             "init=/init",
             f"mem={self.spec.memory}",
-            # Without a default, UML tries to set up all 64 serial lines
-            # and complains about each one it cannot parse.
-            "ssl=none",
             f"ssl0=fd:{agent_fd}",
         ]
         if self.lan_fd is not None:
@@ -314,11 +313,16 @@ class Machine:
     ) -> tuple[int, str]:
         """Run a shell command in the guest; returns (exit code, output)."""
         timeout = timeout or self.command_timeout
-        # The guest kills the command at `timeout`; give the round trip a
-        # little longer so we surface its error rather than our own.
-        return await asyncio.wait_for(
-            self._agent.run(command, timeout=timeout), timeout=timeout + 10
-        )
+        try:
+            # The guest kills the command at `timeout`; give the round
+            # trip longer, so its error is what we report, not ours.
+            return await asyncio.wait_for(
+                self._agent.run(command, timeout=timeout), timeout=timeout + 10
+            )
+        except asyncio.TimeoutError:
+            raise MachineError(
+                f"[{self.name}] guest stopped answering during: {command}"
+            ) from None
 
     async def succeed(self, command: str, timeout: float | None = None) -> str:
         """Run a command that must succeed; returns its output."""

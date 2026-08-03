@@ -13,7 +13,7 @@ async def test(vms):
     server, client = vms.server, vms.client
 
     for vm in (server, client):
-        assert await vm.succeed("hostname") == vm.name, "wrong hostname"
+        await vm.succeed(f"test $(hostname) = {vm.name}")
         print(f"[test] {vm.name} vec1: {await vm.succeed('ip -4 -br addr show vec1')}")
 
     await server.succeed(f"ping -c2 {client.ip}")

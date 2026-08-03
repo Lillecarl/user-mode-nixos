@@ -1,11 +1,16 @@
+# The guest kernel, built for ARCH=um from whatever source the guest's
+# own kernel package uses, with a hand-written config: allnoconfig plus
+# exactly what NixOS needs to boot (systemd, cgroups, ext4, overlayfs,
+# hostfs for the store, and the UML vector/ubd/serial drivers).
 {
   stdenv,
   lib,
-  fetchurl,
   linuxKernel,
   version,
   modDirVersion,
   src,
+  # UML is uniprocessor unless asked otherwise; SMP costs boot time and
+  # is only worth it for tests that measure parallelism.
   smp ? false,
 }:
 
@@ -42,7 +47,18 @@ let
     BLK_DEV_LOOP = yes;
     BLK_DEV_UBD = yes;
     TUN = yes;
+
+    # allnoconfig leaves the default channel strings empty, so UML logs
+    # a setup failure for each of the 16 consoles and 64 serial lines it
+    # cannot bring up.  con0 is the console we read on the host's stdout;
+    # ssl0 is the control channel, wired by the runner.  Everything else
+    # goes to the null channel, which needs NULL_CHAN to be more than a
+    # stub that fails.
+    NULL_CHAN = yes;
+    CON_ZERO_CHAN = freeform "fd:0,fd:1";
+    CON_CHAN = freeform "null";
     SSL = yes;
+    SSL_CHAN = freeform "null";
     PRINTK = yes;
     EARLY_PRINTK = yes;
 

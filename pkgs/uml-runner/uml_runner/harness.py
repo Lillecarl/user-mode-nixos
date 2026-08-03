@@ -61,9 +61,16 @@ async def machines(spec: dict):
         for lan in lans:
             lan.start()
         print(f"[test] booting {', '.join(vms)} ...", flush=True)
-        await asyncio.gather(*(m.start() for m in vms.values()))
+        # Let every machine settle even if one fails, so that a guest is
+        # never left half-spawned for the teardown below to trip over.
+        results = await asyncio.gather(
+            *(m.start() for m in vms.values()), return_exceptions=True
+        )
         for lan in lans:
             lan.detach()
+        for error in results:
+            if isinstance(error, BaseException):
+                raise error
         yield vms
     finally:
         print("[test] shutting down ...", flush=True)
