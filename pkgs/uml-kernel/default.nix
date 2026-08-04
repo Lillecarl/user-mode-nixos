@@ -141,6 +141,13 @@ let
     POSIX_MQUEUE = yes;
     SYSVIPC = yes;
 
+    # Nothing here uses the keyring, but kubelet raises the root user's
+    # key quota before it starts its container manager, and a sysctl it
+    # cannot open is fatal rather than skipped -- kubelet exits, systemd
+    # restarts it, and the control plane never comes up.  This is what
+    # puts kernel/keys/root_maxkeys and root_maxbytes under /proc/sys.
+    KEYS = yes;
+
     # A CNI plugin puts one end of a veth in the sandbox and the other
     # on a bridge; br_netfilter is what makes the host's iptables rules
     # apply to what crosses that bridge, which is how a Service works.

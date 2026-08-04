@@ -54,9 +54,34 @@ async def until(what, check, timeout, machine):
             return evidence
         if loop.time() > deadline:
             raise MachineError(
-                f"[{machine.name}] timed out waiting for {what}\n{evidence}"
+                f"[{machine.name}] timed out waiting for {what}\n{evidence}\n"
+                + await diagnose(machine)
             )
         await asyncio.sleep(POLL)
+
+
+async def diagnose(vm):
+    """Everything worth knowing about a node that would not come up.
+
+    A CI round trip on this test is the better part of an hour, so a
+    failure should answer the next question as well as the first one.
+    kubelet says why it will not start; containerd says why a container
+    would not; crictl says which ones exist; and the pod logs are where
+    the control plane itself complains -- kubeadm's own output shows none
+    of that, because from where it stands the apiserver simply never
+    answered.
+    """
+    logs = (
+        await vm.execute(
+            "tail -n 40 -v /var/log/pods/*/*/*.log 2>&1 | tail -n 400"
+        )
+    )[1]
+    return (
+        f"--- [{vm.name}] crictl ps -a ---\n{(await vm.execute('crictl ps -a'))[1]}\n"
+        f"--- [{vm.name}] kubelet ---\n{await vm.journal('kubelet.service', lines=80)}\n"
+        f"--- [{vm.name}] containerd ---\n{await vm.journal('containerd.service', lines=40)}\n"
+        f"--- [{vm.name}] pod logs ---\n{logs}"
+    )
 
 
 async def wait_for_images(vms):
@@ -77,9 +102,7 @@ async def init_control_plane(cp):
     )
     if rc != 0:
         raise MachineError(
-            f"[cp] kubeadm init failed (exit {rc}):\n{out}\n"
-            f"--- crictl ps -a ---\n{(await cp.execute('crictl ps -a'))[1]}\n"
-            f"--- kubelet ---\n{await cp.journal('kubelet.service', lines=80)}"
+            f"[cp] kubeadm init failed (exit {rc}):\n{out}\n" + await diagnose(cp)
         )
     print("[k8s] cp: control plane is up", flush=True)
 
@@ -114,7 +137,7 @@ async def join(cp, workers):
         if rc != 0:
             raise MachineError(
                 f"[{worker.name}] kubeadm join failed (exit {rc}):\n{out}\n"
-                f"--- kubelet ---\n{await worker.journal('kubelet.service', lines=80)}"
+                + await diagnose(worker)
             )
         print(f"[k8s] {worker.name}: joined", flush=True)
 

@@ -32,6 +32,16 @@ NODE_NETWORK = 2
 
 LOG_DIR = "/tmp/probe-logs"
 
+# setupKernelTunables() in pkg/kubelet/cm/container_manager_linux.go.
+TUNABLES = [
+    "vm/overcommit_memory",
+    "vm/panic_on_oom",
+    "kernel/panic",
+    "kernel/panic_on_oops",
+    "kernel/keys/root_maxkeys",
+    "kernel/keys/root_maxbytes",
+]
+
 POD = {
     "metadata": {"name": "probe", "namespace": "default", "uid": "probe-uid"},
     # A container's log_path is relative to this, and without it the
@@ -86,6 +96,22 @@ async def test(vms):
             f"will accept, so kubelet would not start:\n{cpuinfo}"
         )
     print(f"[test] node reports {speed.group(1)} MHz", flush=True)
+
+    # kubelet's container manager raises these six before it starts, and
+    # one it cannot open is an exit rather than a warning.  Four are in
+    # files every kernel compiles; the keyring pair needs CONFIG_KEYS,
+    # which an allnoconfig kernel does not give you.
+    missing = [
+        tunable
+        for tunable in TUNABLES
+        if (await node.execute(f"test -e /proc/sys/{tunable}"))[0] != 0
+    ]
+    if missing:
+        raise MachineError(
+            f"[{node.name}] the kernel is missing sysctls kubelet exits without:\n"
+            + "\n".join(f"    /proc/sys/{tunable}" for tunable in missing)
+        )
+    print(f"[test] all {len(TUNABLES)} of kubelet's kernel tunables are settable", flush=True)
 
     images = (await node.succeed("ctr --namespace k8s.io images list -q")).split()
     print(f"[test] containerd has {len(images)} images", flush=True)
