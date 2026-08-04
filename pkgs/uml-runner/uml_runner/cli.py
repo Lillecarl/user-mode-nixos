@@ -25,6 +25,7 @@ def _parse(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--passt", type=Path, required=True)
     parser.add_argument("--ssh-port", type=int, default=4325)
     parser.add_argument("--mem", default="128M")
+    parser.add_argument("--mtu", type=int, default=65000)
     parser.add_argument(
         "--command",
         help="run this in the guest, print its output, and power off",
@@ -45,6 +46,7 @@ async def _run(args: argparse.Namespace) -> int:
             image=args.root_image,
             memory=args.mem,
             ssh_port=args.ssh_port,
+            mtu=args.mtu,
         ),
         Toolchain(kernel=args.kernel, bridge=args.bridge, passt=args.passt),
     )

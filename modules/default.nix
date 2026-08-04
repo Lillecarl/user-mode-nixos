@@ -41,6 +41,30 @@
       '';
     };
 
+    mtu = lib.mkOption {
+      type = lib.types.ints.between 576 65534;
+      default = 65000;
+      example = 1500;
+      description = ''
+        MTU of both `vec` interfaces.
+
+        A segment is a socketpair, and AF_UNIX only lets about ten
+        frames sit in one before the sender blocks, so frame size is
+        what decides how much a guest can have in flight: jumbo frames
+        are worth roughly twice the throughput of 1500-byte ones.
+
+        The default stops short of 64 KiB on purpose.  The driver keeps
+        a receive buffer of `mtu` + 66 bytes per queue slot, and once
+        that plus the skb's own footer passes 64 KiB each one costs a
+        128 KiB allocation instead.  65520 measures the same as 65000
+        and uses twice the memory to do it.
+
+        Set this to 1500 for a test that cares about behaving like real
+        Ethernet.  It cannot be changed from inside the guest: the
+        driver leaves `max_mtu` at 1500, so this is the only way up.
+      '';
+    };
+
     sshPort = lib.mkOption {
       type = lib.types.port;
       default = 4325;

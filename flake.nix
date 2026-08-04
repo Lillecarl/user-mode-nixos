@@ -66,6 +66,7 @@
                 image = "${machine.system.build.umlRootImage}";
                 memory = machine.boot.uml.memory;
                 sshPort = machine.boot.uml.sshPort;
+                mtu = machine.boot.uml.mtu;
                 network = machine.boot.uml.lan.network;
                 address = machine.boot.uml.lan.address;
               }) machines;
@@ -74,11 +75,20 @@
 
           python = pkgs.python3.withPackages (_: [ first.system.build.umlRunnerPackage ]);
         in
-        pkgs.runCommand "uml-test-${name}" { nativeBuildInputs = [ python ]; } ''
-          export HOME="$TMPDIR"
-          python3 ${script} --spec ${spec}
-          touch $out
-        '';
+        pkgs.runCommand "uml-test-${name}"
+          {
+            nativeBuildInputs = [ python ];
+            # For running a test by hand outside the sandbox:
+            #   nix build -f . iperf.spec -o spec
+            #   nix build -f . iperf.python -o python
+            #   ./python/bin/python3 tests/iperf.py --spec ./spec
+            passthru = { inherit spec python; };
+          }
+          ''
+            export HOME="$TMPDIR"
+            python3 ${script} --spec ${spec}
+            touch $out
+          '';
 
       # Two guests on one segment, addressed statically.
       pair = network: {

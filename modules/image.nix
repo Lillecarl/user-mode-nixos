@@ -69,6 +69,7 @@ in
         --passt ${pkgs.passt}/bin/passt \
         --ssh-port ${toString cfg.sshPort} \
         --mem ${cfg.memory} \
+        --mtu ${toString cfg.mtu} \
         "$@"
     '';
   };

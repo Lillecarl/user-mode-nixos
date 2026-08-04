@@ -31,6 +31,18 @@ from .arpyc import AsyncConnection, connect
 _ANSI = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
 _CONSOLE_HISTORY = 2000
 
+_SYSTEMD_TIMEOUT = 60
+"""How long to wait for one `systemctl` round trip.  The agent gives the
+command itself 30s, so anything past this is the guest, not systemd."""
+
+_VECTOR_DEPTH = 64
+"""Frames per ``sendmmsg``/``recvmmsg``, and NAPI's poll weight.
+
+Also how many receive buffers the driver keeps allocated per interface,
+each one MTU-sized -- so at a jumbo MTU this is megabytes of the guest's
+RAM.  There is no point going deep: AF_UNIX lets about ten frames sit in
+a socketpair, so nothing beyond that is ever in flight."""
+
 
 class MachineError(Exception):
     """A guest failed to boot, or a command in it did not do as told."""
@@ -61,6 +73,7 @@ class MachineSpec:
     image: Path
     memory: str = "128M"
     ssh_port: int = 4325
+    mtu: int = 65000
     network: str | None = None
     address: str | None = None
 
@@ -71,6 +84,7 @@ class MachineSpec:
             image=Path(data["image"]),
             memory=data.get("memory", "128M"),
             ssh_port=data.get("sshPort", 4325),
+            mtu=data.get("mtu", 65000),
             network=data.get("network"),
             address=data.get("address"),
         )
@@ -173,11 +187,29 @@ class Machine:
         self._guest_sock.close()
         self._guest_sock = None
 
+    def _vec(self, unit: int, fd: int) -> str:
+        """A ``vecN=`` device on *fd*.
+
+        ``mtu`` is only settable here: the driver leaves ``max_mtu`` at
+        ``ether_setup``'s 1500, so ``ip link set mtu`` cannot raise it
+        afterwards.
+
+        No ``gro=1``: all it does is fix the receive buffers at 64K so
+        that a transport with virtio-net headers can deliver a segment
+        larger than the MTU.  ``fd`` has no such headers -- nothing ever
+        arrives bigger than a frame -- so it would only mean allocating
+        64K per frame and throwing most of it away.
+        """
+        return (
+            f"vec{unit}:transport=fd,fd={fd},"
+            f"depth={_VECTOR_DEPTH},mtu={self.spec.mtu}"
+        )
+
     def _argv(self, agent_fd: int) -> list[str]:
         argv = [
             str(self.tools.bridge),
             "--vec",
-            "vec0:transport=fd,fd=3,depth=512,gro=1",
+            self._vec(0, 3),
             "--passt-port",
             str(self.spec.ssh_port),
             str(self.tools.kernel),
@@ -189,7 +221,7 @@ class Machine:
             f"ssl0=fd:{agent_fd}",
         ]
         if self.lan_fd is not None:
-            argv.append(f"vec1:transport=fd,fd={self.lan_fd},depth=512,gro=1")
+            argv.append(self._vec(1, self.lan_fd))
         return argv
 
     async def shutdown(self) -> None:
@@ -309,21 +341,43 @@ class Machine:
             raise MachineError(f"[{self.name}] agent is not connected")
         return self._conn.root
 
+    async def _ask(self, what: str, call, timeout: float):
+        """Await one agent call, turning silence into a real error.
+
+        Every call goes through here.  A guest that has wedged or run out
+        of memory simply stops replying, and without a deadline the test
+        would sit on the future until the whole run is killed -- with no
+        clue as to which machine, or what it was asked.
+        """
+        try:
+            return await asyncio.wait_for(call, timeout=timeout)
+        except asyncio.TimeoutError:
+            raise MachineError(
+                f"[{self.name}] guest stopped answering during: {what}\n"
+                f"{self._console_tail()}"
+            ) from None
+        except EOFError:
+            raise MachineError(
+                f"[{self.name}] guest went away during: {what}\n"
+                f"{self._console_tail()}"
+            ) from None
+
+    def _console_tail(self, lines: int = 15) -> str:
+        """The last thing the guest said, for an error that has no other
+        evidence to offer -- a wedged guest cannot be asked anything."""
+        tail = list(self._history)[-lines:]
+        return "\n".join(f"    | {line}" for line in tail) or "    | (silent)"
+
     async def execute(
         self, command: str, timeout: float | None = None
     ) -> tuple[int, str]:
         """Run a shell command in the guest; returns (exit code, output)."""
         timeout = timeout or self.command_timeout
-        try:
-            # The guest kills the command at `timeout`; give the round
-            # trip longer, so its error is what we report, not ours.
-            return await asyncio.wait_for(
-                self._agent.run(command, timeout=timeout), timeout=timeout + 10
-            )
-        except asyncio.TimeoutError:
-            raise MachineError(
-                f"[{self.name}] guest stopped answering during: {command}"
-            ) from None
+        # The guest kills the command at `timeout`; give the round trip
+        # longer, so its error is what we report, not ours.
+        return await self._ask(
+            command, self._agent.run(command, timeout=timeout), timeout + 10
+        )
 
     async def succeed(self, command: str, timeout: float | None = None) -> str:
         """Run a command that must succeed; returns its output."""
@@ -347,19 +401,31 @@ class Machine:
 
     async def unit_state(self, unit: str) -> str:
         """ActiveState of *unit* (``active``, ``failed``, ...)."""
-        return await self._agent.unit_state(unit)
+        return await self._ask(
+            f"unit_state {unit}", self._agent.unit_state(unit), _SYSTEMD_TIMEOUT
+        )
 
     async def unit_info(self, unit: str) -> dict[str, str]:
         """Every property ``systemctl show`` reports for *unit*."""
-        return await self._agent.unit_info(unit)
+        return await self._ask(
+            f"unit_info {unit}", self._agent.unit_info(unit), _SYSTEMD_TIMEOUT
+        )
 
     async def list_units(self, pattern: str = "*") -> list[dict]:
         """Units matching *pattern*, as dicts of the systemctl columns."""
-        return await self._agent.list_units(pattern)
+        return await self._ask(
+            f"list_units {pattern}",
+            self._agent.list_units(pattern),
+            _SYSTEMD_TIMEOUT,
+        )
 
     async def journal(self, unit: str | None = None, lines: int = 50) -> str:
         """Tail of the guest journal, optionally for one unit."""
-        return await self._agent.journal(unit, lines)
+        return await self._ask(
+            f"journal {unit or 'all'}",
+            self._agent.journal(unit, lines),
+            _SYSTEMD_TIMEOUT,
+        )
 
     async def wait_for_unit(self, unit: str, timeout: float = 120) -> None:
         """Wait until *unit* is active, failing fast if it dies first."""

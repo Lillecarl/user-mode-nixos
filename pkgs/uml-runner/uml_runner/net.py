@@ -6,6 +6,20 @@ on a segment get the two ends of one ``SOCK_SEQPACKET`` socketpair and
 the host stays out of the data path entirely.  Three or more need
 something to fan frames out, which is what :class:`Lan` does when it has
 to -- a learning-free hub that floods every frame to every other port.
+
+How much a segment carries comes down to how many frames may be in
+flight in a socketpair, and AF_UNIX bounds that two ways:
+
+  * the receiver's queue length, capped by ``net.unix.max_dgram_qlen``
+    -- 10 in a fresh network namespace, which is what a Nix build
+    sandbox gets, and not writable there;
+  * the *sender's* ``SO_SNDBUF``, which every queued frame is charged
+    against until the receiver reads it.
+
+Only the second is ours to set, so we set it to the maximum the host
+allows.  The first is why guests use a large MTU (see ``boot.uml.mtu``):
+ten 64K frames is a window worth having, ten 1500-byte ones is 15K, and
+that difference is most of the throughput between two guests.
 """
 
 from __future__ import annotations
@@ -14,6 +28,16 @@ import asyncio
 import socket
 
 _FRAME_MAX = 65536
+
+_BURST = 64
+"""Frames to take from one port before giving the others a turn."""
+
+_WANTED_SNDBUF = 8 << 20
+"""Asked for on both ends of every port.  The kernel silently clamps it
+to ``net.core.wmem_max``, so asking for more than we can have costs
+nothing.  There is no matching ``SO_RCVBUF``: an AF_UNIX datagram is
+charged to whoever sent it until the far side reads it, so the sending
+socket's buffer is the only one that bounds a segment."""
 
 
 class Lan:
@@ -28,9 +52,9 @@ class Lan:
             raise ValueError(f"lan {name!r} needs at least two machines")
         self.name = name
         self.fds: dict[str, int] = {}
+        self.dropped = 0
         self._guest_ends: list[socket.socket] = []
         self._ports: list[socket.socket] = []
-        self._tasks: list[asyncio.Task] = []
 
         if len(members) == 2:
             # Point to point: no host involvement, no copying.
@@ -46,29 +70,48 @@ class Lan:
 
     @staticmethod
     def _pair() -> tuple[socket.socket, socket.socket]:
-        return socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+        pair = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+        for sock in pair:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, _WANTED_SNDBUF)
+        return pair
 
     def start(self) -> None:
         """Start flooding frames between ports, if this segment needs a hub."""
+        loop = asyncio.get_running_loop()
         for port in self._ports:
             port.setblocking(False)
-            self._tasks.append(asyncio.ensure_future(self._flood(port)))
+            others = [other for other in self._ports if other is not port]
+            loop.add_reader(port, self._flood, port, others)
 
-    async def _flood(self, src: socket.socket) -> None:
-        loop = asyncio.get_running_loop()
-        others = [p for p in self._ports if p is not src]
-        while True:
+    def _flood(self, src: socket.socket, others: list[socket.socket]) -> None:
+        """Copy everything readable on *src* to every other port.
+
+        A callback rather than a task per frame: two awaits and the
+        futures behind them cost more than the copy itself, and this runs
+        once per frame on the segment.  Ports that will not take a frame
+        have it dropped, which is what a switch does with a congested
+        port -- blocking here would stall every other port as well.
+        """
+        for _ in range(_BURST):
             try:
-                frame = await loop.sock_recv(src, _FRAME_MAX)
-            except (OSError, asyncio.CancelledError):
+                frame = src.recv(_FRAME_MAX)
+            except (BlockingIOError, InterruptedError):
+                return
+            except OSError:
+                self._drop_port(src)
                 return
             if not frame:
+                self._drop_port(src)
                 return
             for dst in others:
                 try:
-                    await loop.sock_sendall(dst, frame)
+                    dst.send(frame)
                 except OSError:
-                    pass
+                    self.dropped += 1
+
+    def _drop_port(self, src: socket.socket) -> None:
+        """Stop listening to a port whose guest has gone away."""
+        asyncio.get_running_loop().remove_reader(src)
 
     def detach(self) -> None:
         """Drop our copies of the guests' fds, once they have all spawned.
@@ -81,9 +124,15 @@ class Lan:
         self._guest_ends.clear()
 
     def close(self) -> None:
-        for task in self._tasks:
-            task.cancel()
-        self._tasks.clear()
+        if self.dropped:
+            print(
+                f"[test] lan {self.name}: dropped {self.dropped} frames "
+                f"on congested ports",
+                flush=True,
+            )
+        loop = asyncio.get_running_loop()
+        for sock in self._ports:
+            loop.remove_reader(sock)
         self.detach()
         for sock in self._ports:
             sock.close()
