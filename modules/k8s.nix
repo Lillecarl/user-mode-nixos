@@ -208,6 +208,20 @@ let
     NotReady with "cni plugin not initialized", which is correct -- it
     is not.
   */
+  /*
+    The node's CNI, written once its podCIDR is known.
+
+    isDefaultGateway implies isGateway, and makes the bridge plugin add
+    the container's default route itself via the gateway it derives from
+    the range.  Naming 0.0.0.0/0 in ipam.routes as well -- which most
+    published conflists do, alongside the plain isGateway -- adds it
+    twice here: the plugin treats an existing default route as its own
+    only if that route names a gateway, and an ipam route does not, so it
+    appends a second one and the netlink add comes back EEXIST.  kubelet
+    reports that as `failed to add route ...: file exists`, and nothing
+    that needs CNI ever gets a sandbox -- which in a cluster this size
+    means CoreDNS and nothing else, long after the nodes all went Ready.
+  */
   cniSetup = pkgs.writeShellApplication {
     name = "uml-k8s-cni";
     text = ''
@@ -229,8 +243,7 @@ let
             "ipMasq": false,
             "ipam": {
               "type": "host-local",
-              "ranges": [ [ { "subnet": "$1" } ] ],
-              "routes": [ { "dst": "0.0.0.0/0" } ]
+              "ranges": [ [ { "subnet": "$1" } ] ]
             }
           },
           {
