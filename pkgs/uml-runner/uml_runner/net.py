@@ -6,6 +6,9 @@ on a segment get the two ends of one ``SOCK_SEQPACKET`` socketpair and
 the host stays out of the data path entirely.  Three or more need
 something to fan frames out, which is what :class:`Lan` does when it has
 to -- a learning-free hub that floods every frame to every other port.
+One guest on its own gets a segment with nobody else on it, which is a
+cable into a bucket: `vec1` exists and carries an address, and whatever
+it says goes nowhere.
 
 How much a segment carries comes down to how many frames may be in
 flight in a socketpair, and AF_UNIX bounds that two ways:
@@ -48,15 +51,24 @@ class Lan:
     """
 
     def __init__(self, name: str, members: list[str]) -> None:
-        if len(members) < 2:
-            raise ValueError(f"lan {name!r} needs at least two machines")
+        if not members:
+            raise ValueError(f"lan {name!r} has no machines on it")
         self.name = name
         self.fds: dict[str, int] = {}
         self.dropped = 0
         self._guest_ends: list[socket.socket] = []
         self._ports: list[socket.socket] = []
 
-        if len(members) == 2:
+        if len(members) == 1:
+            # A guest alone on a segment: it still wants vec1 to exist and
+            # carry its address -- a node in a cluster of one is a real
+            # thing to test -- so it gets one end of a pair and the host
+            # quietly holds the other.
+            guest_end, host_end = self._pair()
+            self._guest_ends = [guest_end]
+            self._ports = [host_end]
+            self.fds = {members[0]: guest_end.fileno()}
+        elif len(members) == 2:
             # Point to point: no host involvement, no copying.
             a, b = self._pair()
             self._guest_ends = [a, b]

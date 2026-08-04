@@ -32,6 +32,11 @@ from .net import build_lans
 class Machines(dict):
     """The run's machines by name, also reachable as attributes."""
 
+    settings: dict
+    """Whatever the spec's ``settings`` held -- values a test needs that
+    only Nix knows, such as a package version or an image tag.  Empty
+    unless ``mkTest`` was given some."""
+
     def __getattr__(self, name: str) -> Machine:
         try:
             return self[name]
@@ -57,6 +62,7 @@ async def machines(spec: dict):
     vms = Machines(
         (s.name, Machine(s, tools, lan_fd=lan_fd.get(s.name))) for s in specs
     )
+    vms.settings = spec.get("settings", {})
     try:
         for lan in lans:
             lan.start()
