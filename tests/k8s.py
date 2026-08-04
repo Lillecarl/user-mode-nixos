@@ -171,14 +171,28 @@ async def wire_pod_network(cp, vms):
     gets away with.  A real cluster would run an overlay here; three
     guests on one Ethernet segment can just route.
     """
-    nodes = await get_json(cp, "get nodes")
+    # `kubeadm join` returns once the node has registered, which is not
+    # the same instant kube-controller-manager's IPAM has given it a
+    # /24: reading the node list straight afterwards is a race that a
+    # fast join loses.
     cidrs = {}
-    for item in nodes["items"]:
-        name = item["metadata"]["name"]
-        cidr = item["spec"].get("podCIDR")
-        if not cidr:
-            raise MachineError(f"[cp] node {name} was never assigned a podCIDR")
-        cidrs[name] = cidr
+
+    async def assigned():
+        nodes = await get_json(cp, "get nodes")
+        cidrs.clear()
+        cidrs.update(
+            {
+                item["metadata"]["name"]: item["spec"].get("podCIDR")
+                for item in nodes["items"]
+            }
+        )
+        missing = sorted(name for name, cidr in cidrs.items() if not cidr)
+        return not missing and len(cidrs) == len(vms), (
+            f"without a podCIDR: {', '.join(missing) or 'none'}; "
+            f"nodes: {', '.join(sorted(cidrs)) or 'none'}"
+        )
+
+    await until("every node to be given a podCIDR", assigned, JOIN_TIMEOUT, cp)
     print(f"[k8s] pod subnets: {cidrs}", flush=True)
 
     if set(cidrs) != set(vms):
