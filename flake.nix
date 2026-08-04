@@ -216,7 +216,7 @@
             };
           };
           settings = {
-            inherit (k8sImages) sandboxImage;
+            inherit (k8sImages) sandboxImage entrypoints;
             kubernetesVersion = pkgs.kubernetes.version;
           };
         };

@@ -67,7 +67,7 @@ let
       name,
       tag,
       command,
-      binary,
+      package,
       extraPackages ? [ ],
       selfContained ? false,
     }:
@@ -79,7 +79,7 @@ let
         ${lib.concatMapStringsSep "\n" (
           pkg: "ln -sfn ${pkg}/bin/* usr/local/bin/"
         ) extraPackages}
-        ln -sfn ${binary} usr/local/bin/${command}
+        ln -sfn ${package}/bin/${command} usr/local/bin/${command}
       '';
       config = {
         Entrypoint = [ "/usr/local/bin/${command}" ];
@@ -90,30 +90,30 @@ let
       };
     };
 
-  images = [
-    (mkImage {
+  imageSpecs = [
+    {
       name = "registry.k8s.io/kube-apiserver";
       tag = "v${version}";
       command = "kube-apiserver";
-      binary = "${kubernetes}/bin/kube-apiserver";
-    })
-    (mkImage {
+      package = kubernetes;
+    }
+    {
       name = "registry.k8s.io/kube-controller-manager";
       tag = "v${version}";
       command = "kube-controller-manager";
-      binary = "${kubernetes}/bin/kube-controller-manager";
-    })
-    (mkImage {
+      package = kubernetes;
+    }
+    {
       name = "registry.k8s.io/kube-scheduler";
       tag = "v${version}";
       command = "kube-scheduler";
-      binary = "${kubernetes}/bin/kube-scheduler";
-    })
-    (mkImage {
+      package = kubernetes;
+    }
+    {
       name = "registry.k8s.io/kube-proxy";
       tag = "v${version}";
       command = "kube-proxy";
-      binary = "${kubernetes}/bin/kube-proxy";
+      package = kubernetes;
       # kube-proxy does not write rules itself: it execs iptables-save
       # and iptables-restore, and reads conntrack, from inside its own
       # container.  Upstream's image bundles these for the same reason.
@@ -123,24 +123,24 @@ let
         conntrack-tools
         ethtool
       ];
-    })
-    (mkImage {
+    }
+    {
       name = "registry.k8s.io/etcd";
       tag = tags.etcd;
       command = "etcd";
-      binary = "${etcd}/bin/etcd";
-    })
-    (mkImage {
+      package = etcd;
+    }
+    {
       name = "registry.k8s.io/coredns/coredns";
       tag = tags.coredns;
       command = "coredns";
-      binary = "${coredns}/bin/coredns";
-    })
-    (mkImage {
+      package = coredns;
+    }
+    {
       name = "registry.k8s.io/pause";
       tag = tags.pause;
       command = "pause";
-      binary = "${kubernetes.pause}/bin/pause";
+      package = kubernetes.pause;
       # The one image that has to carry its own closure.  pause runs as
       # the pod sandbox, and containerd builds the sandbox's OCI spec
       # without consulting base_runtime_spec -- so it is the one
@@ -148,8 +148,32 @@ let
       # is also the smallest: a dynamically linked hello-world and the
       # glibc under it.
       selfContained = true;
-    })
+    }
   ];
+
+  images = map mkImage imageSpecs;
+
+  # The images that resolve through the store mount rather than carrying
+  # what they run.
+  linked = lib.filter (spec: !(spec.selfContained or false)) imageSpecs;
+
+  /*
+    Every store path those symlinks point at.
+
+    A layered image is a *gzipped* tar, so the store paths written into
+    it are invisible to Nix: `nix-store --query --references` on the
+    tarball comes back empty.  Nothing would pull etcd into a build that
+    only asked for the images, and the guest would boot with a
+    /usr/local/bin full of dangling symlinks -- which runc reports as
+    `executable file not found in $PATH`, indistinguishable from an image
+    built without the binary in it.  kube-apiserver and friends survive
+    that by accident, because the node installs kubeadm and kubelet out
+    of the same derivation; etcd and CoreDNS have nothing else asking for
+    them.  modules/k8s.nix turns this into a real dependency.
+  */
+  runtimeInputs = lib.unique (
+    lib.concatMap (spec: [ spec.package ] ++ spec.extraPackages or [ ]) linked
+  );
 
   # Something to actually schedule.  Static busybox is three megabytes
   # and brings httpd, wget and nslookup, which between them are enough to
@@ -187,6 +211,12 @@ in
 {
   # One tarball, so a node imports everything in a single pass.
   tarball = dockerTools.mergeImages (images ++ [ workload ]);
+
+  inherit runtimeInputs;
+
+  # What each image will try to exec, for a test to check before a
+  # cluster spends twenty minutes discovering it the hard way.
+  entrypoints = map (spec: "${spec.package}/bin/${spec.command}") linked;
 
   # What a test should ask to be scheduled.  There is no registry, so
   # anything using this has to say imagePullPolicy: Never.

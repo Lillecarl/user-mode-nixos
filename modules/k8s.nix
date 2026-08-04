@@ -379,6 +379,19 @@ in
 
     # ── the images, before anything wants them ─────────────────────
 
+    /*
+      What the images point at, made a dependency of the node.
+
+      The tarball itself does not count as one.  Its layers are gzipped,
+      so the store paths inside are opaque to Nix's reference scanner and
+      the tarball comes back with no references at all -- meaning nothing
+      in this configuration otherwise asks for etcd, and a guest whose
+      /nix/store is the build sandbox's would not have it.  The symlinks
+      would dangle and runc would report an image that does not contain
+      its own binary.
+    */
+    system.extraDependencies = images.runtimeInputs;
+
     systemd.services.k8s-load-images = {
       description = "Import the kubeadm images into containerd";
       wantedBy = [ "multi-user.target" ];

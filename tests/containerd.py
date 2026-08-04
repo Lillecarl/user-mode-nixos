@@ -122,6 +122,24 @@ async def test(vms):
                 + "\n".join(f"    {image}" for image in images)
             )
 
+    # Every image is a symlink to one of these.  Checking them all here
+    # is the difference between "etcd's image has no etcd in it" and a
+    # control plane that crash-loops for twenty minutes because the one
+    # image this test happens to run is the one that works.
+    entrypoints = vms.settings["entrypoints"]
+    dangling = [
+        path
+        for path in entrypoints
+        if (await node.execute(f"test -x {path}"))[0] != 0
+    ]
+    if dangling:
+        raise MachineError(
+            f"[{node.name}] an image points at a binary the node does not have, "
+            f"so runc will say it is not in $PATH:\n"
+            + "\n".join(f"    {path}" for path in dangling)
+        )
+    print(f"[test] all {len(entrypoints)} image entrypoints resolve", flush=True)
+
     image = f"registry.k8s.io/kube-apiserver:v{version}"
     await node.succeed(f"mkdir -p {LOG_DIR}")
     await write_json(node, "/tmp/pod.json", POD)
