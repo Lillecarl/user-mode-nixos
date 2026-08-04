@@ -22,6 +22,7 @@ jobs:
         with:
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           name: lillecarl
+          pushFilter: (-uml-test-)
           useDaemon: false
       - name: Check the generated files, the images and the kubeadm config
         run: nix build --no-link --print-build-logs --keep-going ".#check-workflows" ".#check-k8s-images" ".#check-k8s-config"
@@ -48,6 +49,7 @@ jobs:
         with:
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           name: lillecarl
+          pushFilter: (-uml-test-)
           useDaemon: false
       - name: Build the UML kernel
         run: nix build --no-link --print-build-logs --keep-going ".#umlKernel"
@@ -76,6 +78,7 @@ jobs:
         with:
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           name: lillecarl
+          pushFilter: (-uml-test-)
           useDaemon: false
       - name: Allow the unprivileged namespaces the Nix sandbox needs
         run: |
@@ -110,6 +113,7 @@ jobs:
         with:
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           name: lillecarl
+          pushFilter: (-uml-test-)
           useDaemon: false
       - name: Allow the unprivileged namespaces the Nix sandbox needs
         run: |
@@ -152,6 +156,7 @@ jobs:
         with:
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           name: lillecarl
+          pushFilter: (-uml-test-)
           useDaemon: false
       - name: Allow the unprivileged namespaces the Nix sandbox needs
         run: |
@@ -186,6 +191,7 @@ jobs:
         with:
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           name: lillecarl
+          pushFilter: (-uml-test-)
           useDaemon: false
       - name: Allow the unprivileged namespaces the Nix sandbox needs
         run: |

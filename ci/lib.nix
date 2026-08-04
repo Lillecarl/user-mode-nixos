@@ -44,6 +44,25 @@ rec {
         name = "lillecarl";
         authToken = "\${{ secrets.CACHIX_AUTH_TOKEN }}";
         useDaemon = false;
+        /*
+          Cache what the tests are built out of, not whether they passed.
+
+          A `uml-test-*` output is an empty file whose existence means
+          "this booted some guests and they behaved".  Push that and the
+          next run with the same inputs substitutes it instead of booting
+          anything -- so re-running a commit, which is the one thing you
+          do when you suspect a result, is guaranteed to agree with
+          itself.
+
+          The cheap checks stay cacheable on purpose.  Asking kubeadm
+          whether it accepts a config is a pure function of that config,
+          so a cached yes is as good as a fresh one.  A test that boots
+          three guests and waits on a control plane is not pure in that
+          way however much Nix would like it to be, and those are exactly
+          the ones worth paying to repeat.  The kernel -- the only build
+          here that costs real time -- is unaffected.
+        */
+        pushFilter = "(-uml-test-)";
       };
     };
 
