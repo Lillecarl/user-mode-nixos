@@ -29,6 +29,20 @@ grep '\[test\]' /tmp/umlbuild.log
 Every console line is prefixed with the machine it came from, so
 `grep '\[server\]'` narrows to one guest.
 
+## Measuring the network
+
+`nix build .#iperf` prints what a segment carries. Two things make those
+numbers lie:
+
+- **Host load.** A guest is a process and a busy builder halves the
+  result. The same configuration measured 1.9 Gbit/s on a saturated
+  host and 4.4 Gbit/s on an idle one. Only compare runs taken back to
+  back.
+- **The namespace.** Outside a sandbox the socketpair inherits the
+  host's `net.unix.max_dgram_qlen`, which is usually far above the 10 a
+  fresh network namespace gets. To measure what a test will actually
+  see, run under `unshare -rn`.
+
 ## Things that bite
 
 - A failure inside the guest agent shows up on the host as an exception

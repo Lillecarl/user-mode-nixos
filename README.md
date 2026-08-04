@@ -82,9 +82,17 @@ writable overlay on top, then execs systemd. So a guest costs a sparse
 shared between all of them.
 
 **Segments.** Two guests on a segment get the ends of one
-`SOCK_SEQPACKET` socketpair and the host stays out of the data path
-(~4 Gbit/s over `vec1`, per `tests/iperf.py`). Three or more get a hub in
-the host process that floods frames between ports.
+`SOCK_SEQPACKET` socketpair and the host stays out of the data path.
+Three or more get a hub in the host process that floods frames between
+ports.
+
+What a segment carries is decided by frame size, not by anything on the
+host. AF_UNIX only lets about ten datagrams queue on a socket before the
+sender blocks — `net.unix.max_dgram_qlen`, which a Nix sandbox's network
+namespace gets at its default of 10 and cannot raise — so at a 1500-byte
+MTU a guest has 15 KB in flight and no more. Guests therefore run a
+65000-byte MTU by default (`boot.uml.mtu`), which measures about
+10 Gbit/s over `vec1` against about 4 at 1500.
 
 ## Layout
 
