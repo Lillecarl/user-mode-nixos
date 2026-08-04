@@ -77,6 +77,8 @@ async def diagnose(vm):
         )
     )[1]
     return (
+        f"--- [{vm.name}] addresses and routes ---\n"
+        f"{(await vm.execute('ip -brief addr; ip route; ip -6 route'))[1]}\n"
         f"--- [{vm.name}] crictl ps -a ---\n{(await vm.execute('crictl ps -a'))[1]}\n"
         f"--- [{vm.name}] kubelet ---\n{await vm.journal('kubelet.service', lines=80)}\n"
         f"--- [{vm.name}] containerd ---\n{await vm.journal('containerd.service', lines=40)}\n"
@@ -114,8 +116,25 @@ async def join(cp, workers):
     out of /etc/kubernetes, but the join itself does not use the command
     line kubeadm prints -- see `uml-k8s-join`, which wraps them in a
     configuration carrying this cluster's timeouts.
+
+    --config is not optional here, even though the cluster already
+    exists and this command only mints a token.  Without it kubeadm
+    defaults an InitConfiguration first, and defaulting always calls
+    ChooseAPIServerBindAddress -- which asks the kernel which interface
+    owns the default route and then wants a global address on it.  That
+    tolerates finding no default route at all (it warns and uses
+    0.0.0.0), but treats a default route whose interface has no global
+    address as fatal: "unable to select an IP from default routes", on a
+    control plane that is up and serving.
+
+    Passing the config we ran init with avoids the question rather than
+    answering it: ResolveBindAddress returns an advertise address that
+    is already concrete without looking at an interface at all.
     """
-    printed = await cp.succeed("kubeadm token create --print-join-command")
+    printed = await cp.succeed(
+        "kubeadm token create --print-join-command"
+        " --config /etc/kubernetes/kubeadm-config.yaml"
+    )
     fields = printed.split()
     try:
         token = fields[fields.index("--token") + 1]
