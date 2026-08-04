@@ -111,8 +111,17 @@ containerd to unpack, onto a virtual disk, something the node can already
 read. `modules/k8s-images.nix` builds each image as a handful of symlinks
 into `/nix/store` (`includeStorePaths = false`), and `modules/k8s.nix`
 mounts the store into every container through containerd's
-`base_runtime_spec` — the one place that reaches kube-proxy and CoreDNS,
-which are addons applied from the API and have no patchable manifest.
+`base_runtime_spec`.
+
+kubeadm could do most of that itself, with `extraVolumes` or a patches
+directory — but its patch targets stop short of kube-proxy, which is
+applied from a manifest baked into kubeadm. That is the one that matters:
+kube-proxy comes from `pkgs.kubernetes`, so letting it carry its own
+closure costs 152 MiB against 14 MiB for every image here put together.
+The tradeoff is that the mount is invisible in `kubectl get pod -o yaml`
+— if a container cannot find `/nix/store`, look in `modules/k8s.nix`, not
+at the manifest.
+
 Only the pause image carries its closure, because containerd builds the
 pod sandbox's OCI spec without consulting that file.
 

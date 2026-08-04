@@ -36,13 +36,29 @@ let
     Give every container the host's /nix/store.
 
     The images hold nothing but symlinks into it, so without this mount
-    each one would exec a dangling link.  containerd's base_runtime_spec
-    is the only place to say that once: kubeadm can patch the four static
-    pods, but kube-proxy and CoreDNS are addons applied from the API and
-    there is no point at which their volume mounts could be edited.  CRI
-    deep-copies this spec and appends its own mounts on top, dropping
-    only the destinations it supplies itself -- /nix/store is not one of
-    them.
+    each one would exec a dangling link.  CRI deep-copies this spec and
+    appends its own mounts on top, dropping only the destinations it
+    supplies itself -- /nix/store is not one of them.
+
+    kubeadm could carry most of this instead, through `extraVolumes` on
+    the control plane components or a patches directory.  Its patch
+    targets are etcd, kube-apiserver, kube-controller-manager,
+    kube-scheduler, kubeletconfiguration and corednsdeployment -- so
+    everything except kube-proxy, which is applied from a manifest baked
+    into kubeadm with no patch point at all.  Reaching it would mean
+    skipping the addon phase and owning a DaemonSet that has to track the
+    Kubernetes version, patching it from outside after init, or letting
+    that one image carry its closure.  The last is the cheap-sounding
+    option and is not cheap: kube-proxy comes from pkgs.kubernetes, so it
+    is 152 MiB compressed against 14 MiB for every image here put
+    together, on each of three nodes.
+
+    Doing it here instead costs one thing worth knowing about: the mount
+    does not appear in `kubectl get pod -o yaml`, because it was never in
+    the pod spec.  If a container cannot find /nix/store, this file is
+    where to look, not the manifest.  In exchange it also covers whatever
+    a test schedules, which would otherwise have to ask for the volume
+    every time.
 
     Generated from the containerd being configured rather than written
     out here, so that a bump which changes the default capabilities or
