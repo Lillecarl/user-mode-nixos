@@ -7,6 +7,7 @@ namespace, the images did not import, or the store is not reachable from
 inside a container -- and finding out takes an hour.  This asks the three
 directly, on one guest, in about a minute:
 
+    machine   the node looks enough like hardware for kubelet to accept
     import    containerd has the images kubeadm will ask for
     sandbox   a pod sandbox starts, so runc has the namespaces it wants
     store     a container whose only content is a symlink into
@@ -21,6 +22,7 @@ becomes healthy.
 
 import asyncio
 import json
+import re
 
 from uml_runner import MachineError, run_test
 
@@ -70,6 +72,20 @@ async def test(vms):
 
     await node.wait_for_unit("containerd.service", timeout=300)
     await node.wait_for_unit("k8s-load-images.service", timeout=600)
+
+    # cadvisor refuses to start kubelet on a machine with no clock speed,
+    # and UML prints none.  Checked here rather than left to the cluster
+    # test, where it costs five minutes of kubeadm init to find out that
+    # kubelet has been crash-looping the whole time.
+    await node.wait_for_unit("uml-k8s-cpuinfo.service", timeout=120)
+    cpuinfo = await node.succeed("cat /proc/cpuinfo")
+    speed = re.search(r"(?:cpu MHz|CPU MHz|clock)\s*:\s*([0-9]+\.[0-9]+)", cpuinfo)
+    if not speed:
+        raise MachineError(
+            f"[{node.name}] /proc/cpuinfo still has no clock speed cadvisor "
+            f"will accept, so kubelet would not start:\n{cpuinfo}"
+        )
+    print(f"[test] node reports {speed.group(1)} MHz", flush=True)
 
     images = (await node.succeed("ctr --namespace k8s.io images list -q")).split()
     print(f"[test] containerd has {len(images)} images", flush=True)
