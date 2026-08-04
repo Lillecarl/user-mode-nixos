@@ -92,7 +92,7 @@ sender blocks — `net.unix.max_dgram_qlen`, which a Nix sandbox's network
 namespace gets at its default of 10 and cannot raise — so at a 1500-byte
 MTU a guest has 15 KB in flight and no more. Guests therefore run a
 65000-byte MTU by default (`boot.uml.mtu`), which measures about
-10 Gbit/s over `vec1` against about 4 at 1500.
+11 Gbit/s over `vec1` against about 4 at 1500.
 
 ## Layout
 
@@ -112,8 +112,10 @@ tests/                one file per test
 
 - x86_64-linux only, and the guest kernel comes from the host's nixpkgs.
 - No nested virtualisation, no KVM inside a guest, no real block devices.
-- UML is single-CPU unless the kernel is built with `smp = true`, which
-  is off by default.
+- A guest is single-CPU. The kernel takes `smp = true`, but UML only
+  allows SMP with the seccomp userspace, and two vCPUs measured *slower*
+  than one on the iperf test — the cross-CPU work costs more than the
+  parallelism buys.
 - A test's machines share the host's loopback for ssh forwards, so
   running two outside a sandbox at once will collide on ports.
 

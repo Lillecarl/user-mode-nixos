@@ -169,11 +169,14 @@ class Machine:
         )
         self._monitor = asyncio.ensure_future(self._pump_console())
 
+        loop = asyncio.get_running_loop()
+        started = loop.time()
         try:
             await asyncio.wait_for(
                 self._wait_for_line(re.compile(re.escape(AGENT_READY))),
                 timeout=self.boot_timeout,
             )
+            self._log(f"up in {loop.time() - started:.1f}s")
         except asyncio.TimeoutError:
             raise MachineError(
                 f"[{self.name}] agent did not come up within "
@@ -219,6 +222,13 @@ class Machine:
             "init=/init",
             f"mem={self.spec.memory}",
             f"ssl0=fd:{agent_fd}",
+            # Catch the guest's syscalls with a seccomp filter instead of
+            # ptrace: fewer context switches per trap and per page fault,
+            # which measures a few percent on throughput and about five
+            # seconds off a boot.  "auto" falls back to ptrace where the
+            # host will not let us install a filter, rather than
+            # refusing to boot the way "on" does.
+            "seccomp=auto",
         ]
         if self.lan_fd is not None:
             argv.append(self._vec(1, self.lan_fd))
