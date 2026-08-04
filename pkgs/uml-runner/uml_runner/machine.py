@@ -27,6 +27,7 @@ from pathlib import Path
 
 from .agent import AGENT_READY
 from .arpyc import AsyncConnection, connect
+from . import forward
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
 _CONSOLE_HISTORY = 2000
@@ -76,6 +77,10 @@ class MachineSpec:
     mtu: int = 65000
     network: str | None = None
     address: str | None = None
+    forward: tuple[forward.Rule, ...] = ()
+    """Host-side port forwards.  Addresses in these are still None until
+    :func:`uml_runner.forward.resolve` has run over every machine in the
+    run at once -- see :func:`uml_runner.harness.machines`."""
 
     @classmethod
     def from_json(cls, data: dict) -> MachineSpec:
@@ -87,6 +92,9 @@ class MachineSpec:
             mtu=data.get("mtu", 65000),
             network=data.get("network"),
             address=data.get("address"),
+            forward=tuple(
+                forward.Rule.from_json(rule) for rule in data.get("forward", [])
+            ),
         )
 
     @property
@@ -114,6 +122,7 @@ class Machine:
         self.lan_fd = lan_fd
         self.boot_timeout = boot_timeout
         self.command_timeout = command_timeout
+        self.forward: list[forward.Rule] = list(spec.forward)
 
         self._rundir: Path | None = None
         self._process: subprocess.Process | None = None
@@ -138,6 +147,25 @@ class Machine:
         return f"<Machine {self.name}>"
 
     # ── lifecycle ──────────────────────────────────────────────────
+
+    def resolve_forward(self, taken: set[str]) -> None:
+        """Settle this guest's forwards, before anything is spawned.
+
+        Every guest in a run must go through here before any of them
+        starts, or two of them pick the same address: the check is a
+        bind that is released again immediately, so it only means
+        anything while nothing else is racing it.  *taken* carries what
+        earlier guests were given and is added to here.
+        """
+        self.forward, notes = forward.resolve(self.forward, taken=taken)
+        for note in notes:
+            self._log(f"warning: {note}")
+        forward.probe(self.forward)
+        for rule in self.forward:
+            what = "all ports" if rule.wide else ", ".join(
+                str(port) for port in rule.ports
+            )
+            self._log(f"forwarding {what} on {rule.address}")
 
     async def start(self) -> None:
         """Boot the guest and connect to its agent."""
@@ -213,8 +241,7 @@ class Machine:
             str(self.tools.bridge),
             "--vec",
             self._vec(0, 3),
-            "--passt-port",
-            str(self.spec.ssh_port),
+            *forward.to_args(self.forward),
             str(self.tools.kernel),
             f"ubd0={self._rundir}/cow,{self.spec.image}",
             "root=/dev/ubda",
@@ -427,6 +454,20 @@ class Machine:
             f"list_units {pattern}",
             self._agent.list_units(pattern),
             _SYSTEMD_TIMEOUT,
+        )
+
+    async def listening(self) -> list[int]:
+        """Guest ports with something listening on them."""
+        return await self._ask("listening", self._agent.listening(), _SYSTEMD_TIMEOUT)
+
+    def reachable(self, guest_port: int) -> list[str]:
+        """Where *guest_port* answers from the host, as ``address:port``.
+
+        Empty when nothing forwards it -- which is the answer worth
+        having, since it cannot be fixed without rebooting the guest.
+        """
+        return forward.reachable(
+            self.forward, guest_port, forward.unprivileged_start()
         )
 
     async def journal(self, unit: str | None = None, lines: int = 50) -> str:

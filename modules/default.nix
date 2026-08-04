@@ -13,6 +13,101 @@
   pkgs,
   ...
 }:
+let
+  portPair = lib.types.submodule {
+    options = {
+      host = lib.mkOption {
+        type = lib.types.port;
+        description = "Port to listen on, on the host.";
+      };
+      guest = lib.mkOption {
+        type = lib.types.port;
+        description = "Port it reaches inside the guest.";
+      };
+    };
+  };
+
+  # A host port and the guest port behind it, written as a bare port
+  # when the two are the same -- which they are unless the host will not
+  # give us the number the guest wants.
+  samePort = port: {
+    host = port;
+    guest = port;
+  };
+  portMap = lib.types.coercedTo lib.types.port samePort portPair;
+
+  forwardRule = lib.types.submodule {
+    options = {
+      address = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = "0.0.0.0";
+        description = ''
+          Host address to listen on.  Null means the runner picks this
+          guest a free address out of `127.0.0.2` upwards and keeps it
+          for the guest's lifetime, which is what makes two guests able
+          to serve the same port number without arranging anything.
+
+          Anything else is taken literally, so `0.0.0.0` reaches the
+          guest from off the machine.  Note that a shared address
+          collides with every other guest's `all` rule, one port at a
+          time, so give it an explicit `ports` list.
+        '';
+      };
+
+      ports = lib.mkOption {
+        type = lib.types.either (lib.types.enum [ "all" ]) (lib.types.listOf portMap);
+        default = "all";
+        example = lib.literalExpression ''[ 8080 { host = 9090; guest = 80; } ]'';
+        description = ''
+          Which ports to forward, or `"all"` for every port passt is
+          willing to bind on this address.
+
+          `"all"` costs about 36000 sockets and 17 MB, and takes under a
+          second, which is cheap enough that a guest with an address to
+          itself need not know its own port list in advance.  It is
+          still not free: a test that boots three guests does not want
+          it, which is why the default here is the ssh port alone.
+        '';
+      };
+
+      protocols = lib.mkOption {
+        type = lib.types.listOf (lib.types.enum [ "tcp" "udp" ]);
+        default = [ "tcp" ];
+        description = ''
+          Which protocols to forward these ports for.  UDP doubles the
+          socket count, so it is off unless asked for.
+        '';
+      };
+
+      remapPrivileged = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = ''
+          What to do about host ports below
+          `net.ipv4.ip_unprivileged_port_start`, which nothing here may
+          bind: move them up by `privilegedOffset`, so guest port 22 is
+          reachable on host port 10022.
+
+          The runner says so on the console every time it does this --
+          a port that is not the port you asked for is worth hearing
+          about at boot rather than deducing from a refused connection.
+          Turn this off to leave those ports unforwarded instead.
+        '';
+      };
+
+      privilegedOffset = lib.mkOption {
+        type = lib.types.port;
+        default = 10000;
+        description = ''
+          How far up to move privileged ports.  The default keeps the
+          original port readable in the new one: 22 becomes 10022, 80
+          becomes 10080.
+        '';
+      };
+    };
+  };
+in
 {
   imports = [
     ./guest.nix
@@ -85,6 +180,28 @@
       '';
     };
 
+    forward = lib.mkOption {
+      type = lib.types.listOf forwardRule;
+      default = [ { ports = [ config.boot.uml.sshPort ]; } ];
+      defaultText = lib.literalExpression ''[ { ports = [ config.boot.uml.sshPort ]; } ]'';
+      example = lib.literalExpression ''
+        [
+          { ports = "all"; }                              # the whole guest, privately
+          { address = "0.0.0.0"; ports = [ 8080 ]; }      # and one port, publicly
+        ]
+      '';
+      description = ''
+        How the host reaches services in this guest.
+
+        passt is the only way in, and its forwards are fixed once it has
+        started: it binds every socket while parsing its arguments, and
+        has no way to be told about a new one afterwards short of a
+        restart that would drop every connection through it.  So this is
+        decided before the guest boots, and `ports = "all"` exists to
+        make not having to decide affordable.
+      '';
+    };
+
     lan = {
       network = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
@@ -117,6 +234,22 @@
         assertion = config.boot.uml.lan.address == null
           -> config.boot.uml.lan.network == null;
         message = "boot.uml.lan.address is set but boot.uml.lan.network is not, so nothing would be wired to vec1.";
+      }
+      {
+        # Two wide rules on one address overlap on every port, and passt
+        # answers that with a warning per port before carrying on -- 36000
+        # lines of console for a configuration that meant one rule.
+        assertion =
+          let
+            wide = lib.filter (rule: rule.ports == "all") config.boot.uml.forward;
+            addresses = map (rule: toString rule.address) wide;
+          in
+          addresses == lib.unique addresses;
+        message = ''
+          boot.uml.forward has more than one `ports = "all"` rule on the same
+          address (rules with `address = null` all land on the same one).
+          Give them different addresses, or fold them into a single rule.
+        '';
       }
     ];
 

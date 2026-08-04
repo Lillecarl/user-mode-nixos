@@ -74,6 +74,7 @@
                 mtu = machine.boot.uml.mtu;
                 network = machine.boot.uml.lan.network;
                 address = machine.boot.uml.lan.address;
+                forward = machine.boot.uml.forward;
               }) machines;
             }
           );
@@ -160,6 +161,12 @@
     {
       nixosConfigurations.demo = mkNode {
         boot.uml.memory = "512M";
+        # A guest you drive by hand rather than from a test: give it a
+        # host address to itself with everything on it forwarded, so
+        # whatever you start in there is reachable without having said
+        # so in advance.  Tests keep the narrow default; three guests
+        # holding 36000 sockets each is not what a builder is for.
+        boot.uml.forward = [ { ports = "all"; } ];
         environment.systemPackages = [ pkgs.speedtest-cli ];
       };
 
@@ -174,6 +181,24 @@
           name = "lan";
           script = ./tests/lan.py;
           nodes = pair "lan";
+        };
+
+        /*
+          Can the host reach a service in a guest?
+
+          The only test that connects inwards.  One guest with every
+          port forwarded, and a web server started long after passt
+          stopped accepting arguments -- which is the case that cannot
+          be checked any other way, since passt's forwards are fixed for
+          its lifetime.
+        */
+        forward = mkTest {
+          name = "forward";
+          script = ./tests/forward.py;
+          nodes.node = {
+            boot.uml.forward = [ { ports = "all"; } ];
+            environment.systemPackages = [ pkgs.python3 ];
+          };
         };
 
         # How much does a segment between two guests actually carry?

@@ -50,36 +50,39 @@ fn read_exact(fd: i32, buf: &mut [u8]) -> io::Result<()> {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    let mut passt_ports: Vec<String> = Vec::new();
+    // Passed through to passt's -t and -u verbatim, so they carry a whole
+    // port specifier -- an address, ranges, exclusions -- not just a port.
+    // The runner builds them; see uml_runner/forward.py.
+    let mut tcp_ports: Vec<String> = Vec::new();
+    let mut udp_ports: Vec<String> = Vec::new();
     let mut vec_arg = "vec0:transport=fd,fd=3,depth=512,gro=1".to_string();
 
     let mut i = 1;
     while i < args.len() {
-        match args[i].as_str() {
-            "--vec" => {
+        let flag = args[i].as_str();
+        let target = match flag {
+            "--vec" | "--tcp-ports" | "--udp-ports" => {
                 i += 1;
                 if i >= args.len() {
-                    eprintln!("--vec requires an argument");
+                    eprintln!("{} requires an argument", flag);
                     exit(1);
                 }
-                vec_arg = args[i].clone();
-            }
-            "--passt-port" => {
-                i += 1;
-                if i >= args.len() {
-                    eprintln!("--passt-port requires an argument");
-                    exit(1);
-                }
-                passt_ports.push(args[i].clone());
+                flag
             }
             _ => break,
+        };
+        match target {
+            "--vec" => vec_arg = args[i].clone(),
+            "--tcp-ports" => tcp_ports.push(args[i].clone()),
+            _ => udp_ports.push(args[i].clone()),
         }
         i += 1;
     }
 
     if i >= args.len() {
         eprintln!(
-            "Usage: {} [--vec VEC_ARG] [--passt-port PORT] UML_BINARY [UML_ARGS...]",
+            "Usage: {} [--vec VEC_ARG] [--tcp-ports SPEC]... [--udp-ports SPEC]... \
+             UML_BINARY [UML_ARGS...]",
             args[0]
         );
         exit(1);
@@ -104,9 +107,11 @@ fn main() {
     // letting it linger keeps the uplink up across a guest's reboot.
     let mut passt_args: Vec<String> =
         vec!["--foreground".into(), "--fd".into(), "4".into()];
-    for port in &passt_ports {
-        passt_args.push("-t".into());
-        passt_args.push(port.clone());
+    for (flag, specs) in [("-t", &tcp_ports), ("-u", &udp_ports)] {
+        for spec in specs {
+            passt_args.push(flag.into());
+            passt_args.push(spec.clone());
+        }
     }
 
     let passt_pid = match unsafe { unistd::fork() }.expect("fork passt") {

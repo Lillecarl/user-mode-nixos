@@ -68,6 +68,7 @@ in
         --bridge ${lib.getExe build.umlPasstBridge} \
         --passt ${pkgs.passt}/bin/passt \
         --ssh-port ${toString cfg.sshPort} \
+        --forward ${lib.escapeShellArg (builtins.toJSON cfg.forward)} \
         --mem ${cfg.memory} \
         --mtu ${toString cfg.mtu} \
         "$@"

@@ -30,8 +30,8 @@ lan = mkTest {
 ```
 
 Machines naming the same `boot.uml.lan.network` are wired together on
-`vec1`; ssh ports are handed out automatically. The script gets them by
-name:
+`vec1`; ssh ports and host addresses are handed out automatically. The
+script gets them by name:
 
 ```python
 from uml_runner import run_test
@@ -52,7 +52,7 @@ run_test(test)
 ```
         host                                  guest
   ┌──────────────┐   vec0  ┌───────┐
-  │    passt     ├─────────┤       │   NAT out, ssh port forwarded in
+  │    passt     ├─────────┤       │   NAT out, forwards in
   └──────────────┘         │       │
   ┌──────────────┐   ssl0  │  UML  │
   │  run/harness ├─────────┤kernel │   arpyc on /dev/ttyS0: the agent
@@ -94,6 +94,56 @@ namespace gets at its default of 10 and cannot raise — so at a 1500-byte
 MTU a guest has 15 KB in flight and no more. Guests therefore run a
 65000-byte MTU by default (`boot.uml.mtu`), which measures about
 11 Gbit/s over `vec1` against about 4 at 1500.
+
+## Reaching a guest from the host
+
+passt is the only way in, and **its forwards cannot be changed while it is
+running**: `conf_ports()` binds every socket while parsing arguments, there
+is no control socket, and the `auto` mode that watches `/proc/net/tcp` is
+pasta-only — pasta shares the target namespace's `/proc`, and passt, talking
+to a VM over a socket, does not. Adding a forward to a live passt means
+restarting it, which drops every connection through it, including the ssh
+session you were in when you started the service you wanted to reach.
+
+So `boot.uml.forward` decides them before boot, and `ports = "all"` exists
+to make not deciding affordable:
+
+```nix
+boot.uml.forward = [
+  { ports = "all"; }                                   # the guest, privately
+  { address = "0.0.0.0"; ports = [ 8080 ]; }           # and one port, publicly
+];
+```
+
+`address = null` — the default — means the runner gives this guest an address
+out of `127.0.0.2` upwards and keeps it for the guest's lifetime. All of
+`127.0.0.0/8` is on `lo` without anyone configuring it, so that costs no
+privileges and no setup, and it is what makes the collisions go away: two
+guests can both serve 8080, because they are not on the same address.
+
+`ports = "all"` is one passt spec made only of exclusions, which is what puts
+passt in the mode where a port it cannot bind is skipped instead of fatal. It
+comes to about 36000 sockets and 17 MB in under a second — cheap enough for a
+guest you drive by hand, which is why the demo guest has it, and not cheap
+enough for three guests in a test, which is why the default is the ssh port
+alone.
+
+Two things to know:
+
+- **Privileged ports get moved, loudly.** Nothing here may bind below
+  `net.ipv4.ip_unprivileged_port_start` (1024 on most hosts), so guest port
+  22 is reachable on host port 10022 and the runner says so on the console
+  every time. Set `remapPrivileged = false` to leave them unforwarded
+  instead, or lower the sysctl on the host and the remapping stops happening.
+- **A shared address collides with everything.** A rule on `0.0.0.0` fights
+  every other guest's `all` rule, one port at a time. The runner probes each
+  requested port before spawning passt so the error names the guest and the
+  port, rather than passt exiting with a bare `Address already in use`.
+
+`run-uml` with no `--command` polls the guest for what it is listening on and
+prints where each port answers, so a service you start inside is followed by
+the address to reach it at — or by `not forwarded`, which is the answer worth
+having, since it needs a reboot to fix.
 
 ## Containers, and the Kubernetes test
 
@@ -206,7 +256,9 @@ tests/                  one file per test
   allows SMP with the seccomp userspace, and two vCPUs measured *slower*
   than one on the iperf test — the cross-CPU work costs more than the
   parallelism buys.
-- A test's machines share the host's loopback for ssh forwards, so
-  running two outside a sandbox at once will collide on ports.
+- Guests pick their host address by binding a port and letting go of it
+  again, which only means anything while nothing else is racing. Two
+  *runs* started at the same instant outside a sandbox can still land on
+  the same address; within a run they cannot.
 
 [uml]: https://docs.kernel.org/virt/uml/user_mode_linux_howto_v2.html

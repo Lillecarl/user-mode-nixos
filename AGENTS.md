@@ -43,6 +43,39 @@ numbers lie:
   fresh network namespace gets. To measure what a test will actually
   see, run under `unshare -rn`.
 
+## Port forwarding
+
+`boot.uml.forward` is read before the guest boots and cannot be changed
+after, because passt cannot: it binds every socket while parsing its
+arguments and has no control socket. `auto` mode is pasta-only. If you
+find yourself designing something that watches the guest and adds a
+forward, it ends in restarting passt and dropping every connection.
+
+The specs are built in `pkgs/uml-runner/uml_runner/forward.py`. Two
+things there are load-bearing and non-obvious:
+
+- A spec of *only* exclusions (`127.0.0.2/~32768-60999`) is what puts
+  passt in weak mode, where a port it cannot bind is skipped. Any base
+  range in the spec makes every failure fatal instead.
+- Two specs that overlap on a port are fatal, not a warning. That is why
+  the privileged block is excluded from the wide range before being
+  added back with an offset, rather than simply appended.
+
+To see what a rule turns into without booting anything:
+
+```sh
+nix shell nixpkgs#python3 --command python3 -c '
+import importlib.util, sys
+s = importlib.util.spec_from_file_location("f", "pkgs/uml-runner/uml_runner/forward.py")
+f = importlib.util.module_from_spec(s); sys.modules["f"] = f; s.loader.exec_module(f)
+print(f.to_args([f.Rule(address="127.0.0.2")], start=1024))'
+```
+
+Then check it against real passt before believing it — `passt --foreground
+-s /tmp/p.sock <the -t args>` and `ss -tlnH | grep -c 127.0.0.2` says
+whether it bound what you meant. The socket path has to be short; passt
+rejects anything near `UNIX_PATH_MAX`.
+
 ## Generated files
 
 `.github/workflows/*.yml` is rendered from `ci/workflows.nix`. Edit the

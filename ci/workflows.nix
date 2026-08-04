@@ -23,6 +23,10 @@ let
       description = "what a segment between two guests carries";
       timeoutMinutes = 45;
     };
+    forward = {
+      description = "the host reaches a service inside a guest";
+      timeoutMinutes = 45;
+    };
     containerd = {
       description = "a container runs, out of the host's store";
       timeoutMinutes = 45;

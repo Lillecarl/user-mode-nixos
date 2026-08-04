@@ -25,6 +25,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Awaitable, Callable
 
+from .forward import ForwardError
 from .machine import Machine, MachineError, MachineSpec, Toolchain
 from .net import build_lans
 
@@ -63,6 +64,12 @@ async def machines(spec: dict):
         (s.name, Machine(s, tools, lan_fd=lan_fd.get(s.name))) for s in specs
     )
     vms.settings = spec.get("settings", {})
+    # Serially, and before anything spawns: picking a free host address
+    # means binding a port and letting go of it again, so two guests
+    # doing it at once would both be told the same address is free.
+    taken: set[str] = set()
+    for machine in vms.values():
+        machine.resolve_forward(taken)
     try:
         for lan in lans:
             lan.start()
@@ -105,7 +112,7 @@ def run_test(test: Callable[[Machines], Awaitable[None]]) -> None:
 
     try:
         asyncio.run(main())
-    except MachineError as error:
+    except (MachineError, ForwardError) as error:
         print(f"[test] FAILED: {error}", file=sys.stderr, flush=True)
         raise SystemExit(1) from None
     print("[test] passed", flush=True)

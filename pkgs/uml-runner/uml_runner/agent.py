@@ -82,6 +82,29 @@ class Agent(Service):
                 )
         return units
 
+    def exposed_listening(self) -> list[int]:
+        """Ports this guest has a TCP socket listening on.
+
+        Read out of ``/proc/net/tcp`` rather than asked of ``ss``,
+        because that is the file pasta's own ``auto`` forwarding watches
+        and because it works whatever the guest has installed.  The
+        forwards themselves were decided before boot -- passt cannot be
+        told about a new one -- so this is here to say what is reachable
+        and what came up somewhere nothing is listening for it.
+        """
+        ports = set()
+        for family in ("tcp", "tcp6"):
+            try:
+                lines = open(f"/proc/net/{family}").read().splitlines()[1:]
+            except OSError:
+                continue
+            for line in lines:
+                fields = line.split()
+                # st == 0A is TCP_LISTEN; local_address is HEXADDR:HEXPORT.
+                if len(fields) > 3 and fields[3] == "0A":
+                    ports.add(int(fields[1].rsplit(":", 1)[1], 16))
+        return sorted(ports)
+
     def exposed_journal(self, unit: str | None = None, lines: int = 50) -> str:
         """Tail of the journal, optionally restricted to one unit."""
         scope = f"-u {unit!r}" if unit else ""
