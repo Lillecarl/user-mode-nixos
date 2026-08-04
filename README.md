@@ -8,6 +8,7 @@ builder that has no virtualisation to offer.
 
 ```console
 $ nix build .#lan .#iperf     # run the tests
+$ nix build .#k8s             # three guests, a kubeadm cluster (CI-sized)
 $ nix run .#speedtest         # boot a guest and run speedtest-cli in it
 $ ./run.sh --command hostname # boot the demo guest and poke at it
 ```
@@ -94,19 +95,81 @@ MTU a guest has 15 KB in flight and no more. Guests therefore run a
 65000-byte MTU by default (`boot.uml.mtu`), which measures about
 11 Gbit/s over `vec1` against about 4 at 1500.
 
+## Containers, and the Kubernetes test
+
+`.#k8s` boots three guests and builds a cluster on them with `kubeadm`:
+one control plane, two workers, `kubeadm init`, `kubeadm join`, then a pod
+on one worker reaching a Service backed by a pod on the other. That last
+step is the point — it only passes if the CNI bridge, the routes between
+the nodes, kube-proxy's iptables rules and cluster DNS all work.
+
+Two things make it possible at all:
+
+**The images have nothing in them.** Every guest already sees the host's
+store over hostfs, so an image that carried its own glibc would be asking
+containerd to unpack, onto a virtual disk, something the node can already
+read. `modules/k8s-images.nix` builds each image as a handful of symlinks
+into `/nix/store` (`includeStorePaths = false`), and `modules/k8s.nix`
+mounts the store into every container through containerd's
+`base_runtime_spec` — the one place that reaches kube-proxy and CoreDNS,
+which are addons applied from the API and have no patchable manifest.
+Only the pause image carries its closure, because containerd builds the
+pod sandbox's OCI spec without consulting that file.
+
+**Nodes know nothing about each other.** `modules/k8s.nix` describes a
+node; who joins whom, which `/24` each ended up with, and the routes
+between them are worked out in `tests/k8s.py`, which is the only thing
+that can see all three at once.
+
+The cluster wants about 5 GB of RAM across the three guests, so it is
+built for CI rather than a laptop. Three cheaper things answer the same
+questions much faster, and CI runs them first:
+
+```console
+$ nix build .#check-k8s-images  # are these the images kubeadm will want?
+$ nix build .#check-k8s-config  # does kubeadm accept what we generate?
+$ nix build .#containerd        # does a container run at all? (one guest)
+```
+
+`.#containerd` is the one worth knowing about. It boots a single guest and
+drives CRI by hand to start one container out of an image containing
+nothing but a symlink — so if the kernel is missing a namespace, or the
+images did not import, or the store mount is wrong, it says which in about
+a minute. The cluster test would take an hour to report the same thing as
+a control plane that never became healthy.
+
+## CI
+
+The workflows under `.github/workflows` are generated. `ci/workflows.nix`
+is the source, `nix run .#render-workflows` regenerates them, and
+`.#check-workflows` fails when the two have drifted — so the YAML GitHub
+runs is always what the Nix says.
+
+```console
+$ nix run .#render-workflows   # after editing ci/workflows.nix
+$ nix build .#check-workflows  # what CI runs to keep you honest
+```
+
 ## Layout
 
 ```
-flake.nix             mkNode, mkTest, the tests and the demo guest
-modules/default.nix   the boot.uml options
-modules/guest.nix     what a guest system looks like
-modules/image.nix     the root image, /init, and the run-uml wrapper
-modules/iperf3.nix    an example service module
-pkgs/uml-kernel       the UML kernel, built from the guest's own source
-pkgs/uml-passt-bridge fd plumbing between UML, passt and the host
-pkgs/uml-runner       the host runner, test harness, and guest agent
-tests/                one file per test
+flake.nix               mkNode, mkTest, the tests and the demo guest
+ci/                     the GitHub Actions workflows, as Nix
+modules/default.nix     the boot.uml options
+modules/guest.nix       what a guest system looks like
+modules/image.nix       the root image, /init, and the run-uml wrapper
+modules/iperf3.nix      an example service module
+modules/k8s.nix         a kubeadm node: containerd, kubelet, images
+modules/k8s-images.nix  the images kubeadm expects, built from nixpkgs
+pkgs/uml-kernel         the UML kernel, built from the guest's own source
+pkgs/uml-passt-bridge   fd plumbing between UML, passt and the host
+pkgs/uml-runner         the host runner, test harness, and guest agent
+tests/                  one file per test
 ```
+
+`tests/lan.py` and `tests/iperf.py` are two guests on a segment,
+`tests/containerd.py` is one guest running a container, and
+`tests/k8s.py` is the three-node cluster.
 
 ## Limits
 

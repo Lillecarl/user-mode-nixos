@@ -43,6 +43,52 @@ numbers lie:
   fresh network namespace gets. To measure what a test will actually
   see, run under `unshare -rn`.
 
+## Generated files
+
+`.github/workflows/*.yml` is rendered from `ci/workflows.nix`. Edit the
+Nix, then `nix run .#render-workflows`, then commit both — CI runs
+`.#check-workflows` and fails on drift.
+
+## The Kubernetes test
+
+`.#k8s` is far heavier than the others: three guests, about 5 GB of RAM
+between them, and half an hour of wall clock on a good day. It is meant
+for CI. Do not reach for it while iterating — reach for these:
+
+```sh
+nix build .#check-k8s-images .#check-k8s-config   # seconds
+nix build .#containerd                            # one guest, ~2 minutes
+```
+
+The first two ask the real `kubeadm` whether the images are the ones it
+will pull and whether it accepts the configuration the module generates.
+`.#containerd` boots one guest and starts a single container through CRI,
+which covers the kernel, the image import and the store mount. Almost
+everything that breaks the cluster breaks one of these first, and CI runs
+`test-k8s` only after `test-containerd` has passed.
+
+To build everything the cluster test needs without running it:
+
+```sh
+nix build .#k8s.spec --print-build-logs 2>&1 | tee /tmp/umlk8s.log
+```
+
+Two pieces of it are easy to break without noticing:
+
+- The images are symlinks into `/nix/store` and nothing else. They only
+  run because containerd's `base_runtime_spec` bind-mounts the store into
+  every container. The pod sandbox does *not* get that spec, which is why
+  `pause` is the one image built with its closure.
+- Kernel options for containers live in `containerConfig` in
+  `pkgs/uml-kernel/default.nix` and are unconditional. `ignoreConfigErrors`
+  is on, so an option that does not exist or whose dependencies are unmet
+  is dropped silently — check the built config, do not assume:
+
+```sh
+grep -E '^CONFIG_(NF_|IP_NF_|VETH|BRIDGE)' \
+  "$(nix build --no-link --print-out-paths .#umlKernel)/config"
+```
+
 ## Things that bite
 
 - A failure inside the guest agent shows up on the host as an exception

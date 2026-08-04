@@ -1,0 +1,117 @@
+#!/usr/bin/env python3
+"""Does a container run at all on a UML guest?
+
+The narrow question the Kubernetes test cannot answer quickly.  A kubeadm
+cluster failing to come up looks the same whether the kernel is missing a
+namespace, the images did not import, or the store is not reachable from
+inside a container -- and finding out takes an hour.  This asks the three
+directly, on one guest, in about a minute:
+
+    import    containerd has the images kubeadm will ask for
+    sandbox   a pod sandbox starts, so runc has the namespaces it wants
+    store     a container whose only content is a symlink into
+              /nix/store can exec it
+
+The last one is the whole design of modules/k8s-images.nix: images that
+carry nothing and rely on containerd's base_runtime_spec to bind the
+host's store into every container.  If that mount is wrong, this fails
+with a dangling symlink rather than with a control plane that never
+becomes healthy.
+"""
+
+import asyncio
+import json
+
+from uml_runner import MachineError, run_test
+
+# Host network, so a sandbox needs no CNI: NamespaceMode.NODE is 2 in the
+# CRI API.  This test is not about networking.
+NODE_NETWORK = 2
+
+LOG_DIR = "/tmp/probe-logs"
+
+POD = {
+    "metadata": {"name": "probe", "namespace": "default", "uid": "probe-uid"},
+    # A container's log_path is relative to this, and without it the
+    # runtime keeps no log at all -- `crictl logs` then says the
+    # container "has not set log path", which is true but unhelpful.
+    "log_directory": LOG_DIR,
+    "linux": {
+        # kubelet always names one, and containerd's systemd cgroup driver
+        # can only translate a path it was given: without this it builds
+        # "/k8s.io/<id>", which runc rejects for not being
+        # "slice:prefix:name".  Nothing here creates it -- system.slice
+        # already exists.
+        "cgroup_parent": "system.slice",
+        "security_context": {"namespace_options": {"network": NODE_NETWORK}},
+    },
+}
+
+
+def container(image):
+    return {
+        "metadata": {"name": "probe"},
+        "image": {"image": image},
+        # By bare name, the way kubeadm's static pods invoke it -- so this
+        # covers the image's PATH as well as the symlink itself.
+        "command": ["kube-apiserver", "--version"],
+        "log_path": "probe.log",
+        "linux": {},
+    }
+
+
+async def write_json(vm, path, data):
+    await vm.succeed(f"cat <<'EOF' > {path}\n{json.dumps(data, indent=2)}\nEOF")
+
+
+async def test(vms):
+    node = vms.node
+    version = vms.settings["kubernetesVersion"]
+
+    await node.wait_for_unit("containerd.service", timeout=300)
+    await node.wait_for_unit("k8s-load-images.service", timeout=600)
+
+    images = (await node.succeed("ctr --namespace k8s.io images list -q")).split()
+    print(f"[test] containerd has {len(images)} images", flush=True)
+    for expected in (f"registry.k8s.io/kube-apiserver:v{version}", vms.settings["sandboxImage"]):
+        if expected not in images:
+            raise MachineError(
+                f"[{node.name}] {expected} was not imported; got:\n"
+                + "\n".join(f"    {image}" for image in images)
+            )
+
+    image = f"registry.k8s.io/kube-apiserver:v{version}"
+    await node.succeed(f"mkdir -p {LOG_DIR}")
+    await write_json(node, "/tmp/pod.json", POD)
+    await write_json(node, "/tmp/container.json", container(image))
+
+    # --no-pull, because there is nothing to pull from: if the image is
+    # not already here the test should say so rather than time out on a
+    # registry it cannot reach.
+    out = await node.succeed(
+        "crictl --timeout 5m run --no-pull /tmp/container.json /tmp/pod.json",
+        timeout=400,
+    )
+    container_id = out.split()[-1]
+
+    # `crictl run` returns once the container has started, not once it has
+    # said anything, and starting a Go binary out of a hostfs-backed store
+    # under UML is not instant.
+    logs = ""
+    for _ in range(30):
+        _, logs = await node.execute(f"crictl logs {container_id}", timeout=120)
+        if f"v{version}" in logs:
+            break
+        await asyncio.sleep(2)
+
+    if f"v{version}" not in logs:
+        status = json.loads(await node.succeed(f"crictl inspect {container_id}"))
+        raise MachineError(
+            f"[{node.name}] the container did not report Kubernetes v{version}.\n"
+            f"--- logs ---\n{logs}\n"
+            f"--- status ---\n{json.dumps(status.get('status', {}), indent=2)}"
+        )
+    print(f"[test] a container of symlinks exec'd out of /nix/store: {logs.strip()}")
+
+
+run_test(test)

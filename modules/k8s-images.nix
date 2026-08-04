@@ -1,0 +1,227 @@
+# The container images a kubeadm cluster needs, built from nixpkgs.
+#
+# A guest has no route to registry.k8s.io inside a build sandbox, so the
+# images cannot be pulled -- they are built here and imported into
+# containerd at boot.  Each one is a binary from nixpkgs wearing the name
+# and tag kubeadm looks up, which means the *tag* is whatever kubeadm
+# asks for and the *binary* is whatever nixpkgs has.  Those are close but
+# not equal (nixpkgs may carry a newer etcd than the one kubeadm names),
+# and that is what `check` below is for.
+#
+# The images are almost empty.  A guest already has the whole host store
+# under /nix/store over hostfs, so an image that carried its own copy of
+# glibc would be asking containerd to unpack, onto a slow virtual disk,
+# something the node can already see -- half a gigabyte of it, on every
+# node, before kubelet is any use.  Instead each image is a handful of
+# symlinks into /nix/store, and modules/k8s.nix mounts the store into
+# every container so that they resolve.
+{
+  lib,
+  runCommand,
+  dockerTools,
+  kubernetes,
+  etcd,
+  coredns,
+  iptables,
+  ipset,
+  conntrack-tools,
+  ethtool,
+  pkgsStatic,
+}:
+let
+  version = kubernetes.version;
+
+  /*
+    What kubeadm asks for, for this Kubernetes version.
+
+    Written down rather than parsed out of the kubeadm source: the
+    constants moved between releases, and a regex over Go source fails by
+    silently producing "unknown" -- which looks like a pull failure at
+    boot, three minutes into a test.  `check` runs the real kubeadm and
+    fails the build if any of this has drifted.
+  */
+  tags = {
+    coredns = "v1.14.2";
+    etcd = "3.6.8-0";
+    pause = "3.10.2";
+  };
+
+  /*
+    One image: *command*, and whatever it shells out to, as symlinks.
+
+    The path matters.  kubeadm's static pods run `kube-apiserver` and
+    friends by bare name, resolved against the image's PATH; the
+    kube-proxy DaemonSet hard-codes `/usr/local/bin/kube-proxy`; CoreDNS
+    and pause have no command at all and run the entrypoint.  Putting the
+    binary at /usr/local/bin/<command> and pointing the entrypoint at it
+    satisfies all three.
+
+    `includeStorePaths` is what makes these tiny: the layer holds the
+    symlinks and nothing they point at.  They are written straight into
+    the layer rather than passed as `contents`, which would route each
+    one through a store path of its own -- correct, but two hops to say
+    what one says.
+  */
+  mkImage =
+    {
+      name,
+      tag,
+      command,
+      binary,
+      extraPackages ? [ ],
+      selfContained ? false,
+    }:
+    dockerTools.buildLayeredImage {
+      inherit name tag;
+      includeStorePaths = selfContained;
+      extraCommands = ''
+        mkdir -p usr/local/bin tmp
+        ${lib.concatMapStringsSep "\n" (
+          pkg: "ln -sfn ${pkg}/bin/* usr/local/bin/"
+        ) extraPackages}
+        ln -sfn ${binary} usr/local/bin/${command}
+      '';
+      config = {
+        Entrypoint = [ "/usr/local/bin/${command}" ];
+        # A container gets no environment at all otherwise, and Go's
+        # exec.LookPath has no built-in default.
+        Env = [ "PATH=/usr/local/bin" ];
+        WorkingDir = "/";
+      };
+    };
+
+  images = [
+    (mkImage {
+      name = "registry.k8s.io/kube-apiserver";
+      tag = "v${version}";
+      command = "kube-apiserver";
+      binary = "${kubernetes}/bin/kube-apiserver";
+    })
+    (mkImage {
+      name = "registry.k8s.io/kube-controller-manager";
+      tag = "v${version}";
+      command = "kube-controller-manager";
+      binary = "${kubernetes}/bin/kube-controller-manager";
+    })
+    (mkImage {
+      name = "registry.k8s.io/kube-scheduler";
+      tag = "v${version}";
+      command = "kube-scheduler";
+      binary = "${kubernetes}/bin/kube-scheduler";
+    })
+    (mkImage {
+      name = "registry.k8s.io/kube-proxy";
+      tag = "v${version}";
+      command = "kube-proxy";
+      binary = "${kubernetes}/bin/kube-proxy";
+      # kube-proxy does not write rules itself: it execs iptables-save
+      # and iptables-restore, and reads conntrack, from inside its own
+      # container.  Upstream's image bundles these for the same reason.
+      extraPackages = [
+        iptables
+        ipset
+        conntrack-tools
+        ethtool
+      ];
+    })
+    (mkImage {
+      name = "registry.k8s.io/etcd";
+      tag = tags.etcd;
+      command = "etcd";
+      binary = "${etcd}/bin/etcd";
+    })
+    (mkImage {
+      name = "registry.k8s.io/coredns/coredns";
+      tag = tags.coredns;
+      command = "coredns";
+      binary = "${coredns}/bin/coredns";
+    })
+    (mkImage {
+      name = "registry.k8s.io/pause";
+      tag = tags.pause;
+      command = "pause";
+      binary = "${kubernetes.pause}/bin/pause";
+      # The one image that has to carry its own closure.  pause runs as
+      # the pod sandbox, and containerd builds the sandbox's OCI spec
+      # without consulting base_runtime_spec -- so it is the one
+      # container on the node that does not get /nix/store mounted.  It
+      # is also the smallest: a dynamically linked hello-world and the
+      # glibc under it.
+      selfContained = true;
+    })
+  ];
+
+  # Something to actually schedule.  Static busybox is three megabytes
+  # and brings httpd, wget and nslookup, which between them are enough to
+  # tell whether pods, Services and cluster DNS work.
+  workload = dockerTools.buildLayeredImage {
+    name = "uml.test/busybox";
+    tag = "1";
+    # A copy rather than a symlink: this one owes nothing to /nix/store,
+    # so it also works as a check that a plain image still runs.
+    includeStorePaths = false;
+    extraCommands = ''
+      mkdir -p bin tmp
+      cp ${pkgsStatic.busybox}/bin/busybox bin/busybox
+      for applet in $(bin/busybox --list); do
+        ln -sfn busybox "bin/$applet"
+      done
+    '';
+    config = {
+      Entrypoint = [ "/bin/sh" ];
+      Env = [ "PATH=/bin" ];
+      WorkingDir = "/";
+    };
+  };
+
+  built = [
+    "registry.k8s.io/kube-apiserver:v${version}"
+    "registry.k8s.io/kube-controller-manager:v${version}"
+    "registry.k8s.io/kube-scheduler:v${version}"
+    "registry.k8s.io/kube-proxy:v${version}"
+    "registry.k8s.io/coredns/coredns:${tags.coredns}"
+    "registry.k8s.io/pause:${tags.pause}"
+    "registry.k8s.io/etcd:${tags.etcd}"
+  ];
+in
+{
+  # One tarball, so a node imports everything in a single pass.
+  tarball = dockerTools.mergeImages (images ++ [ workload ]);
+
+  # What a test should ask to be scheduled.  There is no registry, so
+  # anything using this has to say imagePullPolicy: Never.
+  workloadImage = "uml.test/busybox:1";
+
+  # containerd carries its own default for this, which tracks its own
+  # release rather than kubeadm's -- so it is worth saying out loud.
+  # Getting it wrong means every pod sandbox fails to start, reported as
+  # a pull error for an image nothing in the configuration mentions.
+  sandboxImage = "registry.k8s.io/pause:${tags.pause}";
+
+  /*
+    Ask kubeadm what it will look for, and fail if it is not what we
+    built.
+
+    Without this, a nixpkgs bump that moves the CoreDNS or etcd tag turns
+    into a cluster that comes up with three of its pods stuck in
+    ImagePullBackOff, twenty minutes into CI.
+  */
+  check =
+    runCommand "k8s-images-match-kubeadm"
+      {
+        nativeBuildInputs = [ kubernetes ];
+        expected = lib.concatMapStrings (image: "${image}\n") (lib.sort (a: b: a < b) built);
+        passAsFile = [ "expected" ];
+      }
+      ''
+        kubeadm config images list --kubernetes-version "v${version}" | sort > actual
+        if ! diff --unified "$expectedPath" actual; then
+          echo
+          echo "error: the images built by modules/k8s-images.nix are not the ones"
+          echo "kubeadm ${version} will look for.  Update the tags in that file to"
+          echo "the right-hand side above."
+          exit 1
+        fi
+        touch $out
+      '';
+}
