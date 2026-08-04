@@ -125,6 +125,18 @@ at the manifest.
 Only the pause image carries its closure, because containerd builds the
 pod sandbox's OCI spec without consulting that file.
 
+The catch, if you add an image: a layered image is a *gzipped* tar, so
+the store paths its symlinks name are invisible to Nix. `nix-store
+--query --references` on the merged tarball comes back empty, and
+nothing would build etcd for a guest that only asked for the images —
+the symlinks dangle, and runc reports it as `executable file not found
+in $PATH`, which reads like the image was built without its binary.
+`modules/k8s.nix` states the dependency Nix cannot infer, via
+`system.extraDependencies`, from a list `k8s-images.nix` derives from
+the image specs — so adding an image pulls its closure along. `.#containerd`
+checks every entrypoint resolves, which is the cheap version of finding
+out.
+
 **Nodes know nothing about each other.** `modules/k8s.nix` describes a
 node; who joins whom, which `/24` each ended up with, and the routes
 between them are worked out in `tests/k8s.py`, which is the only thing
@@ -158,6 +170,12 @@ runs is always what the Nix says.
 $ nix run .#render-workflows   # after editing ci/workflows.nix
 $ nix build .#check-workflows  # what CI runs to keep you honest
 ```
+
+What it costs, on a stock `ubuntu-24.04` runner with the kernel already in
+the cache: about six minutes for everything, of which the cluster is four
+— cold boot to a pod on one node answering another through a Service. The
+kernel is the only expensive build, roughly half an hour the first time
+after it changes, and cached by cachix after that.
 
 ## Layout
 

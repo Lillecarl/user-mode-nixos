@@ -51,9 +51,10 @@ Nix, then `nix run .#render-workflows`, then commit both — CI runs
 
 ## The Kubernetes test
 
-`.#k8s` is far heavier than the others: three guests, about 5 GB of RAM
-between them, and half an hour of wall clock on a good day. It is meant
-for CI. Do not reach for it while iterating — reach for these:
+`.#k8s` is far heavier than the others: three guests and about 5 GB of RAM
+between them, which is more than a dev machine usually has to spare even
+though the run itself takes about four minutes. It is meant for CI. Do not
+reach for it while iterating — reach for these:
 
 ```sh
 nix build .#check-k8s-images .#check-k8s-config   # seconds
@@ -79,6 +80,12 @@ Two pieces of it are easy to break without noticing:
   run because containerd's `base_runtime_spec` bind-mounts the store into
   every container. The pod sandbox does *not* get that spec, which is why
   `pause` is the one image built with its closure.
+- Those symlinks are not references. A layered image is a gzipped tar, so
+  Nix cannot see the store paths inside it and the merged tarball has no
+  references at all — `system.extraDependencies` in `modules/k8s.nix` is
+  what actually puts etcd on the node. Adding an image to `imageSpecs`
+  carries its closure along; writing a symlink by hand in `extraCommands`
+  does not, and shows up as `executable file not found in $PATH`.
 - Kernel options for containers live in `containerConfig` in
   `pkgs/uml-kernel/default.nix` and are unconditional. `ignoreConfigErrors`
   is on, so an option that does not exist or whose dependencies are unmet
