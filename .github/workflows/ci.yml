@@ -1,0 +1,210 @@
+# Generated from ci/workflows.nix -- do not edit.
+# Run `nix run .#render-workflows` after changing the workflow.
+jobs:
+  checks:
+    if: (github.event_name != 'workflow_dispatch' || inputs.jobs == '' || contains(format(',{0},', inputs.jobs), ',checks,'))
+    runs-on: ubuntu-24.04
+    steps:
+      - timeout-minutes: 5
+        uses: actions/checkout@main
+      - timeout-minutes: 10
+        uses: cachix/install-nix-action@master
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            # A runner has four cores and the guests are processes: letting
+            # Nix run several builds at once only makes each one slower and
+            # the timings meaningless.
+            max-jobs = 1
+            cores = 4
+      - timeout-minutes: 10
+        uses: cachix/cachix-action@master
+        with:
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          name: lillecarl
+          useDaemon: false
+      - name: Check the generated files, the images and the kubeadm config
+        run: nix build --no-link --print-build-logs --keep-going ".#check-workflows" ".#check-k8s-images" ".#check-k8s-config"
+        timeout-minutes: 20
+    timeout-minutes: 30
+  kernel:
+    if: (github.event_name != 'workflow_dispatch' || inputs.jobs == '' || contains(format(',{0},', inputs.jobs), ',kernel,'))
+    runs-on: ubuntu-24.04
+    steps:
+      - timeout-minutes: 5
+        uses: actions/checkout@main
+      - timeout-minutes: 10
+        uses: cachix/install-nix-action@master
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            # A runner has four cores and the guests are processes: letting
+            # Nix run several builds at once only makes each one slower and
+            # the timings meaningless.
+            max-jobs = 1
+            cores = 4
+      - timeout-minutes: 10
+        uses: cachix/cachix-action@master
+        with:
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          name: lillecarl
+          useDaemon: false
+      - name: Build the UML kernel
+        run: nix build --no-link --print-build-logs --keep-going ".#umlKernel"
+        timeout-minutes: 45
+    timeout-minutes: 60
+  test-containerd:
+    if: '!cancelled() && (needs.kernel.result == ''success'' || needs.kernel.result == ''skipped'') && (github.event_name != ''workflow_dispatch'' || inputs.jobs == '''' || contains(format('',{0},'', inputs.jobs), '',test-containerd,''))'
+    needs:
+      - kernel
+    runs-on: ubuntu-24.04
+    steps:
+      - timeout-minutes: 5
+        uses: actions/checkout@main
+      - timeout-minutes: 10
+        uses: cachix/install-nix-action@master
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            # A runner has four cores and the guests are processes: letting
+            # Nix run several builds at once only makes each one slower and
+            # the timings meaningless.
+            max-jobs = 1
+            cores = 4
+      - timeout-minutes: 10
+        uses: cachix/cachix-action@master
+        with:
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          name: lillecarl
+          useDaemon: false
+      - name: Allow the unprivileged namespaces the Nix sandbox needs
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          sudo sysctl -w kernel.unprivileged_userns_clone=1
+          unshare --user --map-root-user --mount --pid --fork --mount-proc true
+        timeout-minutes: 5
+      - name: 'Run containerd: a container runs, out of the host''s store'
+        run: nix build --no-link --print-build-logs --keep-going ".#containerd"
+        timeout-minutes: 35
+    timeout-minutes: 45
+  test-iperf:
+    if: '!cancelled() && (needs.kernel.result == ''success'' || needs.kernel.result == ''skipped'') && (github.event_name != ''workflow_dispatch'' || inputs.jobs == '''' || contains(format('',{0},'', inputs.jobs), '',test-iperf,''))'
+    needs:
+      - kernel
+    runs-on: ubuntu-24.04
+    steps:
+      - timeout-minutes: 5
+        uses: actions/checkout@main
+      - timeout-minutes: 10
+        uses: cachix/install-nix-action@master
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            # A runner has four cores and the guests are processes: letting
+            # Nix run several builds at once only makes each one slower and
+            # the timings meaningless.
+            max-jobs = 1
+            cores = 4
+      - timeout-minutes: 10
+        uses: cachix/cachix-action@master
+        with:
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          name: lillecarl
+          useDaemon: false
+      - name: Allow the unprivileged namespaces the Nix sandbox needs
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          sudo sysctl -w kernel.unprivileged_userns_clone=1
+          unshare --user --map-root-user --mount --pid --fork --mount-proc true
+        timeout-minutes: 5
+      - name: 'Run iperf: what a segment between two guests carries'
+        run: nix build --no-link --print-build-logs --keep-going ".#iperf"
+        timeout-minutes: 35
+    timeout-minutes: 45
+  test-k8s:
+    if: '!cancelled() && (needs.kernel.result == ''success'' || needs.kernel.result == ''skipped'') && (needs.test-containerd.result == ''success'' || needs.test-containerd.result == ''skipped'') && (github.event_name != ''workflow_dispatch'' || inputs.jobs == '''' || contains(format('',{0},'', inputs.jobs), '',test-k8s,''))'
+    needs:
+      - kernel
+      - test-containerd
+    runs-on: ubuntu-24.04
+    steps:
+      - timeout-minutes: 5
+        uses: actions/checkout@main
+      - name: Make room for the guests' closures
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost /usr/lib/jvm
+          df -h /
+        timeout-minutes: 10
+      - timeout-minutes: 10
+        uses: cachix/install-nix-action@master
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            # A runner has four cores and the guests are processes: letting
+            # Nix run several builds at once only makes each one slower and
+            # the timings meaningless.
+            max-jobs = 1
+            cores = 4
+      - timeout-minutes: 10
+        uses: cachix/cachix-action@master
+        with:
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          name: lillecarl
+          useDaemon: false
+      - name: Allow the unprivileged namespaces the Nix sandbox needs
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          sudo sysctl -w kernel.unprivileged_userns_clone=1
+          unshare --user --map-root-user --mount --pid --fork --mount-proc true
+        timeout-minutes: 5
+      - name: 'Run k8s: a three-node kubeadm cluster'
+        run: nix build --no-link --print-build-logs --keep-going ".#k8s"
+        timeout-minutes: 110
+    timeout-minutes: 120
+  test-lan:
+    if: '!cancelled() && (needs.kernel.result == ''success'' || needs.kernel.result == ''skipped'') && (github.event_name != ''workflow_dispatch'' || inputs.jobs == '''' || contains(format('',{0},'', inputs.jobs), '',test-lan,''))'
+    needs:
+      - kernel
+    runs-on: ubuntu-24.04
+    steps:
+      - timeout-minutes: 5
+        uses: actions/checkout@main
+      - timeout-minutes: 10
+        uses: cachix/install-nix-action@master
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            # A runner has four cores and the guests are processes: letting
+            # Nix run several builds at once only makes each one slower and
+            # the timings meaningless.
+            max-jobs = 1
+            cores = 4
+      - timeout-minutes: 10
+        uses: cachix/cachix-action@master
+        with:
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          name: lillecarl
+          useDaemon: false
+      - name: Allow the unprivileged namespaces the Nix sandbox needs
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          sudo sysctl -w kernel.unprivileged_userns_clone=1
+          unshare --user --map-root-user --mount --pid --fork --mount-proc true
+        timeout-minutes: 5
+      - name: 'Run lan: two guests on a segment see each other'
+        run: nix build --no-link --print-build-logs --keep-going ".#lan"
+        timeout-minutes: 35
+    timeout-minutes: 45
+name: CI
+on:
+  pull_request: {}
+  push: {}
+  workflow_dispatch:
+    inputs:
+      jobs:
+        default: ""
+        description: Comma-separated job IDs to run; empty runs all of them
+        required: false
+        type: string
