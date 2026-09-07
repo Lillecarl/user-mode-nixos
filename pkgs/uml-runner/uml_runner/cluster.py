@@ -27,14 +27,35 @@ import json
 
 from .machine import MachineError
 
-# A control plane coming up under UML is minutes of work, and a failure
-# here is nearly always slowness rather than breakage -- so these are
-# deliberately far past the point where a real cluster would be up.
-INIT_TIMEOUT = 30 * 60
-JOIN_TIMEOUT = 20 * 60
-READY_TIMEOUT = 15 * 60
+# These are stuck-detectors, and that is the only thing they are.
+#
+# Nothing here is slow.  A guest is a process, its store is the host's, and
+# every image was imported before kubelet started -- so there is nothing to
+# compile, nothing to pull and nothing to fetch.  A control plane that is
+# working is serving inside a couple of minutes.
+#
+# They used to be 30, 20 and 15 minutes, on the theory that a failure here is
+# "nearly always slowness rather than breakage".  That theory is what makes a
+# bug look like a delay: a stuck kubeadm and a slow one are indistinguishable
+# for half an hour, and the half hour is spent either way.  Short deadlines
+# turn the same bug into a report with the pod list, the events, kubelet,
+# containerd and the pod logs attached.
+#
+# If one of these fires on something that was genuinely still working, the
+# answer is to find out what took the time and fix that -- not to raise the
+# number.
+INIT_TIMEOUT = 5 * 60
+JOIN_TIMEOUT = 5 * 60
+READY_TIMEOUT = 5 * 60
+
+# A systemd unit reaching `active`.  Same reasoning, and the same number:
+# these units start local programs against local files.
+UNIT_TIMEOUT = 5 * 60
 
 POLL = 10
+
+# How often `until` says what it is still waiting for.
+_SAY_EVERY = 30
 
 # The taint kubeadm puts on a control plane so that nothing schedules there.
 CONTROL_PLANE_TAINT = "node-role.kubernetes.io/control-plane"
@@ -55,19 +76,66 @@ async def until(what, check, timeout, machine):
     *check* returns ``(done, evidence)``.  The evidence is reported on
     both paths, because "timed out waiting for nodes" on its own says
     nothing about which node was not ready.
+
+    It is also reported while waiting, so that a watcher can tell a slow
+    thing from a stopped one without waiting for the deadline.
+
+    The report names how long the evidence has been *unchanged*, which is
+    the number that says whether anything is happening.  A pod that goes
+    Pending -> ContainerCreating -> Running is working; the same three
+    words for four minutes are not, and the elapsed clock alone cannot
+    tell them apart.  That figure is in the failure too: "stuck for 290s"
+    and "still moving, just slow" are different bugs and want different
+    fixes.
     """
     loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    while True:
-        done, evidence = await check()
-        if done:
-            return evidence
-        if loop.time() > deadline:
-            raise MachineError(
-                f"[{machine.name}] timed out waiting for {what}\n{evidence}\n"
-                + await diagnose(machine)
-            )
-        await asyncio.sleep(POLL)
+    started = loop.time()
+    deadline = started + timeout
+    said = None
+    seen = None
+    changed = started
+
+    # `asyncio.timeout`, and not a deadline tested between polls.
+    #
+    # A poll is two kubectl calls with timeouts of their own, so testing the
+    # clock only after one completes lets a slow guest overshoot by minutes:
+    # a 300s deadline was still running at 291s having last checked at 258s,
+    # and could have run to 540s had both calls hit their own limits. This
+    # bounds `check` itself, so the deadline means what it says.
+    try:
+        async with asyncio.timeout(timeout):
+            while True:
+                done, evidence = await check()
+                if done:
+                    return evidence
+
+                now = loop.time()
+                if evidence != seen:
+                    seen = evidence
+                    changed = now
+
+                if said is None or now - said >= _SAY_EVERY:
+                    said = now
+                    first = str(evidence).strip().splitlines()[:1]
+                    print(
+                        f"[{machine.name}] {what}: {int(now - started)}s elapsed, "
+                        f"{int(now - changed)}s unchanged, {int(deadline - now)}s left"
+                        + (f" -- {first[0]}" if first else ""),
+                        flush=True,
+                    )
+                await asyncio.sleep(POLL)
+    except TimeoutError:
+        # Outside the block above, so gathering the evidence is not itself
+        # cancelled by the deadline that just fired.
+        now = loop.time()
+        raise MachineError(
+            f"[{machine.name}] gave up waiting for {what} after "
+            f"{int(now - started)}s, the last {int(now - changed)}s of it "
+            f"with nothing changing.\n"
+            f"Nothing here is slow enough for this to be patience: the images "
+            f"are on the node and the store is the host's. Something is "
+            f"stuck.\n{seen}\n" + await diagnose(machine)
+        ) from None
 
 
 async def diagnose(vm):
@@ -97,10 +165,16 @@ async def diagnose(vm):
 
 
 async def wait_for_images(vms):
-    """No node is any use to kubeadm until containerd has the images."""
+    """No node is any use to kubeadm until containerd has the images.
+
+    `UNIT_TIMEOUT` and not a number of its own.  This unit reads tarballs
+    off the host store and hands them to containerd, so it is bounded by
+    a local disk and nothing else -- if it has not finished in five
+    minutes it is not importing slowly, it is stuck.
+    """
     await asyncio.gather(
         *(
-            vm.wait_for_unit("k8s-load-images.service", timeout=10 * 60)
+            vm.wait_for_unit("k8s-load-images.service", timeout=UNIT_TIMEOUT)
             for vm in vms.values()
         )
     )
@@ -285,7 +359,7 @@ async def bring_up(vms, cp_name="cp", schedulable=None):
         schedulable = not workers
 
     for vm in vms.values():
-        await vm.wait_for_unit("containerd.service", timeout=300)
+        await vm.wait_for_unit("containerd.service", timeout=UNIT_TIMEOUT)
     await wait_for_images(vms)
 
     await init_control_plane(cp)
@@ -308,6 +382,7 @@ __all__ = [
     "JOIN_TIMEOUT",
     "POLL",
     "READY_TIMEOUT",
+    "UNIT_TIMEOUT",
     "bring_up",
     "diagnose",
     "get_json",
