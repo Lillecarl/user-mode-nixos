@@ -1,9 +1,9 @@
 """The in-guest half of the control channel.
 
-Started by the ``uml-agent`` systemd unit, this serves arpyc on
-``/dev/ttyS0`` -- the other end of which is a socketpair held by the host
-runner.  Commands therefore work before (and without) any guest
-networking, including inside a Nix build sandbox.
+Started by the ``uml-agent`` systemd unit, this serves arpyc on a serial
+line -- the other end of which is a socketpair held by the host runner.
+Commands therefore work before (and without) any guest networking,
+including inside a Nix build sandbox.
 
 Commands run with ``/run/current-system/sw/bin`` on ``PATH``, so whatever
 a test's NixOS config puts in ``environment.systemPackages`` is callable.
@@ -20,12 +20,15 @@ import subprocess
 from .arpyc import Service, listen
 
 AGENT_READY = "uml-agent: ready"
-"""Printed on the guest console once the agent is reading ``/dev/ttyS0``;
+"""Printed on the guest console once the agent is reading :data:`TTY`;
 the host waits for this line to know a guest has finished booting, and
 connects the moment it sees it.  Nothing may be printed before the line
 is set up, or the first request races the setup and is lost."""
 
-TTY = "/dev/ttyS0"
+TTY = os.environ.get("UML_AGENT_DEVICE", "/dev/ttyS0")
+"""Where the host is listening.  ttyS0 under UML.  Under QEMU the console
+takes ttyS0 -- a stock kernel prints there from its first line, before any
+virtio driver exists -- and the agent gets hvc0 instead."""
 GUEST_PATH = "/run/current-system/sw/bin:/run/current-system/sw/sbin"
 
 

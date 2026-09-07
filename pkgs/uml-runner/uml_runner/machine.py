@@ -1,14 +1,15 @@
-"""A single NixOS guest running under User-Mode Linux.
+"""A single NixOS guest, whatever kind of machine it turns out to be.
 
-Each guest is one ``uml-passt-bridge`` process, which forks passt for the
-uplink (``vec0``) and then execs the UML kernel.  Three fds matter:
+Three fds make a guest, and they are the same three for every backend:
 
-    vec0  passt, set up by the bridge  -- outbound NAT plus port forwards
+    vec0  passt         -- outbound NAT plus the host's way in
     vec1  an fd from :mod:`uml_runner.net` -- L2 between guests
-    ssl0  a socketpair to the guest's arpyc agent on ``/dev/ttyS0``
+    a socketpair        -- arpyc to the guest's agent, on a serial line
 
-Commands run over ssl0, so nothing here depends on guest networking
-having come up, and everything works inside a Nix build sandbox.
+Commands go over the socketpair, so nothing here depends on guest
+networking having come up, and everything works inside a Nix build
+sandbox.  :mod:`uml_runner.backend` turns those three into an argv; this
+file does not know which kind of machine it started.
 """
 
 from __future__ import annotations
@@ -20,13 +21,15 @@ import re
 import shutil
 import signal
 import socket
+import subprocess as sync_subprocess
 import tempfile
 from asyncio import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .agent import AGENT_READY
 from .arpyc import AsyncConnection, connect
+from . import backend as backends
 from . import forward
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
@@ -36,14 +39,6 @@ _SYSTEMD_TIMEOUT = 60
 """How long to wait for one `systemctl` round trip.  The agent gives the
 command itself 30s, so anything past this is the guest, not systemd."""
 
-_VECTOR_DEPTH = 64
-"""Frames per ``sendmmsg``/``recvmmsg``, and NAPI's poll weight.
-
-Also how many receive buffers the driver keeps allocated per interface,
-each one MTU-sized -- so at a jumbo MTU this is megabytes of the guest's
-RAM.  There is no point going deep: AF_UNIX lets about ten frames sit in
-a socketpair, so nothing beyond that is ever in flight."""
-
 
 class MachineError(Exception):
     """A guest failed to boot, or a command in it did not do as told."""
@@ -51,18 +46,32 @@ class MachineError(Exception):
 
 @dataclass(frozen=True)
 class Toolchain:
-    """Host-side binaries shared by every guest in a run."""
+    """Host-side binaries shared by every guest in a run.
 
-    kernel: Path
-    bridge: Path
+    Only passt is wanted by both backends.  The rest is per backend, and
+    absent rather than empty when the run does not use that backend -- a
+    QEMU run must not name the UML kernel, because naming it is what makes
+    Nix spend half an hour building it.
+    """
+
     passt: Path
+    kernel: Path | None = None
+    bridge: Path | None = None
+    qemu: Path | None = None
+    virtiofsd: Path | None = None
 
     @classmethod
     def from_json(cls, data: dict) -> Toolchain:
+        def maybe(key: str) -> Path | None:
+            value = data.get(key)
+            return Path(value) if value else None
+
         return cls(
-            kernel=Path(data["kernel"]),
-            bridge=Path(data["bridge"]),
             passt=Path(data["passt"]),
+            kernel=maybe("kernel"),
+            bridge=maybe("bridge"),
+            qemu=maybe("qemu"),
+            virtiofsd=maybe("virtiofsd"),
         )
 
 
@@ -71,12 +80,20 @@ class MachineSpec:
     """What Nix knows about a guest; see ``mkTest`` in flake.nix."""
 
     name: str
-    image: Path
+    backend: str = "uml"
+    index: int = 0
+    image: Path | None = None
     memory: str = "128M"
+    cpus: int = 1
     ssh_port: int = 4325
     mtu: int = 65000
     network: str | None = None
     address: str | None = None
+    store: str = "/nix"
+    boot: dict = field(default_factory=dict)
+    """What a QEMU guest boots: kernel, initrd, toplevel and cmdline, as
+    ``modules/qemu.nix`` worked them out.  Empty under UML, which boots the
+    root image instead."""
     forward: tuple[forward.Rule, ...] = ()
     """Host-side port forwards.  Addresses in these are still None until
     :func:`uml_runner.forward.resolve` has run over every machine in the
@@ -84,14 +101,20 @@ class MachineSpec:
 
     @classmethod
     def from_json(cls, data: dict) -> MachineSpec:
+        image = data.get("image")
         return cls(
             name=data["name"],
-            image=Path(data["image"]),
+            backend=data.get("backend", "uml"),
+            index=data.get("index", 0),
+            image=Path(image) if image else None,
             memory=data.get("memory", "128M"),
+            cpus=data.get("cpus", 1),
             ssh_port=data.get("sshPort", 4325),
             mtu=data.get("mtu", 65000),
             network=data.get("network"),
             address=data.get("address"),
+            store=data.get("store", "/nix"),
+            boot=data.get("boot", {}),
             forward=tuple(
                 forward.Rule.from_json(rule) for rule in data.get("forward", [])
             ),
@@ -101,6 +124,15 @@ class MachineSpec:
     def ip(self) -> str | None:
         """The ``vec1`` address without its prefix length."""
         return self.address.split("/")[0] if self.address else None
+
+    def mac(self, nic: int) -> str:
+        """This guest's address on ``vecN``.
+
+        It carries the machine's index, because two guests on one segment
+        sharing a MAC is not a segment.  ``modules/qemu.nix`` matches these
+        to name the interfaces, so the two must agree.
+        """
+        return f"52:54:00:12:{nic:02x}:{self.index:02x}"
 
 
 class Machine:
@@ -119,6 +151,7 @@ class Machine:
     ) -> None:
         self.spec = spec
         self.tools = tools
+        self.backend = backends.get(spec.backend)
         self.lan_fd = lan_fd
         self.boot_timeout = boot_timeout
         self.command_timeout = command_timeout
@@ -134,6 +167,8 @@ class Machine:
         self._agent_sock: socket.socket | None = None
         self._guest_sock: socket.socket | None = None
         self._conn: AsyncConnection | None = None
+        self._helpers: list[sync_subprocess.Popen] = []
+        self._spare_fds: list[int] = []
 
     @property
     def name(self) -> str:
@@ -177,24 +212,31 @@ class Machine:
             socket.AF_UNIX, socket.SOCK_STREAM
         )
 
-        argv = self._argv(self._guest_sock.fileno())
-        pass_fds = tuple(
-            fd for fd in (self._guest_sock.fileno(), self.lan_fd) if fd is not None
+        launch = self.backend.launch(
+            self, self._rundir, self._guest_sock.fileno(), self.lan_fd
         )
-        self._log(f"exec: {' '.join(argv)}")
+        self._helpers = launch.helpers
+        # Fds the backend opened for the child and no longer needs here.
+        self._spare_fds = [
+            fd
+            for fd in launch.pass_fds
+            if fd not in (self._guest_sock.fileno(), self.lan_fd)
+        ]
+        self._log(f"exec: {' '.join(launch.argv)}")
 
-        # The bridge finds passt on PATH.
-        env = dict(os.environ, PATH=f"{self.tools.passt.parent}:{os.environ['PATH']}")
         self._process = await subprocess.create_subprocess_exec(
-            *argv,
+            *launch.argv,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            env=env,
-            # Own process group, so the bridge, passt and the kernel all
-            # die together when we signal it.
+            env=launch.env or None,
+            # Own process group, so everything the backend started under
+            # it dies together when we signal it.
             start_new_session=True,
-            pass_fds=pass_fds,
+            pass_fds=launch.pass_fds,
         )
+        for fd in self._spare_fds:
+            os.close(fd)
+        self._spare_fds = []
         self._monitor = asyncio.ensure_future(self._pump_console())
 
         loop = asyncio.get_running_loop()
@@ -218,48 +260,6 @@ class Machine:
         self._guest_sock.close()
         self._guest_sock = None
 
-    def _vec(self, unit: int, fd: int) -> str:
-        """A ``vecN=`` device on *fd*.
-
-        ``mtu`` is only settable here: the driver leaves ``max_mtu`` at
-        ``ether_setup``'s 1500, so ``ip link set mtu`` cannot raise it
-        afterwards.
-
-        No ``gro=1``: all it does is fix the receive buffers at 64K so
-        that a transport with virtio-net headers can deliver a segment
-        larger than the MTU.  ``fd`` has no such headers -- nothing ever
-        arrives bigger than a frame -- so it would only mean allocating
-        64K per frame and throwing most of it away.
-        """
-        return (
-            f"vec{unit}:transport=fd,fd={fd},"
-            f"depth={_VECTOR_DEPTH},mtu={self.spec.mtu}"
-        )
-
-    def _argv(self, agent_fd: int) -> list[str]:
-        argv = [
-            str(self.tools.bridge),
-            "--vec",
-            self._vec(0, 3),
-            *forward.to_args(self.forward),
-            str(self.tools.kernel),
-            f"ubd0={self._rundir}/cow,{self.spec.image}",
-            "root=/dev/ubda",
-            "rw",
-            "init=/init",
-            f"mem={self.spec.memory}",
-            f"ssl0=fd:{agent_fd}",
-            # Catch the guest's syscalls with a seccomp filter instead of
-            # ptrace: fewer context switches per trap and per page fault,
-            # which measures a few percent on throughput and about five
-            # seconds off a boot.  "auto" falls back to ptrace where the
-            # host will not let us install a filter, rather than
-            # refusing to boot the way "on" does.
-            "seccomp=auto",
-        ]
-        if self.lan_fd is not None:
-            argv.append(self._vec(1, self.lan_fd))
-        return argv
 
     async def shutdown(self) -> None:
         """Ask the guest to power off, then make sure nothing is left."""
@@ -277,6 +277,14 @@ class Machine:
         self._agent_sock = self._guest_sock = None
 
         await self._reap()
+
+        # virtiofsd and passt, where the backend started them itself.
+        # Under UML they are children of the bridge and went with it.
+        for helper in self._helpers:
+            if helper.poll() is None:
+                helper.kill()
+                helper.wait()
+        self._helpers = []
 
         if self._monitor is not None:
             self._monitor.cancel()
