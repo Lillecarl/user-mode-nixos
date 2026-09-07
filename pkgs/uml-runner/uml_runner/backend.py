@@ -126,17 +126,21 @@ class Qemu:
 
     def launch(self, machine, rundir: Path, agent_fd: int, lan_fd: int | None) -> Launch:
         helpers: list[subprocess.Popen] = []
+        opened: list[int] = []
         try:
-            return self._launch(machine, rundir, agent_fd, lan_fd, helpers)
+            return self._launch(machine, rundir, agent_fd, lan_fd, helpers, opened)
         except BaseException:
             # Nothing owns these until a Launch carries them back, so a
-            # failure between the first helper and the last would leave a
-            # daemon behind -- and a test that fails while booting is
+            # failure between the first one and the last would leave a
+            # daemon running, or an unlinked disk image alive with no name
+            # and no way to find it. A test that fails while booting is
             # exactly when that happens.
             for helper in helpers:
                 if helper.poll() is None:
                     helper.kill()
                     helper.wait()
+            for fd in opened:
+                os.close(fd)
             raise
 
     def _launch(
@@ -146,16 +150,20 @@ class Qemu:
         agent_fd: int,
         lan_fd: int | None,
         helpers: list[subprocess.Popen],
+        opened: list[int],
     ) -> Launch:
         spec, tools = machine.spec, machine.tools
 
-        vfs_sock = rundir / "virtiofsd.sock"
-        helpers.append(self._virtiofsd(tools, vfs_sock, spec.store))
+        vfs_fd, vfsd = self._virtiofsd(tools, rundir, spec.store)
+        helpers.append(vfsd)
+        opened.append(vfs_fd)
 
-        scratch = self._scratch_disk(tools, rundir, spec.image)
+        disk_fds = self._scratch_disk(tools, rundir, spec.image)
+        opened.extend(disk_fds)
 
         passt_fd, passt_proc = self._passt(tools, machine.forward)
         helpers.append(passt_proc)
+        opened.append(passt_fd)
 
         boot = spec.boot
         argv = [
@@ -173,12 +181,16 @@ class Qemu:
             "-kernel", boot["kernel"],
             "-initrd", boot["initrd"],
             "-append", f"{boot['cmdline']} init={boot['toplevel']}/init",
-            # The root, as /dev/vda. The only disk, so the guest names it
-            # directly rather than waiting for udev to find a label.
-            "-drive", f"file={scratch},if=virtio,format=qcow2",
+            # The root, as /dev/vda, by fd rather than by name -- see
+            # _scratch_disk. Two fds in the set because QEMU opens an
+            # image O_RDONLY to probe its format before reopening it
+            # O_RDWR, and matches the set on the access mode.
+            "-add-fd", f"fd={disk_fds[0]},set=1",
+            "-add-fd", f"fd={disk_fds[1]},set=1",
+            "-drive", "file=/dev/fdset/1,if=virtio,format=qcow2",
             # The console, read by Machine._pump_console.
             "-serial", "stdio",
-            "-chardev", f"socket,id=virtiofs,path={vfs_sock}",
+            "-chardev", f"socket,id=virtiofs,fd={vfs_fd}",
             "-device", "vhost-user-fs-pci,chardev=virtiofs,tag=nix",
             # The control channel: the same socketpair UML gets on ssl0.
             "-chardev", f"socket,id=agent,fd={agent_fd}",
@@ -195,17 +207,29 @@ class Qemu:
             ]
 
         pass_fds = tuple(
-            fd for fd in (agent_fd, passt_fd, lan_fd) if fd is not None
+            fd
+            for fd in (agent_fd, passt_fd, lan_fd, vfs_fd, *disk_fds)
+            if fd is not None
         )
         return Launch(argv=argv, pass_fds=pass_fds, helpers=helpers)
 
     @staticmethod
-    def _scratch_disk(tools, rundir: Path, image: Path | None) -> Path:
-        """A writable layer over the read-only root image.
+    def _scratch_disk(tools, rundir: Path, image: Path | None) -> tuple[int, int]:
+        """A writable layer over the read-only root image, with no name.
 
         The same shape as UML's ``ubd0=<cow>,<image>``: the image stays in
-        the store and everything the guest writes lands here, to be thrown
-        away with the run directory.
+        the store, and everything the guest writes goes here instead.
+
+        The file is unlinked before QEMU is started and handed over as open
+        file descriptors.  So the only thing keeping those gigabytes alive
+        is a process, and the kernel frees them the moment QEMU is gone --
+        including when the runner is killed with a signal it cannot catch,
+        which no amount of cleanup code covers.
+
+        Two descriptors, read-write and read-only, because QEMU opens an
+        image O_RDONLY to probe its format before reopening it O_RDWR, and
+        picks from the fd set by access mode.  With one it says
+        ``Failed to find file descriptor with matching flags=0x0``.
         """
         if image is None:
             raise BackendError("this guest has no root image")
@@ -229,11 +253,20 @@ class Qemu:
                 f"could not make a scratch disk over {image}: "
                 f"{(done.stderr or done.stdout).strip()}"
             )
-        return scratch
+        fds = (os.open(scratch, os.O_RDWR), os.open(scratch, os.O_RDONLY))
+        scratch.unlink()
+        return fds
 
     @staticmethod
-    def _virtiofsd(tools, socket_path: Path, store: str) -> subprocess.Popen:
-        """Serve the host's store, and wait until it will answer.
+    def _virtiofsd(tools, rundir: Path, store: str) -> tuple[int, subprocess.Popen]:
+        """Serve the host's store, and leave no socket behind.
+
+        virtiofsd takes a *listening* socket on ``--fd``, so the path it
+        was bound to is only needed for long enough to connect to it once.
+        Bind, listen, connect, unlink, and hand one end to virtiofsd and
+        the other to QEMU: nothing is left in the filesystem even while the
+        guest is running, so nothing can be left after it.
+
 
         ``--no-announce-submounts`` is load-bearing, and the failure it
         avoids names nothing useful.  NixOS binds ``/nix/store`` onto
@@ -250,10 +283,26 @@ class Qemu:
         filesystems sharing an inode number would alias.  That cannot
         happen while ``/nix/store`` is a bind of ``/nix``.
         """
+        # Short, because an AF_UNIX path is about 107 bytes and a run
+        # directory under a long TMPDIR eats most of that.
+        socket_path = rundir / "vfs"
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            listener.bind(str(socket_path))
+            listener.listen(1)
+            client.connect(str(socket_path))
+        except OSError as error:
+            listener.close()
+            client.close()
+            raise BackendError(f"could not make a socket at {socket_path}: {error}")
+        finally:
+            socket_path.unlink(missing_ok=True)
+
         proc = subprocess.Popen(
             [
                 str(tools.virtiofsd),
-                f"--socket-path={socket_path}",
+                f"--fd={listener.fileno()}",
                 f"--shared-dir={store}",
                 # Nothing left to drop: this is already unprivileged, and
                 # namespace sandboxing needs privileges a build does not
@@ -262,20 +311,25 @@ class Qemu:
                 "--cache", "auto",
                 "--no-announce-submounts",
             ],
+            pass_fds=(listener.fileno(),),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.STDOUT,
         )
-        deadline = time.monotonic() + 10
-        while not socket_path.exists():
-            if proc.poll() is not None:
-                raise BackendError(
-                    f"virtiofsd exited ({proc.returncode}) before serving {store}"
-                )
-            if time.monotonic() > deadline:
-                proc.kill()
-                raise BackendError(f"virtiofsd never made {socket_path}")
-            time.sleep(0.02)
-        return proc
+        listener.close()
+
+        # There is no socket file to wait for any more, so the readiness
+        # check is that virtiofsd is still alive a moment later. Without
+        # it, a bad argument or an unreadable shared directory would show
+        # up as a guest whose initrd cannot mount /nix, which names the
+        # wrong thing.
+        time.sleep(0.05)
+        if proc.poll() is not None:
+            client.close()
+            raise BackendError(
+                f"virtiofsd exited ({proc.returncode}) instead of serving {store}"
+            )
+
+        return client.detach(), proc
 
     @staticmethod
     def _passt(tools, rules) -> tuple[int, subprocess.Popen]:
