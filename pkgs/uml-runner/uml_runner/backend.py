@@ -152,6 +152,8 @@ class Qemu:
         vfs_sock = rundir / "virtiofsd.sock"
         helpers.append(self._virtiofsd(tools, vfs_sock, spec.store))
 
+        scratch = self._scratch_disk(tools, rundir, spec.image)
+
         passt_fd, passt_proc = self._passt(tools, machine.forward)
         helpers.append(passt_proc)
 
@@ -171,6 +173,9 @@ class Qemu:
             "-kernel", boot["kernel"],
             "-initrd", boot["initrd"],
             "-append", f"{boot['cmdline']} init={boot['toplevel']}/init",
+            # The root, as /dev/vda. The only disk, so the guest names it
+            # directly rather than waiting for udev to find a label.
+            "-drive", f"file={scratch},if=virtio,format=qcow2",
             # The console, read by Machine._pump_console.
             "-serial", "stdio",
             "-chardev", f"socket,id=virtiofs,path={vfs_sock}",
@@ -193,6 +198,38 @@ class Qemu:
             fd for fd in (agent_fd, passt_fd, lan_fd) if fd is not None
         )
         return Launch(argv=argv, pass_fds=pass_fds, helpers=helpers)
+
+    @staticmethod
+    def _scratch_disk(tools, rundir: Path, image: Path | None) -> Path:
+        """A writable layer over the read-only root image.
+
+        The same shape as UML's ``ubd0=<cow>,<image>``: the image stays in
+        the store and everything the guest writes lands here, to be thrown
+        away with the run directory.
+        """
+        if image is None:
+            raise BackendError("this guest has no root image")
+        scratch = rundir / "root.qcow2"
+        done = subprocess.run(
+            [
+                str(tools.qemu_img), "create",
+                "-q",
+                "-f", "qcow2",
+                # Named, because qemu-img refuses to guess a backing
+                # format and a guess would be silently wrong.
+                "-F", "raw",
+                "-b", str(image),
+                str(scratch),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if done.returncode != 0:
+            raise BackendError(
+                f"could not make a scratch disk over {image}: "
+                f"{(done.stderr or done.stdout).strip()}"
+            )
+        return scratch
 
     @staticmethod
     def _virtiofsd(tools, socket_path: Path, store: str) -> subprocess.Popen:

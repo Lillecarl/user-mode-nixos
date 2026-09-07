@@ -58,6 +58,7 @@ class Toolchain:
     kernel: Path | None = None
     bridge: Path | None = None
     qemu: Path | None = None
+    qemu_img: Path | None = None
     virtiofsd: Path | None = None
 
     @classmethod
@@ -71,6 +72,7 @@ class Toolchain:
             kernel=maybe("kernel"),
             bridge=maybe("bridge"),
             qemu=maybe("qemu"),
+            qemu_img=maybe("qemuImg"),
             virtiofsd=maybe("virtiofsd"),
         )
 

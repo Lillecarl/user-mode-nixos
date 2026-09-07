@@ -37,6 +37,7 @@ lib.mkIf (cfg.backend == "qemu") {
   boot.initrd.systemd.enable = true;
   boot.initrd.availableKernelModules = [
     "virtio_pci"
+    "virtio_blk"
     "virtio_console"
     "virtio_net"
     "virtiofs"
@@ -44,17 +45,47 @@ lib.mkIf (cfg.backend == "qemu") {
   ];
   boot.initrd.kernelModules = [
     "virtio_pci"
+    "virtio_blk"
     "virtio_console"
     "virtiofs"
     "overlay"
   ];
 
-  # No disk. The UML guest's 512 MiB ext4 holds nothing but mount points
-  # and is thrown away at poweroff; a tmpfs is that with one less device.
+  /*
+    A real disk, the same one UML gets, for the same reason.
+
+    A tmpfs root is tempting here -- one less device, and a guest throws
+    its root away at poweroff anyway. It is wrong, and the way it is wrong
+    is invisible until a test writes something: a tmpfs is charged to the
+    RAM the guest is running in, so `boot.uml.diskSize` would silently
+    become `boot.uml.memory` and a guest that writes a few hundred MB
+    would run out of memory rather than out of disk.
+
+    Measured: nixkube's node test copies a closure into the node's own
+    store at boot, and on a tmpfs root that unit fails after 87s while
+    every later step reports a missing store path instead.
+
+    The image is read-only in the store and the runner puts a per-run
+    qcow2 over it, which is what UML's `ubd0=<cow>,<image>` does.
+  */
+  system.build.umlRootImage = pkgs.runCommand "qemu-root-image" {
+    nativeBuildInputs = [ pkgs.e2fsprogs ];
+  } ''
+    mkdir -p root/{dev,proc,sys,tmp,run,var,root,home}
+    mkdir -p root/nix root/.nix-upper root/.nix-work root/host/nix
+    ${lib.optionalString cfg.nixDatabase.enable ''
+      install -m 0444 ${config.system.build.umlNixRegistration}/registration \
+        root/nix-registration''}
+    truncate -s ${toString cfg.diskSize}M disk.img
+    mkfs.ext4 -q -L nixos -d root disk.img
+    mv disk.img $out
+  '';
+
   fileSystems."/" = {
-    device = "tmpfs";
-    fsType = "tmpfs";
-    options = [ "mode=0755" ];
+    # The only disk, so name it directly rather than waiting for udev to
+    # find a label.
+    device = "/dev/vda";
+    fsType = "ext4";
   };
 
   fileSystems."/host/nix" = {

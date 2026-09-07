@@ -180,10 +180,13 @@ in
       type = lib.types.ints.positive;
       default = 1;
       description = ''
-        Processors the guest gets. Only the QEMU backend honours it: UML
-        allows SMP with the seccomp userspace alone, and two vCPUs there
-        measured *slower* than one on the iperf test -- the cross-CPU work
-        costs more than the parallelism buys.
+        Processors the guest gets. Only the QEMU backend honours it.
+
+        Worth about 11% on the iperf test at two processors, measured.
+        Under UML two vCPUs measured *slower* than one on that same test
+        -- UML allows SMP with the seccomp userspace alone, and the
+        cross-CPU work costs more than the parallelism buys. The two
+        backends disagree here, so do not carry a number between them.
       '';
     };
 
@@ -356,6 +359,30 @@ in
     # kernel package, so the two always agree on module versions.
     system.build = {
       umlRunnerPackage = pkgs.callPackage ../pkgs/uml-runner { };
+
+      /*
+        What the guest tells Nix about the store it can see -- see
+        `boot.uml.nixDatabase`.
+
+        Here rather than in guest.nix on purpose. A `closureInfo` over
+        `toplevel` cannot be named by anything inside `toplevel`, and a
+        systemd unit is inside it; `system.build` is downstream of the
+        system and nothing is built from it, so this is where the cycle
+        breaks.
+
+        Naming the roots is also what puts them in the build sandbox. A
+        path Nix has been told about and cannot open is worse than one it
+        does not know.
+
+        Both backends install this into their root image, and both must:
+        `uml-nix-db.service` is skipped, silently and as a success, when
+        `/nix-registration` is absent. A guest that then runs Nix finds
+        every path in its own store invalid and tries to substitute it,
+        which is a network error rather than anything naming the cause.
+      */
+      umlNixRegistration = pkgs.closureInfo {
+        rootPaths = [ config.system.build.toplevel ] ++ config.boot.uml.nixDatabase.extraRoots;
+      };
     }
     # Only under the UML backend, because the kernel is half an hour the
     # first time and a QEMU guest has no use for it. `system.build` is an

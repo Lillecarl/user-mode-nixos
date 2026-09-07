@@ -128,6 +128,7 @@ rec {
       }
       // lib.optionalAttrs (chosen == "qemu") {
         qemu = "${pkgs.qemu_kvm}/bin/qemu-system-x86_64";
+        qemuImg = "${pkgs.qemu_kvm}/bin/qemu-img";
         virtiofsd = "${pkgs.virtiofsd}/bin/virtiofsd";
       };
 
@@ -142,8 +143,9 @@ rec {
         network = machine.boot.uml.lan.network;
         address = machine.boot.uml.lan.address;
         forward = machine.boot.uml.forward;
-      }
-      // lib.optionalAttrs (machine.boot.uml.backend == "uml") {
+        # Both backends get a read-only root image of `boot.uml.diskSize`
+        # and a per-run copy-on-write layer over it. Only what is inside
+        # differs: UML boots `/init` from it, QEMU mounts it as `/`.
         image = "${machine.system.build.umlRootImage}";
       }
       // lib.optionalAttrs (machine.boot.uml.backend == "qemu") {
