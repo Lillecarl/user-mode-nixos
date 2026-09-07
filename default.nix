@@ -40,6 +40,17 @@ let
     };
   };
 
+  # The pair above, each running an iperf3 server. Shared by `iperf` and
+  # `iperf-qemu`, so the two measure the same guests on the same segment
+  # and only the machine underneath differs.
+  iperfNodes = lib.mapAttrs (_: node: {
+    imports = [
+      node
+      ./modules/iperf3.nix
+    ];
+    services.iperf3-server.enable = true;
+  }) (pair "lan");
+
   /*
     Three guests running kubeadm: one control plane, two workers.
 
@@ -156,13 +167,7 @@ let
     iperf = mkTest {
       name = "iperf";
       script = ./tests/iperf.py;
-      nodes = lib.mapAttrs (_: node: {
-        imports = [
-          node
-          ./modules/iperf3.nix
-        ];
-        services.iperf3-server.enable = true;
-      }) (pair "lan");
+      nodes = iperfNodes;
     };
 
     /*
@@ -264,6 +269,16 @@ tests
     backend = "qemu";
     script = ./tests/lan.py;
     nodes = pair "lan";
+  };
+
+  # What the same segment carries with a virtual machine on each end.
+  # Compare it against `iperf` only back to back: a guest is a process
+  # either way, and a busy host halves both numbers.
+  iperf-qemu = mkTest {
+    name = "iperf-qemu";
+    backend = "qemu";
+    script = ./tests/iperf.py;
+    nodes = iperfNodes;
   };
 
   # A guest to poke at by hand, running one program.

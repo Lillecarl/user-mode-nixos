@@ -27,6 +27,7 @@
           umlKernel
           lan
           lan-qemu
+          iperf-qemu
           forward
           fuse
           iperf
