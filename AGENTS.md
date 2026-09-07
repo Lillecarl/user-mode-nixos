@@ -9,6 +9,27 @@ This project uses jj (Jujutsu), not git. Do not use git commands.
 Flake entry points only see tracked files, so run `jj st` after adding a
 file and before building.
 
+## Two backends
+
+`boot.uml.backend` is `uml` or `qemu`, and `mkTest` takes it. A test
+script never knows which it got, and neither does a node configuration --
+keep it that way. Anything that has to differ belongs in
+`modules/qemu.nix` or in `uml_runner/backend.py`, not in a test.
+
+Every test carries `.uml` and `.qemu`, so do not add a second attribute
+to run a test on the other backend. `mkTest` builds both variants from
+one set of arguments; the one `backend` names keeps the bare derivation
+name.
+
+When you change `machine.py`, `net.py` or `forward.py`, run both:
+
+```sh
+nix build .#lan .#lan.qemu --print-build-logs 2>&1 | tee /tmp/umlboth.log
+```
+
+`.#lan.qemu` needs `/dev/kvm` and asks the daemon for the `kvm` feature,
+so it refuses to build where there is none rather than failing.
+
 ## Building and running
 
 Always tee to a log file; these builds are slow and boot output is long.

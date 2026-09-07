@@ -1,17 +1,29 @@
 # user-mode-nixos
 
-NixOS integration tests on [User-Mode Linux][uml], as an alternative to
-`nixosTest`. UML compiles the kernel as an ordinary Linux program, so a
-guest here is a process: no KVM, no root, no tap devices, no `/dev/net/tun`.
-That means tests run inside a Nix build sandbox, in a container, or on a
-builder that has no virtualisation to offer.
+NixOS integration tests, as an alternative to `nixosTest`. A guest is an
+ordinary NixOS configuration, a test is a Python coroutine over the guests,
+and the machine underneath is a choice.
+
+The default is [User-Mode Linux][uml], which compiles the kernel as an
+ordinary Linux program. A guest is then a process: no KVM, no root, no tap
+devices, no `/dev/net/tun`. Tests run inside a Nix build sandbox, in a
+container, or on a builder with no virtualisation to offer.
+
+The other is QEMU with KVM, which is multiprocessor and much faster, and
+needs `/dev/kvm`. Same test script, same node configurations, same
+host-side switch — see [Backends](#backends).
 
 ```console
 $ nix build .#lan .#iperf     # run the tests
+$ nix build .#lan.qemu        # the same test, as virtual machines
 $ nix build .#k8s             # three guests, a kubeadm cluster (CI-sized)
 $ nix run .#speedtest         # boot a guest and run speedtest-cli in it
 $ ./run.sh --command hostname # boot the demo guest and poke at it
 ```
+
+Every test answers to `.uml` and `.qemu`, so picking one needs no Nix
+edit. Nothing is duplicated to make that work: one script, one set of node
+configurations, and neither knows which machine it got.
 
 ## Writing a test
 
@@ -150,6 +162,111 @@ prints where each port answers, so a service you start inside is followed by
 the address to reach it at — or by `not forwarded`, which is the answer worth
 having, since it needs a reboot to fix.
 
+## Backends
+
+`mkTest` takes `backend`, and a node may override `boot.uml.backend` for
+itself. Nothing above that line changes: the same `tests/lan.py` and the
+same two node configurations run as `lan` and as `lan.qemu`.
+
+|  | `uml` (default) | `qemu` |
+| --- | --- | --- |
+| needs | nothing | `/dev/kvm` |
+| processors | one | `boot.uml.cpus` |
+| kernel | built for `ARCH=um`, all built in | the host's, with an initrd |
+| the store | hostfs | virtiofs |
+| default RAM | 256M | 512M |
+| `vec1` carrier | `UNKNOWN` | `UP` |
+
+The last row is not cosmetic if you write a test that waits on a link:
+UML's vector driver reports no carrier, so `ip` says `UNKNOWN` on an
+interface that carries traffic perfectly well. Check for the address, not
+for the state.
+
+**The host side is the same either way, and that is the point.** A segment
+is a `SOCK_SEQPACKET` socketpair from `net.py`; UML takes the fd as
+`vec1:transport=fd` and QEMU takes it as `dgram,local.type=fd`. Both are
+plain `send` and `recv` on the fd with no framing of their own, so the two
+kinds of guest could sit on one segment. The forwards are the specifiers
+`forward.py` builds, unchanged.
+
+`uml-passt-bridge` is not in the QEMU picture. It exists to add and strip
+passt's 4-byte length prefix for UML's vector transport, and that prefix
+*is* QEMU's socket protocol — so the runner starts passt directly and the
+two talk.
+
+Two things to know about the QEMU guest:
+
+- **`accel=kvm`, never `accel=kvm:tcg`.** The fallback is silent and about
+  ten times slower, so a builder that lost KVM would look like a slow day
+  rather than a broken one. The test derivation asks the daemon for the
+  `kvm` feature, so a builder without it refuses the build instead.
+- **virtiofsd runs with `--no-announce-submounts`.** NixOS binds
+  `/nix/store` onto itself, so `store` is a submount of the shared
+  directory. Announced, the guest makes it an automount dentry, and
+  overlayfs refuses one as a lower layer (`ovl_dentry_weird`). Every lookup
+  under `/nix/store` then fails with `EREMOTE` — which reads as `Object is
+  remote`, on a store the guest can list one directory above. The cost of
+  turning it off is that the guest sees one inode number space across what
+  were two host filesystems, which cannot collide while `/nix/store` is a
+  bind of `/nix`.
+
+`checks` holds the default of each test, which is UML. The `.qemu`
+variants are deliberately **not** checks, until we know whether our CI
+runners have `/dev/kvm`: a builder without it does not fail such a test,
+it refuses to build it — which would stop CI rather than report anything.
+
+### What the segment carries, per backend
+
+`.#iperf` and `.#iperf.qemu` are the same two guests on the same segment,
+at a 65000-byte MTU, inside the build sandbox. One run at a time,
+alternating, on an idle host:
+
+| | run 1 | run 2 |
+| --- | --- | --- |
+| `uml`, 1 cpu | 25.80 / 25.22 | 25.18 / 25.40 |
+| `qemu`, 1 cpu | 31.33 / 30.54 | 30.72 / 30.70 |
+| `qemu`, 2 cpus | 33.69 / 34.37 | — |
+
+Gbit/s, server→client / client→server.
+
+Two things worth keeping:
+
+- **QEMU is about 20% faster on one processor**, before any parallelism.
+  The segment is the same socketpair either way, so this is the guest's
+  own cost, not the switch's.
+- **A second processor helps here and hurts under UML.** `boot.uml.cpus =
+  2` is worth about 11% on QEMU. Under UML two vCPUs measured *slower*
+  than one on this same test — the cross-CPU work costs more than the
+  parallelism buys. Do not carry a conclusion from one backend to the
+  other.
+
+Compare runs only back to back. A guest is a process either way and a busy
+host halves both numbers: run these two concurrently rather than one at a
+time and they read 21.78 and 26.87 instead.
+
+### Running outside the sandbox
+
+A test can be run by hand, which is the point of a QEMU guest: it has the
+host's network through passt, so a guest can reach a registry or a binary
+cache, and nothing waits for CI.
+
+```console
+$ nix build --file . iperf.qemu.spec -o spec
+$ nix build --file . iperf.qemu.python -o python
+$ ./python/bin/python3 tests/iperf.py --spec ./spec
+```
+
+**A run leaves nothing behind, including when it is killed.** The guest's
+disk is unlinked before QEMU starts and handed over as file descriptors,
+and virtiofsd is given a socket that was unlinked as soon as it was
+connected. So a `SIGKILL`, or closing the terminal, frees the disk with
+the process rather than leaving a gigabyte in `/tmp`. Measured: `/tmp` is
+unchanged across a full run on either backend.
+
+The guest's `/nix/var` is its own, never the host's — see `guest.nix`. Nix
+inside the guest knows the paths `boot.uml.nixDatabase` registered, and
+nothing else.
+
 ## Containers, and the Kubernetes test
 
 `.#k8s` boots three guests and builds a cluster on them with `kubeadm`:
@@ -238,14 +355,16 @@ after it changes, and cached by cachix after that.
 flake.nix               mkNode, mkTest, the tests and the demo guest
 ci/                     the GitHub Actions workflows, as Nix
 modules/default.nix     the boot.uml options
-modules/guest.nix       what a guest system looks like
-modules/image.nix       the root image, /init, and the run-uml wrapper
+modules/guest.nix       what a guest system looks like, either backend
+modules/image.nix       UML: the root image, /init, and the run-uml wrapper
+modules/qemu.nix        QEMU: the initrd, the virtiofs store, the MACs
 modules/iperf3.nix      an example service module
 modules/k8s.nix         a kubeadm node: containerd, kubelet, images
 modules/k8s-images.nix  the images kubeadm expects, built from nixpkgs
 pkgs/uml-kernel         the UML kernel, built from the guest's own source
 pkgs/uml-passt-bridge   fd plumbing between UML, passt and the host
 pkgs/uml-runner         the host runner, test harness, and guest agent
+  backend.py            what to exec for a guest, per backend
 tests/                  one file per test
 ```
 
@@ -256,11 +375,16 @@ tests/                  one file per test
 ## Limits
 
 - x86_64-linux only, and the guest kernel comes from the host's nixpkgs.
-- No nested virtualisation, no KVM inside a guest, no real block devices.
-- A guest is single-CPU. The kernel takes `smp = true`, but UML only
+- Under UML: no nested virtualisation, no KVM inside a guest, no real
+  block devices.
+- A UML guest is single-CPU. The kernel takes `smp = true`, but UML only
   allows SMP with the seccomp userspace, and two vCPUs measured *slower*
   than one on the iperf test — the cross-CPU work costs more than the
-  parallelism buys.
+  parallelism buys. A QEMU guest takes `boot.uml.cpus`.
+- `lan` and `iperf` have been run on both backends, and so has nixkube's
+  own node test — a kubeadm control plane, a CSI driver and nine chaos
+  scenarios — inside the sandbox and outside it. This repository's
+  `containerd` and `k8s` are UML-only until someone runs them.
 - Guests pick their host address by binding a port and letting go of it
   again, which only means anything while nothing else is racing. Two
   *runs* started at the same instant outside a sandbox can still land on
