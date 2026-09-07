@@ -246,6 +246,26 @@ tests
   # What CI builds. `flake.nix` re-exports this as both packages and checks.
   checks = tests;
 
+  /*
+    The same test, on the other backend.
+
+    `tests/lan.py` and `pair` are shared with `lan` above, and neither
+    knows which kind of machine it got: same script, same node
+    configuration, same host-side switch. Keeping that true is what this
+    is for.
+
+    Deliberately not in `checks`. It asks the daemon for the `kvm`
+    feature, and a builder without `/dev/kvm` does not fail the test --
+    it refuses to build it at all, which would stop CI rather than report
+    anything. Put it back once we know whether our runners have KVM.
+  */
+  lan-qemu = mkTest {
+    name = "lan-qemu";
+    backend = "qemu";
+    script = ./tests/lan.py;
+    nodes = pair "lan";
+  };
+
   # A guest to poke at by hand, running one program.
   speedtest = pkgs.writeShellScriptBin "uml-speedtest" ''
     exec ${demo.config.system.build.umlRunner}/bin/run-uml --command speedtest-cli "$@"

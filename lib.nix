@@ -51,8 +51,13 @@ rec {
 
     A store path in `settings` is a dependency like any other: the JSON
     carries its context, so the derivation builds it and the guest reads
-    it over hostfs.  That is how a caller gets its own program into a
-    guest without an image, a copy or a network.
+    it from the host's store.  That is how a caller gets its own program
+    into a guest without an image, a copy or a network.
+
+    `backend` picks what the guests become.  The script does not change
+    with it, and neither does a node's configuration: `uml` needs nothing
+    of the host, `qemu` needs `/dev/kvm` and is much faster.  A node may
+    still override `boot.uml.backend` for itself.
   */
   mkTest =
     {
@@ -60,6 +65,7 @@ rec {
       script,
       nodes,
       settings ? { },
+      backend ? "uml",
     }:
     let
       machines = lib.imap0 (
@@ -68,6 +74,8 @@ rec {
           imports = [ nodes.${hostName} ];
           networking.hostName = lib.mkDefault hostName;
           boot.uml.sshPort = lib.mkDefault (4325 + index);
+          boot.uml.backend = lib.mkDefault backend;
+          boot.uml.index = index;
         }).config
       ) (lib.attrNames nodes);
 
@@ -75,23 +83,53 @@ rec {
       # will do.
       first = lib.head machines;
 
+      /*
+        Only the backend this run uses, and nothing of the other.
+
+        Naming a store path is what builds it. A QEMU run that mentioned
+        `umlKernel` would spend half an hour on a kernel it never boots,
+        and a UML run that mentioned `qemu_kvm` would pull QEMU into a
+        sandbox that has no use for it.
+      */
+      toolchain = {
+        passt = "${pkgs.passt}/bin/passt";
+      }
+      // lib.optionalAttrs (backend == "uml") {
+        kernel = "${first.system.build.umlKernel}/linux";
+        bridge = lib.getExe first.system.build.umlPasstBridge;
+      }
+      // lib.optionalAttrs (backend == "qemu") {
+        qemu = "${pkgs.qemu_kvm}/bin/qemu-system-x86_64";
+        virtiofsd = "${pkgs.virtiofsd}/bin/virtiofsd";
+      };
+
+      machineSpec = machine: {
+        name = machine.networking.hostName;
+        backend = machine.boot.uml.backend;
+        index = machine.boot.uml.index;
+        memory = machine.boot.uml.memory;
+        cpus = machine.boot.uml.cpus;
+        sshPort = machine.boot.uml.sshPort;
+        mtu = machine.boot.uml.mtu;
+        network = machine.boot.uml.lan.network;
+        address = machine.boot.uml.lan.address;
+        forward = machine.boot.uml.forward;
+      }
+      // lib.optionalAttrs (machine.boot.uml.backend == "uml") {
+        image = "${machine.system.build.umlRootImage}";
+      }
+      // lib.optionalAttrs (machine.boot.uml.backend == "qemu") {
+        boot = machine.system.build.qemuBoot;
+      };
+
       spec = pkgs.writeText "uml-${name}-spec.json" (
-        builtins.toJSON {
-          inherit settings;
-          kernel = "${first.system.build.umlKernel}/linux";
-          bridge = lib.getExe first.system.build.umlPasstBridge;
-          passt = "${pkgs.passt}/bin/passt";
-          machines = map (machine: {
-            name = machine.networking.hostName;
-            image = "${machine.system.build.umlRootImage}";
-            memory = machine.boot.uml.memory;
-            sshPort = machine.boot.uml.sshPort;
-            mtu = machine.boot.uml.mtu;
-            network = machine.boot.uml.lan.network;
-            address = machine.boot.uml.lan.address;
-            forward = machine.boot.uml.forward;
-          }) machines;
-        }
+        builtins.toJSON (
+          toolchain
+          // {
+            inherit settings;
+            machines = map machineSpec machines;
+          }
+        )
       );
 
       python = pkgs.python3.withPackages (_: [ first.system.build.umlRunnerPackage ]);
@@ -99,6 +137,10 @@ rec {
     pkgs.runCommand "uml-test-${name}"
       {
         nativeBuildInputs = [ python ];
+        # A QEMU guest is only worth booting with KVM, and the daemon
+        # only hands /dev/kvm to a derivation that asks for it. UML asks
+        # for nothing, which is the whole point of UML.
+        requiredSystemFeatures = lib.optional (backend == "qemu") "kvm";
         # For running a test by hand outside the sandbox:
         #   nix build -f . iperf.spec -o spec
         #   nix build -f . iperf.python -o python

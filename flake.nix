@@ -26,6 +26,7 @@
         inherit (built)
           umlKernel
           lan
+          lan-qemu
           forward
           fuse
           iperf

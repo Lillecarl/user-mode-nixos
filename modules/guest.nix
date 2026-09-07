@@ -23,14 +23,18 @@ in
 {
   boot.kernelPackages = lib.mkDefault pkgs.linuxPackages_latest;
 
-  # There is no firmware, no bootloader and no initrd: UML jumps straight
-  # into /init on the root image (see image.nix).
-  boot.initrd.enable = false;
+  # Under UML there is no firmware, no bootloader and no initrd: the
+  # kernel jumps straight into /init on the root image (see image.nix),
+  # nothing is modular, and there is no /lib/modules. A QEMU guest boots
+  # the host's own kernel, where every virtio driver is a module, so it
+  # keeps the initrd and the modprobe script. See qemu.nix.
+  boot.initrd.enable = lib.mkIf (cfg.backend == "uml") false;
   boot.loader.grub.enable = false;
   boot.loader.systemd-boot.enable = false;
   system.build.installBootLoader = lib.getExe' pkgs.coreutils "true";
-  # Nothing is modular in the UML kernel, and there is no /lib/modules.
-  system.activationScripts.modprobe.text = lib.mkForce "";
+  system.activationScripts.modprobe.text = lib.mkIf (cfg.backend == "uml") (
+    lib.mkForce ""
+  );
 
   /*
     No bind of /nix/store on top of /nix.
@@ -118,11 +122,19 @@ in
   # The host's end of this is a socketpair, not a terminal, so the agent
   # is reachable before networking exists and inside a build sandbox.
   # Its "ready" line on the console is what the runner waits for.
-  systemd.services.uml-agent = {
-    description = "Host control channel on /dev/ttyS0";
+  #
+  # The device differs by backend -- ttyS0 under UML, hvc0 under QEMU,
+  # where ttyS0 carries the console instead -- so the unit is ordered
+  # against whichever one this guest got.
+  systemd.services.uml-agent = let
+    device = lib.removePrefix "/dev/" cfg.agentDevice;
+    unit = "dev-${device}.device";
+  in {
+    description = "Host control channel on ${cfg.agentDevice}";
     wantedBy = [ "multi-user.target" ];
-    after = [ "dev-ttyS0.device" ];
-    bindsTo = [ "dev-ttyS0.device" ];
+    after = [ unit ];
+    bindsTo = [ unit ];
+    environment.UML_AGENT_DEVICE = cfg.agentDevice;
     serviceConfig = {
       ExecStart = lib.getExe' config.system.build.umlRunnerPackage "uml-agent";
       StandardOutput = "journal+console";

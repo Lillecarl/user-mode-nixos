@@ -112,17 +112,78 @@ in
   imports = [
     ./guest.nix
     ./image.nix
+    ./qemu.nix
   ];
 
   options.boot.uml = {
+    backend = lib.mkOption {
+      type = lib.types.enum [ "uml" "qemu" ];
+      default = "uml";
+      description = ''
+        Which machine a guest becomes.
+
+        `uml` is a process: no KVM, no root, no tap device, nothing asked
+        of the host. `qemu` needs `/dev/kvm` to be worth running, and is
+        then multiprocessor and much faster.
+
+        The guest is the same NixOS configuration either way, and so is
+        the test script. What changes is the kernel and how `/nix`
+        arrives: UML builds its own kernel and mounts the store over
+        hostfs, QEMU uses the host's kernel with an initrd and mounts it
+        over virtiofs.
+      '';
+    };
+
+    index = lib.mkOption {
+      type = lib.types.ints.unsigned;
+      default = 0;
+      description = ''
+        This guest's position in its test, set by `mkTest`.
+
+        It is what keeps two guests on one segment apart: their MAC
+        addresses carry it, and under QEMU the interface names are
+        matched on those MACs.
+      '';
+    };
+
+    agentDevice = lib.mkOption {
+      type = lib.types.str;
+      default = "/dev/ttyS0";
+      internal = true;
+      description = ''
+        The device the in-guest agent serves on. The backend decides it,
+        because the console has to go somewhere else.
+      '';
+    };
+
     memory = lib.mkOption {
       type = lib.types.str;
-      default = "256M";
-      example = "512M";
+      default = if config.boot.uml.backend == "qemu" then "512M" else "256M";
+      defaultText = lib.literalExpression ''if backend == "qemu" then "512M" else "256M"'';
+      example = "1024M";
       description = ''
-        Guest RAM, as the UML `mem=` argument takes it.  Below about
-        192M the kernel starts OOM-killing the agent while systemd and
-        Python are both resident.
+        Guest RAM, as UML's `mem=` and QEMU's `-m` both take it.
+
+        Under UML, below about 192M the kernel starts OOM-killing the
+        agent while systemd and Python are both resident.
+
+        A QEMU guest needs more for the same work, which is why the
+        default is not one number. Its root is a tmpfs and its initrd is
+        unpacked into another, so two filesystems are charged to the same
+        RAM the guest is running in. Measured: at 256M the agent reaches
+        its ready line and is OOM-killed seconds later, inside the build
+        sandbox, on a guest that passes the same test outside it.
+      '';
+    };
+
+    cpus = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 1;
+      description = ''
+        Processors the guest gets. Only the QEMU backend honours it: UML
+        allows SMP with the seccomp userspace alone, and two vCPUs there
+        measured *slower* than one on the iperf test -- the cross-CPU work
+        costs more than the parallelism buys.
       '';
     };
 
@@ -294,11 +355,18 @@ in
     # The UML kernel is built from the same source as the guest's own
     # kernel package, so the two always agree on module versions.
     system.build = {
+      umlRunnerPackage = pkgs.callPackage ../pkgs/uml-runner { };
+    }
+    # Only under the UML backend, because the kernel is half an hour the
+    # first time and a QEMU guest has no use for it. `system.build` is an
+    # attribute set, not options, so this is optionalAttrs rather than
+    # mkIf -- an attribute that is not defined cannot be evaluated by
+    # accident, which is the point.
+    // lib.optionalAttrs (config.boot.uml.backend == "uml") {
       umlKernel = pkgs.callPackage ../pkgs/uml-kernel {
         inherit (config.boot.kernelPackages.kernel) src version modDirVersion;
       };
       umlPasstBridge = pkgs.callPackage ../pkgs/uml-passt-bridge { };
-      umlRunnerPackage = pkgs.callPackage ../pkgs/uml-runner { };
     };
   };
 }

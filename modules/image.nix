@@ -70,7 +70,11 @@ let
     rootPaths = [ build.toplevel ] ++ cfg.nixDatabase.extraRoots;
   };
 in
-{
+# Only under UML. A QEMU guest boots a stock kernel and its initrd, and
+# its store arrives over virtiofs -- see qemu.nix -- so neither the image
+# nor the runner below has anything to do there, and `umlKernel`, which
+# the runner names, is not even built.
+lib.mkIf (cfg.backend == "uml") {
   system.build.umlRootImage = pkgs.runCommand "uml-root-image" {
     nativeBuildInputs = [ pkgs.e2fsprogs ];
   } ''
