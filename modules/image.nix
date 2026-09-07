@@ -37,6 +37,23 @@ let
     echo "uml-init: starting systemd ..."
     exec /sbin/init
   '';
+
+  /*
+    What the guest tells Nix about the store it can see -- see
+    `boot.uml.nixDatabase`.
+
+    Built here rather than in guest.nix on purpose.  A `closureInfo` over
+    `toplevel` cannot be named by anything inside `toplevel`, and a systemd
+    unit is inside it; the image is the first thing downstream of the system
+    that the system does not depend on, so this is where the cycle breaks.
+
+    Naming the roots is also what puts them in the build sandbox.  A path
+    Nix has been told about and cannot open is worse than one it does not
+    know.
+  */
+  registration = pkgs.closureInfo {
+    rootPaths = [ build.toplevel ] ++ cfg.nixDatabase.extraRoots;
+  };
 in
 {
   system.build.umlRootImage = pkgs.runCommand "uml-root-image" {
@@ -46,6 +63,8 @@ in
     mkdir -p root/nix/{store,.store-upper,.store-work} root/host/nix/store
 
     install -m 0555 ${init} root/init
+    ${lib.optionalString cfg.nixDatabase.enable ''
+      install -m 0444 ${registration}/registration root/nix-registration''}
     install -m 0555 ${pkgs.pkgsStatic.busybox}/bin/busybox root/bin/busybox
     for cmd in sh mkdir mount echo cat ls; do
       ln -s busybox "root/bin/$cmd"

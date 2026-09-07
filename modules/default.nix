@@ -202,6 +202,44 @@ in
       '';
     };
 
+    /*
+      Tell Nix, inside the guest, about the store it can already see.
+
+      `/nix/store` in a guest is the host's, over hostfs, with a writable
+      overlay on top -- see image.nix.  Every path is there and readable,
+      and Nix knows about none of them: there is no `/nix/var/nix/db` at
+      all, so `nix-store --query --references <a path that is right there>`
+      answers `path '...' is not valid`.
+
+      That is fine for a guest that only runs programs.  It is not fine for
+      one that runs Nix: a build or a `nix copy` into a second store finds
+      its inputs invalid, tries to substitute them, and a build sandbox has
+      no network.  So this loads a registration for the closure below,
+      which turns a directory the guest can see into a store it can use.
+
+      Off by default.  It costs a `closureInfo` derivation and one oneshot
+      at boot, and a guest that never runs Nix wants neither.
+    */
+    nixDatabase = {
+      enable = lib.mkEnableOption "a Nix database for the store the guest sees over hostfs";
+
+      extraRoots = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        example = lib.literalExpression ''[ "''${pkgs.hello}" ]'';
+        description = ''
+          Store paths to register beyond the guest's own system closure.
+
+          A test hands its guests store paths through `mkTest`'s `settings`
+          rather than through the configuration, so nothing in the module
+          system knows about them -- name them here and their closures are
+          registered too.  Each one becomes a dependency of the guest,
+          which is also what puts it in the build sandbox in the first
+          place.
+        '';
+      };
+    };
+
     lan = {
       network = lib.mkOption {
         type = lib.types.nullOr lib.types.str;

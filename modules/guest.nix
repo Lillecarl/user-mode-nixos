@@ -98,5 +98,34 @@ in
     };
   };
 
+  /*
+    Register the store the guest sees over hostfs, so Nix will use it.
+
+    The registration file itself is written onto the root image -- see
+    image.nix -- and this reads it from there rather than from the store.
+    That is not tidiness: a unit that named a `closureInfo` of
+    `system.build.toplevel` would put the system's own closure inside the
+    system's own closure, and the configuration would not evaluate at all.
+    The image is built from `toplevel` and nothing is built from the image,
+    so the cycle has to break there.
+
+    Before `multi-user.target`, so anything a test starts finds a store it
+    can query. Loading a dump of a few thousand paths is milliseconds.
+  */
+  systemd.services.uml-nix-db = lib.mkIf cfg.nixDatabase.enable {
+    description = "Register the hostfs Nix store with Nix";
+    wantedBy = [ "multi-user.target" ];
+    before = [ "multi-user.target" ];
+    unitConfig.ConditionPathExists = "/nix-registration";
+    serviceConfig = {
+      Type = "oneshot";
+      RemainAfterExit = true;
+    };
+    script = ''
+      mkdir -p /nix/var/nix/db
+      ${lib.getExe' config.nix.package "nix-store"} --load-db </nix-registration
+    '';
+  };
+
   system.stateVersion = lib.mkDefault "25.05";
 }
