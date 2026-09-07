@@ -157,15 +157,32 @@ in
     can query. Loading a dump of a few thousand paths is milliseconds.
   */
   systemd.services.uml-nix-db = lib.mkIf cfg.nixDatabase.enable {
-    description = "Register the hostfs Nix store with Nix";
+    description = "Register the Nix store the guest can see";
     wantedBy = [ "multi-user.target" ];
     before = [ "multi-user.target" ];
-    unitConfig.ConditionPathExists = "/nix-registration";
     serviceConfig = {
       Type = "oneshot";
       RemainAfterExit = true;
     };
+    /*
+      No `ConditionPathExists` on the registration file.
+
+      It had one, and a missing file made this unit *succeed* without doing
+      anything -- so a guest booted with an empty Nix database and looked
+      exactly like a guest booted with a full one, until something ran Nix.
+      What that looks like from there is every path in the guest's own store
+      being invalid, and Nix trying to fetch each one from a cache it cannot
+      reach: a network timeout, naming nothing.
+
+      `boot.uml.nixDatabase.enable` is what puts the file on the root image,
+      so its absence is a bug in this module and belongs on the console.
+    */
     script = ''
+      if [ ! -e /nix-registration ]; then
+        echo "no /nix-registration on the root image, so the store cannot" >&2
+        echo "be registered -- see boot.uml.nixDatabase in modules/" >&2
+        exit 1
+      fi
       mkdir -p /nix/var/nix/db
       ${lib.getExe' config.nix.package "nix-store"} --load-db </nix-registration
     '';
