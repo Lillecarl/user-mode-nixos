@@ -26,6 +26,24 @@ from uml_runner.cluster import (
 )
 
 
+# The store, declared the way any pod on any cluster declares a volume.
+#
+# Every image here is symlinks into /nix/store, so a container built from
+# one cannot start without it -- see modules/k8s-images.nix.  The node does
+# not hand it out unasked: kubeadm patches give the control plane its copy
+# and nothing else gets one, so that a test whose subject puts /nix into a
+# pod can tell its subject's work from the node's.
+STORE_VOLUME = """
+    volumeMounts:
+    - name: nix-store
+      mountPath: /nix/store
+      readOnly: true
+  volumes:
+  - name: nix-store
+    hostPath:
+      path: /nix/store
+      type: Directory"""
+
 MANIFEST = """
 apiVersion: v1
 kind: Pod
@@ -44,6 +62,7 @@ spec:
     - mkdir -p /www && echo {greeting} > /www/index.html && exec /bin/httpd -f -p 8080 -h /www
     ports:
     - containerPort: 8080
+{store}
 ---
 apiVersion: v1
 kind: Service
@@ -66,6 +85,7 @@ spec:
     image: {image}
     imagePullPolicy: Never
     command: ["/bin/sleep", "3600"]
+{store}
 """
 
 
@@ -79,7 +99,11 @@ async def check_cluster_networking(cp, vms, image):
     greeting = "hello-from-the-other-node"
     workers = [name for name in vms if name != cp.name]
     manifest = MANIFEST.format(
-        image=image, server=workers[0], client=workers[1], greeting=greeting
+        image=image,
+        server=workers[0],
+        client=workers[1],
+        greeting=greeting,
+        store=STORE_VOLUME,
     )
     # nodeName rather than a nodeSelector: the point is to put the two
     # pods on different nodes, and asking the scheduler to do it leaves

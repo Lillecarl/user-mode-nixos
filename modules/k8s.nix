@@ -50,58 +50,86 @@ let
   yaml = pkgs.formats.yaml_1_2 { };
 
   /*
-    Give every container the host's /nix/store.
+    The store, mounted where it is actually needed.
 
-    The images hold nothing but symlinks into it, so without this mount
-    each one would exec a dangling link.  CRI deep-copies this spec and
-    appends its own mounts on top, dropping only the destinations it
-    supplies itself -- /nix/store is not one of them.
+    Every image here is a handful of symlinks into /nix/store
+    (`includeStorePaths = false` in ./k8s-images.nix), so each container
+    built from one needs the store to resolve them.  There are two ways to
+    arrange that, and only one of them is honest.
 
-    kubeadm could carry most of this instead, through `extraVolumes` on
-    the control plane components or a patches directory.  Its patch
-    targets are etcd, kube-apiserver, kube-controller-manager,
-    kube-scheduler, kubeletconfiguration and corednsdeployment -- so
-    everything except kube-proxy, which is applied from a manifest baked
-    into kubeadm with no patch point at all.  Reaching it would mean
-    skipping the addon phase and owning a DaemonSet that has to track the
-    Kubernetes version, patching it from outside after init, or letting
-    that one image carry its closure.  The last is the cheap-sounding
-    option and is not cheap: kube-proxy comes from pkgs.kubernetes, so it
-    is 152 MiB compressed against 14 MiB for every image here put
-    together, on each of three nodes.
+    The tempting one is containerd's `base_runtime_spec`, which adds a
+    mount to *every* container on the node in three lines.  It also makes
+    the node lie: a pod that never asked for the store gets it anyway, so
+    anything whose job is to put /nix into a pod -- nixkube, for one --
+    can no longer be told apart from the node doing it.  A test of such a
+    thing passes with its subject switched off.
 
-    Doing it here instead costs one thing worth knowing about: the mount
-    does not appear in `kubectl get pod -o yaml`, because it was never in
-    the pod spec.  If a container cannot find /nix/store, this file is
-    where to look, not the manifest.  In exchange it also covers whatever
-    a test schedules, which would otherwise have to ask for the volume
-    every time.
-
-    Generated from the containerd being configured rather than written
-    out here, so that a bump which changes the default capabilities or
-    masked paths does not silently leave a node running last year's
-    sandbox.
-
-    The pod sandbox is the exception: containerd builds its spec without
-    consulting this file, which is why the pause image alone ships its
-    own closure.
+    So the mount goes where it belongs.  kubeadm patches the four static
+    pods and CoreDNS; `bring_up` patches kube-proxy, which kubeadm applies
+    from a manifest baked into itself and offers no patch target for.  A
+    test that schedules a pod of its own declares the volume itself, the
+    way any pod on any cluster would.
   */
-  baseRuntimeSpec =
-    pkgs.runCommand "cri-base-spec.json"
-      {
-        nativeBuildInputs = [
-          pkgs.containerd
-          pkgs.jq
+  storeVolume = {
+    name = "nix-store";
+    hostPath = {
+      path = "/nix/store";
+      type = "Directory";
+    };
+  };
+
+  storeMount = {
+    name = "nix-store";
+    mountPath = "/nix/store";
+    readOnly = true;
+  };
+
+  # A strategic-merge patch, which merges `containers` by name -- so naming
+  # the one container is enough and nothing else in the pod is touched.
+  podPatch =
+    container:
+    yaml.generate "patch-${container}.yaml" {
+      spec = {
+        containers = [
+          {
+            name = container;
+            volumeMounts = [ storeMount ];
+          }
         ];
-      }
-      ''
-        ctr oci spec | jq '.mounts += [{
-          destination: "/nix/store",
-          type: "bind",
-          source: "/nix/store",
-          options: ["rbind", "ro"]
-        }]' > $out
-      '';
+        volumes = [ storeVolume ];
+      };
+    };
+
+  deploymentPatch =
+    container:
+    yaml.generate "patch-deployment-${container}.yaml" {
+      spec.template.spec = {
+        containers = [
+          {
+            name = container;
+            volumeMounts = [ storeMount ];
+          }
+        ];
+        volumes = [ storeVolume ];
+      };
+    };
+
+  /*
+    What kubeadm will apply, named the way it looks them up.
+
+    `<target>+<patchtype>.<extension>`, and the targets are fixed:
+    etcd, kube-apiserver, kube-controller-manager, kube-scheduler,
+    kubeletconfiguration and corednsdeployment.  kube-proxy is not among
+    them -- see `bring_up`.
+  */
+  kubeadmPatches = pkgs.runCommand "kubeadm-patches" { } ''
+    mkdir -p $out
+    cp ${podPatch "etcd"} $out/etcd+strategic.yaml
+    cp ${podPatch "kube-apiserver"} $out/kube-apiserver+strategic.yaml
+    cp ${podPatch "kube-controller-manager"} $out/kube-controller-manager+strategic.yaml
+    cp ${podPatch "kube-scheduler"} $out/kube-scheduler+strategic.yaml
+    cp ${deploymentPatch "coredns"} $out/corednsdeployment+strategic.yaml
+  '';
 
   nodeRegistration = {
     criSocket = criSocket;
@@ -147,6 +175,8 @@ let
         bindPort = 6443;
       };
       inherit nodeRegistration timeouts;
+      # Where the store mount comes from -- see `kubeadmPatches`.
+      patches.directory = "${kubeadmPatches}";
     }
     // lib.optionalAttrs (cfg.skipAddons != [ ]) {
       skipPhases = map (addon: "addon/${addon}") cfg.skipAddons;
@@ -317,6 +347,7 @@ let
       apiVersion = "kubeadm.k8s.io/v1beta4";
       kind = "JoinConfiguration";
       inherit nodeRegistration timeouts;
+      patches.directory = "${kubeadmPatches}";
       discovery.bootstrapToken = {
         apiServerEndpoint = endpoint;
         inherit token;
@@ -483,10 +514,7 @@ in
         # they are read rather than where they used to be.
         version = lib.mkForce 3;
         plugins."io.containerd.cri.v1.runtime" = {
-          containerd.runtimes.runc = {
-            options.SystemdCgroup = true;
-            base_runtime_spec = toString baseRuntimeSpec;
-          };
+          containerd.runtimes.runc.options.SystemdCgroup = true;
           # No copy into /opt/cni/bin: nothing writes to these and the
           # store path is already on the node.
           cni.bin_dirs = [ "${pkgs.cni-plugins}/bin" ];

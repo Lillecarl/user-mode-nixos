@@ -227,7 +227,65 @@ async def init_control_plane(cp):
         raise MachineError(
             f"[cp] kubeadm init failed (exit {rc}):\n{out}\n" + await diagnose(cp)
         )
+    await patch_kube_proxy(cp)
     print("[k8s] cp: control plane is up", flush=True)
+
+
+# kube-proxy's store mount, as a strategic-merge patch.
+#
+# Every image on these nodes is symlinks into /nix/store, so every
+# container built from one needs the store to resolve them.  kubeadm's
+# `patches.directory` covers the four static pods and CoreDNS; kube-proxy is
+# applied from a manifest baked into kubeadm and has no patch target at all,
+# so it is patched here, once, right after init.
+#
+# Doing it this way rather than through containerd's `base_runtime_spec`,
+# which would give *every* container the store in three lines: a node that
+# hands the store to pods that never asked for it cannot be used to test
+# anything that puts /nix into a pod.  It would pass with its subject
+# switched off.
+KUBE_PROXY_PATCH = json.dumps(
+    {
+        "spec": {
+            "template": {
+                "spec": {
+                    "containers": [
+                        {
+                            "name": "kube-proxy",
+                            "volumeMounts": [
+                                {
+                                    "name": "nix-store",
+                                    "mountPath": "/nix/store",
+                                    "readOnly": True,
+                                }
+                            ],
+                        }
+                    ],
+                    "volumes": [
+                        {
+                            "name": "nix-store",
+                            "hostPath": {"path": "/nix/store", "type": "Directory"},
+                        }
+                    ],
+                }
+            }
+        }
+    }
+)
+
+
+async def patch_kube_proxy(cp):
+    """Give kube-proxy the store, since kubeadm will not."""
+    rc, out = await cp.execute(
+        "kubectl --namespace kube-system patch daemonset kube-proxy"
+        f" --type strategic --patch '{KUBE_PROXY_PATCH}'",
+        timeout=UNIT_TIMEOUT,
+    )
+    if rc != 0:
+        raise MachineError(
+            f"[cp] could not give kube-proxy the store (exit {rc}):\n{out}"
+        )
+    print("[k8s] cp: kube-proxy has the store", flush=True)
 
 
 async def join(cp, workers):

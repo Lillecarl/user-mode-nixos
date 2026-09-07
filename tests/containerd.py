@@ -68,6 +68,17 @@ def container(image):
         # covers the image's PATH as well as the symlink itself.
         "command": ["kube-apiserver", "--version"],
         "log_path": "probe.log",
+        # Asked for, not assumed. The node does not put the store in every
+        # container -- kubeadm patches give the control plane its copy and
+        # nothing else gets one -- so a container of symlinks has to say it
+        # needs the thing they point at. See modules/k8s.nix.
+        "mounts": [
+            {
+                "container_path": "/nix/store",
+                "host_path": "/nix/store",
+                "readonly": True,
+            }
+        ],
         "linux": {},
     }
 
