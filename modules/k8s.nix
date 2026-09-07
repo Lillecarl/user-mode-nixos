@@ -355,6 +355,31 @@ in
       description = "Addresses ClusterIP Services are given.";
     };
 
+    extraImages = lib.mkOption {
+      type = lib.types.listOf lib.types.path;
+      default = [ ];
+      example = lib.literalExpression "[ ./my-operator.tar.gz ]";
+      description = ''
+        More image tarballs to import into containerd at boot, beside the
+        ones kubeadm needs.
+
+        A test that deploys something of its own needs its images on the
+        node before kubelet asks for them: there is no registry here, so a
+        pod naming an image nobody imported sits in `ErrImagePull` until the
+        test times out. Each entry is a docker-archive tarball, gzipped or
+        not.
+
+        The tag inside the tarball is what a pod has to ask for, and a pod
+        using one has to say `imagePullPolicy: Never`.
+
+        A tarball's layers are opaque to Nix's reference scanner, so it
+        carries no references at all. Whatever the images point into the
+        store has to be named separately, or a guest whose /nix/store is the
+        build sandbox's will not have it -- see `system.extraDependencies`
+        below, which is how the images this module builds do it.
+      '';
+    };
+
     workloadImage = lib.mkOption {
       type = lib.types.str;
       readOnly = true;
@@ -450,9 +475,14 @@ in
         to containerd's transfer service.
       */
       script = ''
-        zcat ${images.tarball} \
-          | ctr --namespace k8s.io images import \
-              --local --discard-unpacked-layers -
+        for tarball in ${images.tarball} ${lib.escapeShellArgs cfg.extraImages}; do
+          echo "importing $tarball"
+          # `-f` so an uncompressed tarball passes straight through: a
+          # caller's images need not be gzipped to be listed here.
+          zcat -f "$tarball" \
+            | ctr --namespace k8s.io images import \
+                --local --discard-unpacked-layers -
+        done
         ctr --namespace k8s.io images list -q
       '';
     };
