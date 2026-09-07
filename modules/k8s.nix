@@ -30,7 +30,24 @@ let
   # kubeadm takes extraArgs as a list of name/value pairs from v1beta4 on.
   args = lib.mapAttrsToList (name: value: { inherit name value; });
 
-  yaml = pkgs.formats.yaml { };
+  /*
+    YAML 1.2, and not `pkgs.formats.yaml`, which is 1.1.
+
+    The 1.1 writer puts `%YAML 1.1` and a document start over every mapping,
+    and kubeadm's reader refuses the directive outright: a file holding one
+    document and nothing else fails as "did not find expected <document
+    start>", measured on 1.36.  Concatenating four of them is worse still --
+    the separator in front of the second opens an empty document, which fails
+    as "kind and apiVersion is mandatory".
+
+    1.2 writes the mapping and nothing above it, which is what a reader that
+    splits a stream on `---` wants.  Kubernetes reads 1.2 happily; the one
+    thing to keep in mind is that 1.1's octal-looking scalars are gone, so a
+    file mode belongs in a configuration here as the decimal number the API
+    takes (420, not 0644).  Nix has no octal literal, so nothing here can
+    write one by accident.
+  */
+  yaml = pkgs.formats.yaml_1_2 { };
 
   /*
     Give every container the host's /nix/store.
@@ -190,7 +207,7 @@ let
   # kubeadm reads one file and splits it on ---, so the documents have to
   # arrive concatenated rather than as four --config arguments.  The
   # separator goes in front, not behind: a trailing one leaves an empty
-  # final document.
+  # final document.  Each part is a bare mapping; see the yaml note above.
   kubeadmConfig = pkgs.runCommand "kubeadm-config.yaml" { } ''
     for part in ${initConfig} ${clusterConfig} ${kubeletConfig} ${proxyConfig}; do
       echo ---
