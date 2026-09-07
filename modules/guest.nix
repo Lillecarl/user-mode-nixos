@@ -54,6 +54,38 @@ in
   */
   boot.nixStoreMountOpts = lib.mkForce [ ];
 
+  /*
+    The guest's Nix state is its own, never the host's.
+
+    `/nix` is an overlay over the host's `/nix`, so without this the lower
+    layer contributes the host's `/nix/var` -- including
+    `db/big-lock`, which is `root:root 0600`. The guest is root, but the
+    process serving the store to it is not: virtiofsd under QEMU, the UML
+    process under UML, both running as whoever started the test. So the
+    copy-up fails and Nix reports `opening lock file ...: Permission
+    denied`, or the registration load fails one step earlier.
+
+    Inside a Nix build sandbox the question never comes up, because `/nix`
+    there holds nothing but `store`. That is exactly why it was worth
+    fixing: without this the sandboxed and unsandboxed runs differ, and
+    the one that breaks is the one you reach for while iterating.
+
+    A bind from the root disk rather than a tmpfs, because the database
+    for a large closure is megabytes and a tmpfs charges them to the RAM
+    the guest is running in.
+
+    This does not split the store. `/nix/store` stays inside the `/nix`
+    overlay, so a pod binding the node's `/nix` through a kubelet
+    `subPath` still sees it -- see modules/image.nix. Only `/nix/var`
+    would be missing from such a bind, and nothing asks for it.
+  */
+  fileSystems."/nix/var" = {
+    device = "/nix-state";
+    fsType = "none";
+    options = [ "bind" ];
+    depends = [ "/nix" ];
+  };
+
   # vec0 is the passt uplink (NAT plus the forwarded ssh port); vec1, if
   # this guest is on a segment, is an L2 link to its peers.
   networking = {
