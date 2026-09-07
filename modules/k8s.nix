@@ -408,6 +408,22 @@ in
       '';
     };
 
+    nri = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Enable containerd's NRI plugin.
+
+        NRI lets a plugin change a container's OCI spec between the moment
+        kubelet asks for the container and the moment runc starts it --
+        adding a mount, for instance. containerd ships it disabled.
+
+        A plugin that finds no socket at /var/run/nri waits for one and says
+        nothing, so a test whose subject uses NRI has to turn this on, and
+        the failure without it looks like a plugin that never ran.
+      '';
+    };
+
     extraImages = lib.mkOption {
       type = lib.types.listOf lib.types.path;
       default = [ ];
@@ -482,6 +498,9 @@ in
         # an image nothing in this file mentions.
         plugins."io.containerd.cri.v1.images".pinned_images.sandbox =
           images.sandboxImage;
+        # Off in containerd, and off here unless a test says otherwise --
+        # see `services.uml-k8s.nri`.
+        plugins."io.containerd.nri.v1.nri".disable = !cfg.nri;
       };
     };
 
