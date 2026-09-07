@@ -61,7 +61,7 @@ run_test(test)
   │ socketpair / ├─────────┤       │   L2 to the other guests
   │ hub (net.py) │         └───┬───┘
   └──────────────┘             │ hostfs
-                          /nix/store on the host
+                             /nix on the host
 ```
 
 Each guest is one `uml-passt-bridge` process. It forks passt for the
@@ -77,10 +77,15 @@ vm.succeed("...")` is a single round trip. The guest half is the
 `uml-agent` systemd unit.
 
 **Root image.** Almost empty: busybox, an `/init`, and a symlink to the
-system's `init`. `/init` mounts the host's `/nix/store` over hostfs with a
+system's `init`. `/init` mounts the host's `/nix` over hostfs with a
 writable overlay on top, then execs systemd. So a guest costs a sparse
 512 MiB ext4 file rather than a copy of its closure, and the store is
 shared between all of them.
+
+All of `/nix`, and not `/nix/store` alone, so that `/nix` is one mount. A
+bind mount is not recursive, and kubelet's volume `subPath` is a plain
+bind — a pod that mounts the node's `/nix` that way would otherwise get
+an empty store.
 
 **Segments.** Two guests on a segment get the ends of one
 `SOCK_SEQPACKET` socketpair and the host stays out of the data path.

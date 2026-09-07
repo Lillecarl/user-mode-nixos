@@ -14,9 +14,24 @@ let
   cfg = config.boot.uml;
   build = config.system.build;
 
-  # Run before systemd, with nothing but busybox on PATH.  Its whole job
-  # is to make /nix/store exist: the host's store read-only over hostfs,
-  # with a writable overlay on top so activation can create its links.
+  /*
+    Run before systemd, with nothing but busybox on PATH.  Its whole job
+    is to make /nix exist: the host's /nix read-only over hostfs, with a
+    writable overlay on top so activation can create its links.
+
+    All of /nix, and not /nix/store alone, so that /nix is one mount.
+
+    A bind mount is not recursive.  Anything that binds the guest's /nix
+    somewhere else gets the submounts of /nix only if it asks for them,
+    and kubelet's `subPath` does not ask: it runs a plain `mount --bind`.
+    A pod that mounts a hostPath with `subPath = "nix"` would therefore
+    see an empty /nix/store, and every store path in it would fail to
+    open -- as an entrypoint that "is not found", which names nothing.
+    One mount cannot be split that way.
+
+    The upper and work directories go outside /nix for the same reason
+    overlayfs requires it: they cannot be inside their own mount.
+  */
   init = pkgs.writeScript "uml-init" ''
     #!/bin/sh
     export PATH=/bin
@@ -24,15 +39,15 @@ let
     mkdir -p /proc
     mount -t proc none /proc
 
-    echo "uml-init: mounting the host's /nix/store ..."
-    mkdir -p /host/nix/store
-    mount -t hostfs none /host/nix/store -o /nix/store
+    echo "uml-init: mounting the host's /nix ..."
+    mkdir -p /host/nix
+    mount -t hostfs none /host/nix -o /nix
 
-    echo "uml-init: overlaying a writable /nix/store ..."
-    mkdir -p /nix/store /nix/.store-upper /nix/.store-work
+    echo "uml-init: overlaying a writable /nix ..."
+    mkdir -p /nix /.nix-upper /.nix-work
     mount -t overlay overlay \
-      -o lowerdir=/host/nix/store,upperdir=/nix/.store-upper,workdir=/nix/.store-work \
-      /nix/store
+      -o lowerdir=/host/nix,upperdir=/.nix-upper,workdir=/.nix-work \
+      /nix
 
     echo "uml-init: starting systemd ..."
     exec /sbin/init
@@ -60,7 +75,7 @@ in
     nativeBuildInputs = [ pkgs.e2fsprogs ];
   } ''
     mkdir -p root/{dev,proc,sys,tmp,run,var,root,home,bin,sbin}
-    mkdir -p root/nix/{store,.store-upper,.store-work} root/host/nix/store
+    mkdir -p root/nix root/.nix-upper root/.nix-work root/host/nix
 
     install -m 0555 ${init} root/init
     ${lib.optionalString cfg.nixDatabase.enable ''

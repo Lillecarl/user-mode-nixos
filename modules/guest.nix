@@ -32,6 +32,24 @@ in
   # Nothing is modular in the UML kernel, and there is no /lib/modules.
   system.activationScripts.modprobe.text = lib.mkForce "";
 
+  /*
+    No bind of /nix/store on top of /nix.
+
+    NixOS binds /nix/store onto itself in stage 2, to give it `ro,nodev,
+    nosuid`.  Here /nix is one overlay on purpose -- see image.nix -- and
+    that bind puts /nix/store back inside it as a mount of its own, which
+    is the shape image.nix exists to avoid.  A pod that binds the node's
+    /nix through a kubelet `subPath` then sees an empty store.
+
+    Asking for no options is what stops the bind: stage 2 makes it only
+    when an option it wants is missing.
+
+    A guest is a test fixture with one user, and its store is the host's
+    over hostfs -- read-only there, whatever this says.  `ro` would be
+    wrong in any case, because activation writes to the overlay.
+  */
+  boot.nixStoreMountOpts = lib.mkForce [ ];
+
   # vec0 is the passt uplink (NAT plus the forwarded ssh port); vec1, if
   # this guest is on a segment, is an L2 link to its peers.
   networking = {
