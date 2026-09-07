@@ -138,15 +138,20 @@ let
     discovery = "10m";
   };
 
-  initConfig = yaml.generate "kubeadm-init.yaml" {
-    apiVersion = "kubeadm.k8s.io/v1beta4";
-    kind = "InitConfiguration";
-    localAPIEndpoint = {
-      advertiseAddress = nodeIp;
-      bindPort = 6443;
-    };
-    inherit nodeRegistration timeouts;
-  };
+  initConfig = yaml.generate "kubeadm-init.yaml" (
+    {
+      apiVersion = "kubeadm.k8s.io/v1beta4";
+      kind = "InitConfiguration";
+      localAPIEndpoint = {
+        advertiseAddress = nodeIp;
+        bindPort = 6443;
+      };
+      inherit nodeRegistration timeouts;
+    }
+    // lib.optionalAttrs (cfg.skipAddons != [ ]) {
+      skipPhases = map (addon: "addon/${addon}") cfg.skipAddons;
+    }
+  );
 
   clusterConfig = yaml.generate "kubeadm-cluster.yaml" {
     apiVersion = "kubeadm.k8s.io/v1beta4";
@@ -169,27 +174,46 @@ let
     };
   };
 
-  kubeletConfig = yaml.generate "kubeadm-kubelet.yaml" {
-    apiVersion = "kubelet.config.k8s.io/v1beta1";
-    kind = "KubeletConfiguration";
-    cgroupDriver = "systemd";
-    failSwapOn = false;
-    # Not /etc/resolv.conf.  With networkd that is a symlink to
-    # resolved's stub, which names 127.0.0.53 -- an address that inside a
-    # pod's own network namespace is the pod, so CoreDNS forwards to
-    # itself and its loop detector shoots it.  See the file below.
-    resolvConf = "/etc/kubernetes/resolv.conf";
-    # Nothing here is fast, and a CRI call that takes a minute on a
-    # loaded builder is normal rather than a hung runtime.
-    runtimeRequestTimeout = "15m";
-    # The defaults evict everything the moment a 1 GB guest gets busy,
-    # which reads as pods mysteriously disappearing mid-test.
-    evictionHard = {
-      "memory.available" = "50Mi";
-      "nodefs.available" = "5%";
-      "imagefs.available" = "5%";
-    };
-  };
+  kubeletConfig = yaml.generate "kubeadm-kubelet.yaml" (
+    {
+      apiVersion = "kubelet.config.k8s.io/v1beta1";
+      kind = "KubeletConfiguration";
+      cgroupDriver = "systemd";
+      failSwapOn = false;
+      # Not /etc/resolv.conf.  With networkd that is a symlink to
+      # resolved's stub, which names 127.0.0.53 -- an address that inside a
+      # pod's own network namespace is the pod, so CoreDNS forwards to
+      # itself and its loop detector shoots it.  See the file below.
+      resolvConf = "/etc/kubernetes/resolv.conf";
+      # Nothing here is fast, and a CRI call that takes a minute on a
+      # loaded builder is normal rather than a hung runtime.
+      runtimeRequestTimeout = "15m";
+      # The defaults evict everything the moment a 1 GB guest gets busy,
+      # which reads as pods mysteriously disappearing mid-test.
+      evictionHard = {
+        "memory.available" = "50Mi";
+        "nodefs.available" = "5%";
+        "imagefs.available" = "5%";
+      };
+    }
+    /*
+      With no CoreDNS, do not point pods at a resolver that is not there.
+
+      kubeadm creates the `kube-dns` Service as part of the CoreDNS addon,
+      so skipping the addon means the address kubelet hands to every pod --
+      10.96.0.10 by default -- has no Service behind it at all.  Not an
+      empty one that would answer with a refusal: nothing, so kube-proxy
+      writes no rule and the packets are dropped.  A single lookup then
+      costs the resolver's whole timeout chain, several times over for the
+      search domains, and a container that resolves one name on startup
+      looks hung for minutes.
+
+      An empty `clusterDNS` makes kubelet give pods the node's own
+      resolvConf instead, which resolves nothing either but says so at
+      once.
+    */
+    // lib.optionalAttrs (lib.elem "coredns" cfg.skipAddons) { clusterDNS = [ ]; }
+  );
 
   proxyConfig = yaml.generate "kubeadm-proxy.yaml" {
     apiVersion = "kubeproxy.config.k8s.io/v1alpha1";
@@ -353,6 +377,35 @@ in
       type = lib.types.str;
       default = "10.96.0.0/12";
       description = "Addresses ClusterIP Services are given.";
+    };
+
+    skipAddons = lib.mkOption {
+      type = lib.types.listOf (
+        lib.types.enum [
+          "coredns"
+          "kube-proxy"
+        ]
+      );
+      default = [ ];
+      example = [
+        "coredns"
+        "kube-proxy"
+      ];
+      description = ''
+        Addons kubeadm should not install, as `skipPhases` entries.
+
+        Both exist to serve Services: kube-proxy makes a ClusterIP reachable
+        and CoreDNS resolves its name. A test that deploys no Service needs
+        neither, and installing them is not free -- two more pods on a guest
+        that has one CPU, and a CoreDNS that spends the whole run timing out
+        against an upstream resolver a build sandbox cannot reach, several
+        lines per second.
+
+        Keep this in step with `bring_up`'s `addons` argument in
+        `uml_runner.cluster`. Waiting for a pod kubeadm was told not to
+        create hangs until the deadline; not waiting for one that does exist
+        lets a test run before cluster DNS answers.
+      '';
     };
 
     extraImages = lib.mkOption {

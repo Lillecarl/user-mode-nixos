@@ -60,6 +60,27 @@ _SAY_EVERY = 30
 # The taint kubeadm puts on a control plane so that nothing schedules there.
 CONTROL_PLANE_TAINT = "node-role.kubernetes.io/control-plane"
 
+# The two addon pods, as label selectors, for `bring_up`'s `addons`.
+#
+# **kube-proxy is not optional in the way it looks.** It makes ClusterIP
+# Services reachable, and the cluster has one whether or not a test declares
+# any: `kubernetes.default`, at the first address of the service subnet, is
+# how everything inside a pod reaches the API server. Take kube-proxy away
+# and nothing gets DNAT'd there, so any in-cluster client -- kubectl in a
+# Job, a controller using its ServiceAccount -- fails to reach the apiserver
+# at all. Measured: nixkube's init Job runs `kubectl get secret` and exits
+# non-zero without it.
+#
+# CoreDNS genuinely is optional. In-cluster clients read
+# KUBERNETES_SERVICE_HOST, which is an address rather than a name, so nothing
+# resolves anything unless a test asks it to. Skipping it saves two pods on a
+# one-CPU guest and a great deal of log noise, because a sandboxed CoreDNS
+# spends its life timing out against an upstream resolver it cannot reach.
+KUBE_PROXY = "--selector k8s-app=kube-proxy"
+KUBE_DNS = "--selector k8s-app=kube-dns"
+
+DEFAULT_ADDONS = (KUBE_PROXY, KUBE_DNS)
+
 
 async def kubectl(cp, args, timeout=120):
     """Run kubectl on the control plane; returns its output."""
@@ -344,7 +365,7 @@ async def untaint(cp):
     print("[k8s] control plane will schedule workloads", flush=True)
 
 
-async def bring_up(vms, cp_name="cp", schedulable=None):
+async def bring_up(vms, cp_name="cp", schedulable=None, addons=DEFAULT_ADDONS):
     """The whole sequence, from booted guests to a cluster that works.
 
     Returns the control plane machine.
@@ -352,6 +373,13 @@ async def bring_up(vms, cp_name="cp", schedulable=None):
     *schedulable* removes the control plane's taint.  The default decides by
     size: a single-node cluster has nowhere else to put a pod, and one with
     workers should keep the control plane for the control plane.
+
+    *addons* are the addon pods to wait for, as label selectors.  Pass `()`
+    for a cluster that runs neither -- see `DEFAULT_ADDONS`.  It has to
+    agree with `services.uml-k8s.skipAddons`, which decides what kubeadm
+    installs in the first place: waiting for a pod nobody created hangs
+    until the deadline, and not waiting for one that exists lets a test
+    start before cluster DNS answers.
     """
     cp = vms[cp_name]
     workers = [vm for name, vm in vms.items() if name != cp_name]
@@ -367,8 +395,8 @@ async def bring_up(vms, cp_name="cp", schedulable=None):
     await wire_pod_network(cp, vms)
 
     await wait_for_ready_nodes(cp, len(vms))
-    await wait_for_pods(cp, "--selector k8s-app=kube-proxy")
-    await wait_for_pods(cp, "--selector k8s-app=kube-dns")
+    for selector in addons:
+        await wait_for_pods(cp, selector)
 
     if schedulable:
         await untaint(cp)
@@ -378,7 +406,10 @@ async def bring_up(vms, cp_name="cp", schedulable=None):
 
 __all__ = [
     "CONTROL_PLANE_TAINT",
+    "DEFAULT_ADDONS",
     "INIT_TIMEOUT",
+    "KUBE_DNS",
+    "KUBE_PROXY",
     "JOIN_TIMEOUT",
     "POLL",
     "READY_TIMEOUT",
