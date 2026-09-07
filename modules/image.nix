@@ -63,7 +63,7 @@ lib.mkIf (cfg.backend == "uml") {
     nativeBuildInputs = [ pkgs.e2fsprogs ];
   } ''
     mkdir -p root/{dev,proc,sys,tmp,run,var,root,home,bin,sbin}
-    mkdir -p root/nix root/.nix-upper root/.nix-work root/host/nix root/nix-state
+    mkdir -p root/nix root/.nix-upper/store root/.nix-work root/host/nix root/nix-state
 
     install -m 0555 ${init} root/init
     ${lib.optionalString cfg.nixDatabase.enable ''

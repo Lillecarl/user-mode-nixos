@@ -113,6 +113,7 @@ in
     ./guest.nix
     ./image.nix
     ./qemu.nix
+    ./store.nix
   ];
 
   options.boot.uml = {

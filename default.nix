@@ -108,6 +108,29 @@ let
     environment.systemPackages = [ pkgs.speedtest-cli ];
   };
 
+  /*
+    Can Nix inside a guest use the host's whole store?
+
+    Deliberately not in `tests`, so it is neither a check nor built by
+    CI: the lower layer of the guest's store is the host's Nix database,
+    and a build sandbox has no `/nix/var` in it at all.  Run it by hand
+    -- tests/store.py says how at its head.
+  */
+  store = mkTest {
+    name = "store";
+    script = ./tests/store.py;
+    nodes.node =
+      { config, ... }:
+      {
+        boot.uml = {
+          hostStore.enable = true;
+          nixDatabase.enable = true;
+          memory = "1024M";
+        };
+        environment.systemPackages = [ config.nix.package ];
+      };
+  };
+
   tests = {
     # Do the guests boot, see each other on vec1, and answer the host?
     lan = mkTest {
@@ -240,7 +263,7 @@ tests
   inherit mkNode mkTest;
   lib = { inherit mkNode mkTest; };
 
-  inherit demo;
+  inherit demo store;
   inherit (demo.config.system.build) umlRunner umlRootImage toplevel;
 
   # The slowest thing in the repository and the same for every guest, so

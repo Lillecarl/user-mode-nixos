@@ -267,6 +267,41 @@ The guest's `/nix/var` is its own, never the host's — see `guest.nix`. Nix
 inside the guest knows the paths `boot.uml.nixDatabase` registered, and
 nothing else.
 
+### The host's whole store, inside the guest
+
+`boot.uml.hostStore.enable` makes Nix in the guest see every path on the
+host, not just the closure `boot.uml.nixDatabase` registered. The guest's
+`/nix` is already an overlay of the host's `/nix` under a writable layer,
+which is exactly the shape Nix's `local-overlay` store wants, so this is
+configuration and no new mount: the host's store below, read-only, and
+`/.nix-upper/store` above.
+
+`nix build` then works in there — with `cache.nixos.org`, with Nix's own
+sandbox, and writing into the guest's own layer. `store` is the test:
+
+```console
+$ nix build --file . store.qemu.spec -o spec
+$ nix build --file . store.qemu.python -o python
+$ ./python/bin/python3 tests/store.py --spec ./spec
+```
+
+**Only outside the build sandbox, and it cannot be otherwise.** A sandbox
+`/nix` holds `store` and nothing else, so there is no host database to
+read. `uml-host-store.service` says that on the console rather than
+letting Nix report a lock file it cannot open, and `store` is not in
+`checks` because CI would only ever see that message.
+
+Two measured limits worth knowing before they surprise you:
+
+- **The guest sees the host's store as of its last WAL checkpoint.**
+  `read-only=true` opens the database with SQLite's `immutable`
+  parameter, which ignores the write-ahead log. A path added on the host
+  seconds earlier reads as `is not valid` in the guest. Here that gap was
+  100694 paths against 100697.
+- **`nix path-info --all` lists the upper layer alone.** The lower store
+  answers about a path you name; it cannot be enumerated through the
+  overlay.
+
 ## Containers, and the Kubernetes test
 
 `.#k8s` boots three guests and builds a cluster on them with `kubeadm`:
@@ -358,6 +393,7 @@ modules/default.nix     the boot.uml options
 modules/guest.nix       what a guest system looks like, either backend
 modules/image.nix       UML: the root image, /init, and the run-uml wrapper
 modules/qemu.nix        QEMU: the initrd, the virtiofs store, the MACs
+modules/store.nix       the host's whole store as a store the guest builds into
 modules/iperf3.nix      an example service module
 modules/k8s.nix         a kubeadm node: containerd, kubelet, images
 modules/k8s-images.nix  the images kubeadm expects, built from nixpkgs
@@ -370,7 +406,8 @@ tests/                  one file per test
 
 `tests/lan.py` and `tests/iperf.py` are two guests on a segment,
 `tests/containerd.py` is one guest running a container, and
-`tests/k8s.py` is the three-node cluster.
+`tests/k8s.py` is the three-node cluster. `tests/store.py` is the one that
+only runs outside the sandbox.
 
 ## Limits
 

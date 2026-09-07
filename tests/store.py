@@ -1,0 +1,102 @@
+#!/usr/bin/env python3
+"""One guest whose Nix can see the whole host store.
+
+`boot.uml.hostStore` puts the host's store under the guest's own writable
+layer as a Nix local-overlay store.  This checks the two halves of that:
+
+  * a path the guest was never told about, and that is not in its closure,
+    is valid in there -- that comes from the lower store's database;
+  * a derivation built inside the guest lands in the upper layer and is
+    valid too.
+
+Outside the build sandbox only.  A sandbox `/nix` holds `store` and nothing
+else, so there is no host database to be the lower layer:
+
+    nix build --file . store.spec --out-link spec
+    nix build --file . store.python --out-link python
+    ./python/bin/python3 tests/store.py --spec ./spec
+"""
+
+import os
+import subprocess
+
+from uml_runner import run_test
+
+# The same view of the host's store that the guest gets, used here to pick
+# a path that view actually has.
+HOST_STORE = "local?root=/&read-only=true"
+
+# The agent hands back stdout and stderr together, and Nix narrates a
+# build on stderr, so keep the path the only thing left.
+PROBE = (
+    "nix build --impure --no-link --print-out-paths --expr "
+    "'derivation { name = \"host-store-probe\"; "
+    'system = builtins.currentSystem; builder = "/bin/sh"; '
+    "args = [ \"-c\" \"echo probe > $out\" ]; }' 2>/dev/null"
+)
+
+
+def host_path() -> str:
+    """A store path the guest is not told about, old enough to be visible.
+
+    `read-only=true` opens the database with SQLite's `immutable`
+    parameter, which ignores the write-ahead log.  So a path registered on
+    the host in the last few megabytes of writes is invisible to the guest
+    however valid it is.  The running system is old enough; assert that
+    here so a stale WAL names itself on the host rather than looking like
+    a broken guest.
+    """
+    path = os.path.realpath("/run/current-system")
+    seen = subprocess.run(
+        [
+            "nix",
+            "--extra-experimental-features",
+            "read-only-local-store",
+            "path-info",
+            "--store",
+            HOST_STORE,
+            path,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert seen.returncode == 0, (
+        f"the host's own read-only view does not have {path}:\n"
+        f"{seen.stderr}\n"
+        "that is WAL staleness, not a guest problem"
+    )
+    return path
+
+
+async def test(vms):
+    node = vms.node
+    await node.wait_for_unit("uml-host-store.service")
+    await node.wait_for_unit("uml-nix-db.service")
+
+    path = host_path()
+    closure = await node.succeed("nix-store --query --requisites /run/current-system")
+    assert path not in closure.split(), f"{path} is in the guest's own closure"
+
+    print(f"[test] asking the guest about {path}")
+    print("[test] guest says:", await node.succeed(f"nix path-info {path}"))
+
+    refs = await node.succeed(f"nix-store --query --references {path}")
+    print(f"[test] and it has {len(refs.split())} references")
+    assert refs.strip(), "the lower store gave no references"
+
+    built = (await node.succeed(PROBE)).strip()
+    print(f"[test] the guest built {built}")
+    await node.succeed(f"test $(cat {built}) = probe")
+    await node.succeed(f"nix path-info {built}")
+    await node.succeed(f"test -e /.nix-upper/store/{os.path.basename(built)}")
+    print("[test] and it landed in the upper layer")
+
+    # `--all` reads the upper database alone, so this counts the
+    # registration and what the guest built -- not the lower store, which
+    # answers about a path but cannot be listed. Measured, and the reason
+    # nothing above asserts on this number.
+    total = (await node.succeed("nix path-info --all | wc -l")).strip()
+    print(f"[test] the guest's upper database holds {total} paths")
+
+
+run_test(test)

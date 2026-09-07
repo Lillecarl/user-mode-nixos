@@ -72,7 +72,7 @@ lib.mkIf (cfg.backend == "qemu") {
     nativeBuildInputs = [ pkgs.e2fsprogs ];
   } ''
     mkdir -p root/{dev,proc,sys,tmp,run,var,root,home}
-    mkdir -p root/nix root/.nix-upper root/.nix-work root/host/nix root/nix-state
+    mkdir -p root/nix root/.nix-upper/store root/.nix-work root/host/nix root/nix-state
     ${lib.optionalString cfg.nixDatabase.enable ''
       install -m 0444 ${config.system.build.umlNixRegistration}/registration \
         root/nix-registration''}
