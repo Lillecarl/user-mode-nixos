@@ -252,34 +252,22 @@ tests
   checks = tests;
 
   /*
-    The same test, on the other backend.
+    Every test above also answers to `.uml` and `.qemu`.
 
-    `tests/lan.py` and `pair` are shared with `lan` above, and neither
-    knows which kind of machine it got: same script, same node
-    configuration, same host-side switch. Keeping that true is what this
-    is for.
+        nix build --file . lan          # as `checks` runs it
+        nix build --file . lan.qemu     # the same test, as machines
+        nix build --file . iperf.qemu   # what the segment carries there
 
-    Deliberately not in `checks`. It asks the daemon for the `kvm`
-    feature, and a builder without `/dev/kvm` does not fail the test --
-    it refuses to build it at all, which would stop CI rather than report
-    anything. Put it back once we know whether our runners have KVM.
+    Nothing is duplicated to make that work: one script, one set of node
+    configurations, and neither knows which machine it got.
+
+    `checks` holds the default of each, which is UML. A `.qemu` variant
+    asks the daemon for the `kvm` feature, and a builder without
+    `/dev/kvm` does not fail it -- it refuses to build it at all, which
+    would stop CI rather than report anything. That is the only reason
+    they are not checks, and it goes away once we know what our runners
+    have.
   */
-  lan-qemu = mkTest {
-    name = "lan-qemu";
-    backend = "qemu";
-    script = ./tests/lan.py;
-    nodes = pair "lan";
-  };
-
-  # What the same segment carries with a virtual machine on each end.
-  # Compare it against `iperf` only back to back: a guest is a process
-  # either way, and a busy host halves both numbers.
-  iperf-qemu = mkTest {
-    name = "iperf-qemu";
-    backend = "qemu";
-    script = ./tests/iperf.py;
-    nodes = iperfNodes;
-  };
 
   # A guest to poke at by hand, running one program.
   speedtest = pkgs.writeShellScriptBin "uml-speedtest" ''

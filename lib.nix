@@ -58,23 +58,51 @@ rec {
     with it, and neither does a node's configuration: `uml` needs nothing
     of the host, `qemu` needs `/dev/kvm` and is much faster.  A node may
     still override `boot.uml.backend` for itself.
+
+    Every test carries `.uml` and `.qemu`, which are the same test forced
+    to that backend.  So the choice needs no Nix edit:
+
+        nix build --file . iperf        # whatever `backend` said
+        nix build --file . iperf.qemu   # the same test, as machines
+
+    The one named by `backend` keeps the bare derivation name, and is the
+    same derivation as the attribute of that name -- `lan` and `lan.uml`
+    are one store path, not two.
   */
   mkTest =
+    args@{
+      backend ? "uml",
+      ...
+    }:
+    let
+      variants = lib.genAttrs [ "uml" "qemu" ] (
+        chosen: mkTestOn (builtins.removeAttrs args [ "backend" ] // { inherit chosen backend; })
+      );
+    in
+    variants.${backend} // { inherit (variants) uml qemu; };
+
+  # One test on one backend. `mkTest` is the door; this is what it calls
+  # twice, so that `.uml` and `.qemu` cannot drift from each other.
+  mkTestOn =
     {
       name,
       script,
       nodes,
       settings ? { },
-      backend ? "uml",
+      chosen,
+      backend,
     }:
     let
+      # The default backend keeps the bare name, so a second one appearing
+      # does not move store paths or rename anything in a CI log.
+      suffix = lib.optionalString (chosen != backend) "-${chosen}";
       machines = lib.imap0 (
         index: hostName:
         (mkNode {
           imports = [ nodes.${hostName} ];
           networking.hostName = lib.mkDefault hostName;
           boot.uml.sshPort = lib.mkDefault (4325 + index);
-          boot.uml.backend = lib.mkDefault backend;
+          boot.uml.backend = lib.mkDefault chosen;
           boot.uml.index = index;
         }).config
       ) (lib.attrNames nodes);
@@ -94,11 +122,11 @@ rec {
       toolchain = {
         passt = "${pkgs.passt}/bin/passt";
       }
-      // lib.optionalAttrs (backend == "uml") {
+      // lib.optionalAttrs (chosen == "uml") {
         kernel = "${first.system.build.umlKernel}/linux";
         bridge = lib.getExe first.system.build.umlPasstBridge;
       }
-      // lib.optionalAttrs (backend == "qemu") {
+      // lib.optionalAttrs (chosen == "qemu") {
         qemu = "${pkgs.qemu_kvm}/bin/qemu-system-x86_64";
         virtiofsd = "${pkgs.virtiofsd}/bin/virtiofsd";
       };
@@ -122,7 +150,7 @@ rec {
         boot = machine.system.build.qemuBoot;
       };
 
-      spec = pkgs.writeText "uml-${name}-spec.json" (
+      spec = pkgs.writeText "uml-${name}${suffix}-spec.json" (
         builtins.toJSON (
           toolchain
           // {
@@ -134,13 +162,13 @@ rec {
 
       python = pkgs.python3.withPackages (_: [ first.system.build.umlRunnerPackage ]);
     in
-    pkgs.runCommand "uml-test-${name}"
+    pkgs.runCommand "uml-test-${name}${suffix}"
       {
         nativeBuildInputs = [ python ];
         # A QEMU guest is only worth booting with KVM, and the daemon
         # only hands /dev/kvm to a derivation that asks for it. UML asks
         # for nothing, which is the whole point of UML.
-        requiredSystemFeatures = lib.optional (backend == "qemu") "kvm";
+        requiredSystemFeatures = lib.optional (chosen == "qemu") "kvm";
         # For running a test by hand outside the sandbox:
         #   nix build -f . iperf.spec -o spec
         #   nix build -f . iperf.python -o python
