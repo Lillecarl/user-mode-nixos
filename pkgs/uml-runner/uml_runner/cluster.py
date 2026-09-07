@@ -170,9 +170,25 @@ async def diagnose(vm):
     of that, because from where it stands the apiserver simply never
     answered.
     """
+    # A test's own pods, and only then the control plane.
+    #
+    # This used to tail every pod log under one 400-line budget, which the
+    # control plane wins every time: etcd narrates each slow read and
+    # kube-apiserver each synced cache, so on a UML guest the two of them
+    # produce more than the budget by themselves.  Measured -- a failing
+    # nixkube DaemonSet whose init container was the whole question, and
+    # whose log did not appear in the report at all.
+    #
+    # kube-system is still worth having, so it gets a budget of its own.
+    # Second, because `tail` keeps the end.
     logs = (
         await vm.execute(
-            "tail -n 40 -v /var/log/pods/*/*/*.log 2>&1 | tail -n 400"
+            "{ for f in /var/log/pods/*/*/*.log; do"
+            "   case $f in /var/log/pods/kube-system_*) ;;"
+            "               *) tail -n 40 -v \"$f\";; esac;"
+            " done; } 2>&1 | tail -n 300;"
+            " echo;"
+            " tail -n 15 -v /var/log/pods/kube-system_*/*/*.log 2>&1 | tail -n 150"
         )
     )[1]
     return (
