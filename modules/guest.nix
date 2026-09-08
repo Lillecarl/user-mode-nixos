@@ -86,7 +86,21 @@ in
   services.logrotate.enable = false;
   documentation.enable = false;
   documentation.nixos.enable = false;
-  security.enableWrappers = false;
+  # No security.enableWrappers = false here.  It was weight worth dropping
+  # until it turned out what it drops.  NixOS runs pam_unix's shadow lookup
+  # through a setuid unix_chkpwd -- see security.wrappers in
+  # nixos/modules/security/pam.nix -- so without the wrapper directory
+  # pam_unix cannot read /etc/shadow and account management returns
+  # PAM_AUTHINFO_UNAVAIL for every user.  su and runuser shrug that off as
+  # root; sudo treats it as fatal and says "authentication service cannot
+  # retrieve authentication info", which names neither PAM nor the wrapper
+  # and sends you looking at the user database instead.
+  #
+  # Measured rather than assumed, because a setuid bit on a guest whose
+  # store is hostfs under an overlay is a fair thing to doubt:
+  # /run/wrappers is a tmpfs of its own, mounted rw,nodev,relatime and not
+  # nosuid, so the bit is set and honoured.  It costs that tmpfs and about
+  # 720 KB of wrappers.
 
   users.mutableUsers = false;
   users.users.root.initialPassword = cfg.rootPassword;
