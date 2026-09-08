@@ -117,6 +117,36 @@ let
     # architecture independent, so ARCH=um builds it like any other
     # architecture does.
     FUSE_FS = yes;
+
+    /*
+      io_uring is on, and it does not work.  Left on anyway; read this
+      before deciding otherwise.
+
+      allnoconfig leaves IO_URING at its `default y`, so a guest has it.
+      A process that uses it takes the guest down.  Headless chromium
+      does, and gets as far as launching before the kernel says
+
+          BUG: Bad page map in process chrome-headless  pte:0e6c5061
+          file:[io_uring] fault:0x0 mmap:io_uring_mmap
+
+      once per ring page, after which the guest stops answering the host
+      at all and a test dies as "agent did not come up" rather than as
+      anything naming io_uring.  UML's mm does not handle the rings
+      io_uring_mmap installs.
+
+      Switching it off is not one line.  `config IO_URING` is
+      `bool "..." if EXPERT`, so allnoconfig cannot express "no" without
+      EXPERT -- and EXPERT makes a great many core options answerable
+      that were previously forced on, which allnoconfig then answers no
+      to.  FUTEX, AIO and BASE_FULL go with it.  Measured: the kernel
+      built that way prints nothing at all, not one line, and never
+      reaches init.
+
+      So a guest that needs a browser wants firefox, which does not use
+      io_uring.  Fixing this properly is UML mm work upstream, and the
+      note is here so the next person reaches that conclusion in a
+      minute rather than in an afternoon.
+    */
   };
 
   # What it takes to run containers, which is what a test wants a guest
