@@ -112,6 +112,11 @@ let
 
     AUTOFS_FS = yes;
     CONFIGFS_FS = yes;
+
+    # /dev/fuse, so a guest can host a userspace filesystem.  FUSE is
+    # architecture independent, so ARCH=um builds it like any other
+    # architecture does.
+    FUSE_FS = yes;
   };
 
   # What it takes to run containers, which is what a test wants a guest
