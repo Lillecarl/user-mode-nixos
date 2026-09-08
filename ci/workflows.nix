@@ -27,6 +27,14 @@ let
       description = "the host reaches a service inside a guest";
       timeoutMinutes = 45;
     };
+    fuse = {
+      # One guest, no network, and a closure of bindfs and util-linux on
+      # top of the base system.  The kernel comes from the cache, so what
+      # is left is a root image and a six-second boot: about a minute in
+      # all, so the cap is ten times what the job costs rather than fifty.
+      description = "a userspace filesystem, as root and as a user";
+      timeoutMinutes = 15;
+    };
     containerd = {
       description = "a container runs, out of the host's store";
       timeoutMinutes = 45;

@@ -125,6 +125,41 @@ jobs:
         run: nix build --no-link --print-build-logs --keep-going ".#forward"
         timeout-minutes: 35
     timeout-minutes: 45
+  test-fuse:
+    if: '!cancelled() && (needs.kernel.result == ''success'' || needs.kernel.result == ''skipped'') && (github.event_name != ''workflow_dispatch'' || inputs.jobs == '''' || contains(format('',{0},'', inputs.jobs), '',test-fuse,''))'
+    needs:
+      - kernel
+    runs-on: ubuntu-24.04
+    steps:
+      - timeout-minutes: 5
+        uses: actions/checkout@main
+      - timeout-minutes: 10
+        uses: cachix/install-nix-action@master
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            # A runner has four cores and the guests are processes: letting
+            # Nix run several builds at once only makes each one slower and
+            # the timings meaningless.
+            max-jobs = 1
+            cores = 4
+      - timeout-minutes: 10
+        uses: cachix/cachix-action@master
+        with:
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          name: lillecarl
+          pushFilter: (-uml-test-)
+          useDaemon: false
+      - name: Allow the unprivileged namespaces the Nix sandbox needs
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          sudo sysctl -w kernel.unprivileged_userns_clone=1
+          unshare --user --map-root-user --mount --pid --fork --mount-proc true
+        timeout-minutes: 5
+      - name: 'Run fuse: a userspace filesystem, as root and as a user'
+        run: nix build --no-link --print-build-logs --keep-going ".#fuse"
+        timeout-minutes: 5
+    timeout-minutes: 15
   test-iperf:
     if: '!cancelled() && (needs.kernel.result == ''success'' || needs.kernel.result == ''skipped'') && (github.event_name != ''workflow_dispatch'' || inputs.jobs == '''' || contains(format('',{0},'', inputs.jobs), '',test-iperf,''))'
     needs:

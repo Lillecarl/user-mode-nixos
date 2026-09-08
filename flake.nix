@@ -27,6 +27,7 @@
           umlKernel
           lan
           forward
+          fuse
           iperf
           containerd
           k8s
