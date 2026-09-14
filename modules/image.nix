@@ -67,7 +67,9 @@ lib.mkIf (cfg.backend == "uml") {
 
     install -m 0555 ${init} root/init
     ${lib.optionalString cfg.nixDatabase.enable ''
-      install -m 0444 ${build.umlNixRegistration}/registration root/nix-registration''}
+      mkdir -p root/nix-state/nix/db
+      install -m 0644 ${build.umlNixDatabase}/db.sqlite root/nix-state/nix/db/
+      install -m 0644 ${build.umlNixDatabase}/schema root/nix-state/nix/db/''}
     install -m 0555 ${pkgs.pkgsStatic.busybox}/bin/busybox root/bin/busybox
     for cmd in sh mkdir mount echo cat ls; do
       ln -s busybox "root/bin/$cmd"

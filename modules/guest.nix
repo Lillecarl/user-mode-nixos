@@ -175,48 +175,39 @@ in
   };
 
   /*
-    Register the store the guest sees over hostfs, so Nix will use it.
+    Check the guest booted with the Nix database it was built with.
 
-    The registration file itself is written onto the root image -- see
-    image.nix -- and this reads it from there rather than from the store.
-    That is not tidiness: a unit that named a `closureInfo` of
-    `system.build.toplevel` would put the system's own closure inside the
-    system's own closure, and the configuration would not evaluate at all.
-    The image is built from `toplevel` and nothing is built from the image,
-    so the cycle has to break there.
+    The database is not loaded here any more. It is built with the image
+    and sits on it under `/nix-state`, which the bind above puts at
+    `/nix/var` -- so it is in place before pid 1, and a guest cannot reach
+    userspace without it.
 
-    Before `multi-user.target`, so anything a test starts finds a store it
-    can query. Loading a dump of a few thousand paths is milliseconds.
+    What is left is the check, and the check is worth a unit on its own.
+    An empty database looks exactly like a full one until something runs
+    Nix, and what it looks like then is every path in the guest's own store
+    being invalid and Nix trying to fetch each one from a cache it cannot
+    reach: a network timeout, naming nothing. A missing file here is a bug
+    in this module, and it belongs on the console.
+
+    Ordering, not history, is why this is still a unit: a guest's own
+    services order against it to mean "the store is usable now", and that
+    is as true of a database that was built as of one that was loaded.
   */
   systemd.services.uml-nix-db = lib.mkIf cfg.nixDatabase.enable {
-    description = "Register the Nix store the guest can see";
+    description = "Check the Nix database the guest was built with";
     wantedBy = [ "multi-user.target" ];
     before = [ "multi-user.target" ];
     serviceConfig = {
       Type = "oneshot";
       RemainAfterExit = true;
     };
-    /*
-      No `ConditionPathExists` on the registration file.
-
-      It had one, and a missing file made this unit *succeed* without doing
-      anything -- so a guest booted with an empty Nix database and looked
-      exactly like a guest booted with a full one, until something ran Nix.
-      What that looks like from there is every path in the guest's own store
-      being invalid, and Nix trying to fetch each one from a cache it cannot
-      reach: a network timeout, naming nothing.
-
-      `boot.uml.nixDatabase.enable` is what puts the file on the root image,
-      so its absence is a bug in this module and belongs on the console.
-    */
     script = ''
-      if [ ! -e /nix-registration ]; then
-        echo "no /nix-registration on the root image, so the store cannot" >&2
-        echo "be registered -- see boot.uml.nixDatabase in modules/" >&2
+      if [ ! -s /nix/var/nix/db/db.sqlite ] || [ ! -s /nix/var/nix/db/schema ]; then
+        echo "no Nix database at /nix/var/nix/db, so every path in the" >&2
+        echo "guest's own store is invalid -- see boot.uml.nixDatabase" >&2
+        echo "in modules/, and the /nix/var bind in modules/guest.nix" >&2
         exit 1
       fi
-      mkdir -p /nix/var/nix/db
-      ${lib.getExe' config.nix.package "nix-store"} --load-db </nix-registration
     '';
   };
 

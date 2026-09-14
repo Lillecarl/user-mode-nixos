@@ -376,15 +376,61 @@ in
         path Nix has been told about and cannot open is worse than one it
         does not know.
 
-        Both backends install this into their root image, and both must:
-        `uml-nix-db.service` is skipped, silently and as a success, when
-        `/nix-registration` is absent. A guest that then runs Nix finds
-        every path in its own store invalid and tries to substitute it,
-        which is a network error rather than anything naming the cause.
+        Nothing reads this at run time; `umlNixDatabase` below turns it
+        into the database the guest boots with.
       */
       umlNixRegistration = pkgs.closureInfo {
         rootPaths = [ config.system.build.toplevel ] ++ config.boot.uml.nixDatabase.extraRoots;
       };
+
+      /*
+        The guest's Nix database, built here rather than loaded at boot.
+
+        It goes on the root image under `/nix-state`, which guest.nix
+        binds onto `/nix/var`, so the database is in place before anything
+        runs and a guest cannot come up with an empty one.
+
+        `config.nix.package` and not `pkgs.nix`: the file carries a schema
+        version, and the Nix that reads it is the guest's.
+
+        Three steps here are not tidiness. Each one is a bug that nixpkgs'
+        `dockerTools.mkDbExtraCommand` or nix2container's
+        `makeNixDatabase` hit first, and they are worth keeping in this
+        order:
+
+          * `USER` must be set, because Nix asks the environment who it is
+            and fails unhelpfully when nothing answers;
+          * the dump does not carry `db/schema`, and without that file Nix
+            takes the store for a new one and concurrent processes race to
+            initialise it;
+          * `sqlite3` leaves the file in `delete` journal mode while Nix
+            switches to WAL on open -- and that switch takes an exclusive
+            lock, so two openers at once get `database is busy`.
+
+        Dumping and re-importing rather than shipping the file `--load-db`
+        wrote is what makes the output the same for the same closure,
+        whatever order the inserts happened in.
+      */
+      umlNixDatabase = pkgs.runCommand "uml-nix-database" {
+        nativeBuildInputs = [
+          config.nix.package
+          pkgs.sqlite
+        ];
+      } ''
+        export USER=nobody
+        export NIX_REMOTE="local?root=$PWD"
+        nix-store --load-db < ${config.system.build.umlNixRegistration}/registration
+
+        # A build gets no clock, so give every path the same time rather
+        # than whatever this one happened to run at.
+        sqlite3 nix/var/nix/db/db.sqlite 'UPDATE ValidPaths SET registrationTime = 0'
+        sqlite3 nix/var/nix/db/db.sqlite '.dump' > db.dump
+
+        mkdir -p $out
+        sqlite3 $out/db.sqlite '.read db.dump'
+        cp nix/var/nix/db/schema $out/schema
+        sqlite3 $out/db.sqlite 'pragma journal_mode = wal' > /dev/null
+      '';
     }
     # Only under the UML backend, because the kernel is half an hour the
     # first time and a QEMU guest has no use for it. `system.build` is an

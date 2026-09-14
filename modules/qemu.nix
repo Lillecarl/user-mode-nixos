@@ -74,8 +74,9 @@ lib.mkIf (cfg.backend == "qemu") {
     mkdir -p root/{dev,proc,sys,tmp,run,var,root,home}
     mkdir -p root/nix root/.nix-upper/store root/.nix-work root/host/nix root/nix-state
     ${lib.optionalString cfg.nixDatabase.enable ''
-      install -m 0444 ${config.system.build.umlNixRegistration}/registration \
-        root/nix-registration''}
+      mkdir -p root/nix-state/nix/db
+      install -m 0644 ${config.system.build.umlNixDatabase}/db.sqlite root/nix-state/nix/db/
+      install -m 0644 ${config.system.build.umlNixDatabase}/schema root/nix-state/nix/db/''}
     truncate -s ${toString cfg.diskSize}M disk.img
     mkfs.ext4 -q -L nixos -d root disk.img
     mv disk.img $out
