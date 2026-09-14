@@ -226,7 +226,7 @@ async def wait_for_images(vms):
     )
 
 
-async def init_control_plane(cp):
+async def init_control_plane(cp, nix_images=True):
     print("[k8s] cp: kubeadm init ...", flush=True)
     rc, out = await cp.execute(
         "kubeadm init --config /etc/kubernetes/kubeadm-config.yaml --v=2",
@@ -236,7 +236,8 @@ async def init_control_plane(cp):
         raise MachineError(
             f"[cp] kubeadm init failed (exit {rc}):\n{out}\n" + await diagnose(cp)
         )
-    await patch_kube_proxy(cp)
+    if nix_images:
+        await patch_kube_proxy(cp)
     print("[k8s] cp: control plane is up", flush=True)
 
 
@@ -448,10 +449,19 @@ async def untaint(cp):
     print("[k8s] control plane will schedule workloads", flush=True)
 
 
-async def bring_up(vms, cp_name="cp", schedulable=None, addons=DEFAULT_ADDONS):
+async def bring_up(
+    vms, cp_name="cp", schedulable=None, addons=DEFAULT_ADDONS, nix_images=True
+):
     """The whole sequence, from booted guests to a cluster that works.
 
     Returns the control plane machine.
+
+    *nix_images* says which `services.uml-k8s.images` the guests were
+    built with, and the two must agree.  Under `"nix"` the node imports
+    every image at boot and each one is symlinks into `/nix/store`, so
+    this waits for that import and gives kube-proxy the store.  Under
+    `"pull"` there is no import to wait for -- waiting would hang until
+    the deadline on a unit nobody created -- and nothing needs patching.
 
     *schedulable* removes the control plane's taint.  The default decides by
     size: a single-node cluster has nowhere else to put a pod, and one with
@@ -471,9 +481,10 @@ async def bring_up(vms, cp_name="cp", schedulable=None, addons=DEFAULT_ADDONS):
 
     for vm in vms.values():
         await vm.wait_for_unit("containerd.service", timeout=UNIT_TIMEOUT)
-    await wait_for_images(vms)
+    if nix_images:
+        await wait_for_images(vms)
 
-    await init_control_plane(cp)
+    await init_control_plane(cp, nix_images=nix_images)
     await join(cp, workers)
     await wire_pod_network(cp, vms)
 

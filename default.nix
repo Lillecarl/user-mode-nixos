@@ -136,6 +136,45 @@ let
       };
   };
 
+  /*
+    A cluster the way a real one comes up: images pulled, nothing patched.
+
+    `k8s` builds every image from nixpkgs and imports it, which is what
+    makes a cluster possible inside a build sandbox -- and what makes the
+    node unlike other nodes, because the store has to be mounted into
+    every container that runs one of those images. Anything whose job is
+    to put a store into a pod passes there with its subject switched off.
+
+    So this one turns all of it off. Not in `tests`, for the same reason
+    `store` is not: it pulls from registry.k8s.io, and a build sandbox has
+    no network.
+
+    10.104, and not the 10.100 `k8s` uses: unsandboxed, a guest routes for
+    real, and this host has a WireGuard interface on 10.100.0.1/24.
+  */
+  k8s-pull = mkTest {
+    name = "k8s-pull";
+    backend = "qemu";
+    script = ./tests/pull.py;
+    nodes.cp = {
+      imports = [ ./modules/k8s.nix ];
+      services.uml-k8s = {
+        enable = true;
+        role = "control-plane";
+        images = "pull";
+      };
+      boot.uml = {
+        memory = "4096M";
+        diskSize = 8192;
+        cpus = 4;
+        lan = {
+          network = "k8s-pull";
+          address = "10.104.0.1/24";
+        };
+      };
+    };
+  };
+
   tests = {
     # Do the guests boot, see each other on vec1, and answer the host?
     lan = mkTest {
@@ -268,7 +307,7 @@ tests
   inherit mkNode mkTest;
   lib = { inherit mkNode mkTest; };
 
-  inherit demo store;
+  inherit demo store k8s-pull;
   inherit (demo.config.system.build) umlRunner umlRootImage toplevel;
 
   # The slowest thing in the repository and the same for every guest, so

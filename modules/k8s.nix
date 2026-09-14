@@ -133,9 +133,13 @@ let
 
   nodeRegistration = {
     criSocket = criSocket;
+  }
+  // lib.optionalAttrs (cfg.images == "nix") {
     # There is no registry to reach: everything came from
     # k8s-load-images.service before kubelet was allowed to start.
     imagePullPolicy = "Never";
+  }
+  // {
     # A guest has no swap, one CPU and not much memory, and /proc/config.gz
     # is not compiled in -- all of which kubeadm would rather refuse than
     # warn about.
@@ -175,7 +179,10 @@ let
         bindPort = 6443;
       };
       inherit nodeRegistration timeouts;
-      # Where the store mount comes from -- see `kubeadmPatches`.
+    }
+    // lib.optionalAttrs (cfg.images == "nix") {
+      # Where the store mount comes from -- see `kubeadmPatches`. An
+      # upstream image needs no such thing.
       patches.directory = "${kubeadmPatches}";
     }
     // lib.optionalAttrs (cfg.skipAddons != [ ]) {
@@ -343,17 +350,21 @@ let
       token,
       hash,
     }:
-    yaml.generate "kubeadm-join.yaml" {
+    yaml.generate "kubeadm-join.yaml" (
+      {
       apiVersion = "kubeadm.k8s.io/v1beta4";
       kind = "JoinConfiguration";
       inherit nodeRegistration timeouts;
-      patches.directory = "${kubeadmPatches}";
       discovery.bootstrapToken = {
         apiServerEndpoint = endpoint;
         inherit token;
         caCertHashes = [ hash ];
       };
-    };
+      }
+      // lib.optionalAttrs (cfg.images == "nix") {
+        patches.directory = "${kubeadmPatches}";
+      }
+    );
 
   joinNode = pkgs.writeShellApplication {
     name = "uml-k8s-join";
@@ -455,6 +466,33 @@ in
       '';
     };
 
+    images = lib.mkOption {
+      type = lib.types.enum [
+        "nix"
+        "pull"
+      ];
+      default = "nix";
+      description = ''
+        Where the node's container images come from.
+
+        `nix` builds every image kubeadm needs out of nixpkgs, imports
+        them into containerd before kubelet starts, and never contacts a
+        registry.  That is what makes a cluster possible inside a build
+        sandbox, which has no network at all.  It costs the rest of this
+        module: the images are symlinks into `/nix/store`, so the store
+        has to be mounted into the static pods, CoreDNS and kube-proxy,
+        and `imagePullPolicy` has to be `Never` everywhere.
+
+        `pull` does none of that.  kubeadm fetches the upstream images
+        from `registry.k8s.io` the way it would on any machine, no patches
+        are applied, and nothing is imported.  **It needs a network, so it
+        only works outside a Nix build sandbox.**  Use it for a test whose
+        subject is what a real cluster does with an unmodified node --
+        anything that would otherwise pass because this module had already
+        put `/nix` in every container.
+      '';
+    };
+
     extraImages = lib.mkOption {
       type = lib.types.listOf lib.types.path;
       default = [ ];
@@ -545,9 +583,9 @@ in
       would dangle and runc would report an image that does not contain
       its own binary.
     */
-    system.extraDependencies = images.runtimeInputs;
+    system.extraDependencies = lib.mkIf (cfg.images == "nix") images.runtimeInputs;
 
-    systemd.services.k8s-load-images = {
+    systemd.services.k8s-load-images = lib.mkIf (cfg.images == "nix") {
       description = "Import the kubeadm images into containerd";
       wantedBy = [ "multi-user.target" ];
       requires = [ "containerd.service" ];
