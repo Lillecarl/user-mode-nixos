@@ -115,6 +115,19 @@ MTU a guest has 15 KB in flight and no more. Guests therefore run a
 
 ## Reaching a guest from the host
 
+A guest's uplink is `10.0.2.15/24`, with passt as the router on `10.0.2.2`
+and answering DNS on `10.0.2.3` — the range QEMU's own user-mode network
+has always used. Every guest gets the same address, and that is right:
+each has a passt of its own, none of them shares a link, and two guests
+that must reach each other do it on `vec1`.
+
+This is set explicitly, because **passt's default is to hand the guest the
+host's own address** — its real IPv4, netmask and router. That makes the
+host's LAN on-link to the guest, and on a hosted machine that LAN has
+other people's servers on it. IPv6 is left alone: there the guest gets an
+address of its own out of the host's prefix, which is the normal way to do
+it.
+
 passt is the only way in, and **its forwards cannot be changed while it is
 running**: `conf_ports()` binds every socket while parsing arguments, there
 is no control socket, and the `auto` mode that watches `/proc/net/tcp` is

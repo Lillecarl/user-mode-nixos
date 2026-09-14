@@ -73,6 +73,9 @@ class Uml:
             str(tools.bridge),
             "--vec",
             self._vec(0, 3, spec.mtu),
+            # The bridge forks passt, so the uplink's addressing reaches
+            # it one argument at a time rather than directly.
+            *(arg for value in forward.uplink_args() for arg in ("--passt", value)),
             *forward.to_args(machine.forward),
             str(tools.kernel),
             f"ubd0={rundir}/cow,{spec.image}",
@@ -346,6 +349,7 @@ class Qemu:
                 "--foreground",
                 "--quiet",
                 "--fd", str(passt_end.fileno()),
+                *forward.uplink_args(),
                 *forward.to_args(rules),
             ],
             pass_fds=(passt_end.fileno(),),

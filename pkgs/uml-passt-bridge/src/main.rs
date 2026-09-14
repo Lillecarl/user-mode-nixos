@@ -55,13 +55,18 @@ fn main() {
     // The runner builds them; see uml_runner/forward.py.
     let mut tcp_ports: Vec<String> = Vec::new();
     let mut udp_ports: Vec<String> = Vec::new();
+    // Anything else passt should be told, one argument per flag, appended
+    // verbatim. The runner owns the uplink's addressing for both backends
+    // -- see `uplink_args` in uml_runner/forward.py -- and this is how it
+    // reaches passt on the side that has a bridge in the way.
+    let mut passt_extra: Vec<String> = Vec::new();
     let mut vec_arg = "vec0:transport=fd,fd=3,depth=512,gro=1".to_string();
 
     let mut i = 1;
     while i < args.len() {
         let flag = args[i].as_str();
         let target = match flag {
-            "--vec" | "--tcp-ports" | "--udp-ports" => {
+            "--vec" | "--tcp-ports" | "--udp-ports" | "--passt" => {
                 i += 1;
                 if i >= args.len() {
                     eprintln!("{} requires an argument", flag);
@@ -74,6 +79,7 @@ fn main() {
         match target {
             "--vec" => vec_arg = args[i].clone(),
             "--tcp-ports" => tcp_ports.push(args[i].clone()),
+            "--passt" => passt_extra.push(args[i].clone()),
             _ => udp_ports.push(args[i].clone()),
         }
         i += 1;
@@ -107,6 +113,7 @@ fn main() {
     // letting it linger keeps the uplink up across a guest's reboot.
     let mut passt_args: Vec<String> =
         vec!["--foreground".into(), "--fd".into(), "4".into()];
+    passt_args.extend(passt_extra.iter().cloned());
     for (flag, specs) in [("-t", &tcp_ports), ("-u", &udp_ports)] {
         for spec in specs {
             passt_args.push(flag.into());

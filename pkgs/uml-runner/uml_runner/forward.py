@@ -350,3 +350,46 @@ def reachable(rules: list[Rule], guest_port: int, start: int) -> list[str]:
                 if port.guest == guest_port
             ]
     return found
+
+
+# The guest's own address on its uplink, and the two addresses passt
+# answers on behind it.
+#
+# passt shares the *host's* address by default: a guest is given the
+# host's real IPv4, netmask and router, so the host's LAN is on-link to
+# the guest and a test's environment depends on where the host is. On a
+# hosted machine that LAN has other people's servers on it.
+#
+# 10.0.2.0/24 instead, which is the range QEMU's own user-mode network
+# has used for twenty years, so it is the one a reader already knows --
+# and the one modules/k8s.nix has described as the guest's uplink all
+# along.
+#
+# Every guest gets the same address, and that is right: each has a passt
+# of its own, none of them shares a link, and two guests that must reach
+# each other do it on `vec1` with addresses a test chose. What makes a
+# guest reachable from the host is its own 127.0.0.x, which forward.py
+# hands out per guest and which is unaffected by any of this.
+UPLINK_ADDRESS = "10.0.2.15"
+UPLINK_PREFIX = 24
+UPLINK_GATEWAY = "10.0.2.2"
+UPLINK_DNS = "10.0.2.3"
+
+
+def uplink_args() -> list[str]:
+    """passt arguments giving the guest an address of its own.
+
+    Both backends pass these -- QEMU straight to passt, UML through
+    `uml-passt-bridge`'s `--passt` -- so that a guest's uplink looks the
+    same whichever machine it turned out to be.
+
+    `--dns-forward` rather than letting passt advertise the host's real
+    resolver: the guest then asks 10.0.2.3, passt answers it, and nothing
+    about the host's network reaches the guest's configuration.
+    """
+    return [
+        "--address", UPLINK_ADDRESS,
+        "--netmask", str(UPLINK_PREFIX),
+        "--gateway", UPLINK_GATEWAY,
+        "--dns-forward", UPLINK_DNS,
+    ]
