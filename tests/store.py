@@ -70,9 +70,17 @@ async def test(vms):
     await node.wait_for_unit("uml-host-store.service")
     await node.wait_for_unit("uml-nix-db.service")
 
-    path = host_path()
-    closure = await node.succeed("nix-store --query --requisites /run/current-system")
-    assert path not in closure.split(), f"{path} is in the guest's own closure"
+    # What `settings` handed over, registered by mkTest because it is in
+    # `settings` and for no other reason.
+    probe = vms.settings["probe"]
+    await node.succeed(f"nix path-info {probe}")
+    await node.succeed(f"test $(cat {probe}) = settings")
+    print(f"[test] the guest knows the path settings gave it: {probe}")
+
+    closure = set((await node.succeed("nix-store --query --requisites /run/current-system")).split())
+    outside = [p for p in host_paths() if p not in closure]
+    assert outside, "the host's store holds nothing the guest is not already told about"
+    path = outside[0]
 
     print(f"[test] the guest was never told about {path}")
     print("[test] and says:", await node.succeed(f"nix path-info {path}"))

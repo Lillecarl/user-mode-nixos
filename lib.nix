@@ -102,6 +102,24 @@ rec {
       # The default backend keeps the bare name, so a second one appearing
       # does not move store paths or rename anything in a CI log.
       suffix = lib.optionalString (chosen != backend) "-${chosen}";
+
+      /*
+        `settings` on its own, so a guest can be told about the store paths
+        in it.
+
+        A test hands its guests store paths through `settings` -- an image,
+        a program, a chart -- and nothing in the module system sees them, so
+        `boot.uml.nixDatabase` used to need each one named again by hand in
+        `extraRoots`. One that was missed is not a build error: Nix in the
+        guest calls the path invalid and goes looking for a substituter.
+
+        A file is what breaks that. Registering its closure registers every
+        path it mentions, and this file cannot mention the machines, so
+        naming it from a machine is not a cycle -- which naming the spec
+        would be, since the spec names each machine's root image.
+      */
+      settingsFile = pkgs.writeText "uml-${name}${suffix}-settings.json" (builtins.toJSON settings);
+
       machines = lib.imap0 (
         index: hostName:
         (mkNode {
@@ -110,6 +128,7 @@ rec {
           boot.uml.sshPort = lib.mkDefault (4325 + index);
           boot.uml.backend = lib.mkDefault chosen;
           boot.uml.index = index;
+          boot.uml.nixDatabase.extraRoots = lib.optional (settings != { }) "${settingsFile}";
         }).config
       ) (lib.attrNames nodes);
 

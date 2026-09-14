@@ -119,6 +119,12 @@ let
   store = mkTest {
     name = "store";
     script = ./tests/store.py;
+    # A path handed to the test the way a caller hands one over, and
+    # nothing else names it. `mkTest` registers it with the guest, which
+    # is the half of the guest's store that does not come from the host's
+    # database -- and cannot, because a path this fresh is still in the
+    # host's write-ahead log.
+    settings.probe = "${pkgs.runCommand "uml-store-probe" { } "echo settings > $out"}";
     nodes.node =
       { config, ... }:
       {

@@ -276,6 +276,13 @@ The guest's `/nix/var` is its own, never the host's — see `guest.nix`. Nix
 inside the guest knows the paths `boot.uml.nixDatabase` registered, and
 nothing else.
 
+That set is the test's own closure, and `mkTest` works it out: the guest's
+system, plus everything in the test's `settings`. So a store path handed to
+a test the way a caller hands one over — an image, a program, a chart — is
+valid Nix inside the guest without being named twice. It is a dump of a
+closure Nix built, not a read of the host's database, so nothing about it
+can be stale.
+
 ### The host's whole store, inside the guest
 
 `boot.uml.hostStore.enable` makes Nix in the guest see every path on the

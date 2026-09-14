@@ -295,12 +295,13 @@ in
         description = ''
           Store paths to register beyond the guest's own system closure.
 
-          A test hands its guests store paths through `mkTest`'s `settings`
-          rather than through the configuration, so nothing in the module
-          system knows about them -- name them here and their closures are
-          registered too.  Each one becomes a dependency of the guest,
-          which is also what puts it in the build sandbox in the first
-          place.
+          `mkTest` already adds everything in its `settings` to this, so a
+          test that hands its guests a store path that way needs nothing
+          here.  This is for a path that reaches a guest by some other
+          route.
+
+          Each one becomes a dependency of the guest, which is also what
+          puts it in the build sandbox in the first place.
         '';
       };
     };
