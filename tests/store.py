@@ -12,11 +12,10 @@ layer as a Nix local-overlay store.  This checks the two halves of that:
 Outside the build sandbox only.  A sandbox `/nix` holds `store` and nothing
 else, so there is no host database to be the lower layer:
 
-    nix build --file . store.spec --out-link spec
-    nix build --file . store.python --out-link python
-    ./python/bin/python3 tests/store.py --spec ./spec
+    nix run --file . store.run        # and store.qemu.run
 """
 
+import json
 import os
 import subprocess
 
@@ -48,6 +47,31 @@ def host_paths() -> list[str]:
 
     Asking the read-only view what it has cannot go stale that way.
     """
+    return _nix("--all").split()
+
+
+def with_references(candidates: list[str]) -> str:
+    """One of `candidates` that refers to something else.
+
+    A path with no references proves only that the lower store has a row
+    for it.  One with references proves the lower store served the
+    metadata too, which is the half that a registration would otherwise
+    explain -- and `--all` is in database order, so the first path is as
+    likely as not to be a lone script.
+    """
+    # Not a .drv: one is a store path like any other, so it would pass,
+    # but a build output is the thing a guest would actually want.
+    wanted = [p for p in candidates if not p.endswith(".drv")]
+    for batch in range(0, min(len(wanted), 400), 100):
+        window = wanted[batch : batch + 100]
+        info = json.loads(_nix("--json", *window))
+        for path in window:
+            if info.get(path, {}).get("references"):
+                return path
+    raise AssertionError("no path in the lower store's first 400 has references")
+
+
+def _nix(*args: str) -> str:
     seen = subprocess.run(
         [
             "nix",
@@ -56,13 +80,13 @@ def host_paths() -> list[str]:
             "path-info",
             "--store",
             HOST_STORE,
-            "--all",
+            *args,
         ],
         capture_output=True,
         text=True,
         check=True,
     )
-    return seen.stdout.split()
+    return seen.stdout
 
 
 async def test(vms):
@@ -80,13 +104,14 @@ async def test(vms):
     closure = set((await node.succeed("nix-store --query --requisites /run/current-system")).split())
     outside = [p for p in host_paths() if p not in closure]
     assert outside, "the host's store holds nothing the guest is not already told about"
-    path = outside[0]
+    path = with_references(outside)
 
     print(f"[test] the guest was never told about {path}")
     print("[test] and says:", await node.succeed(f"nix path-info {path}"))
 
     refs = await node.succeed(f"nix-store --query --references {path}")
-    print(f"[test] querying it gives {len(refs.split())} references")
+    assert refs.strip(), "the lower store knows the path but serves no references for it"
+    print(f"[test] and serves {len(refs.split())} references for it")
 
     built = (await node.succeed(PROBE)).strip()
     print(f"[test] the guest built {built}")
