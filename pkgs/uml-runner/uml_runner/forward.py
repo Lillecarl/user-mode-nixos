@@ -373,7 +373,6 @@ def reachable(rules: list[Rule], guest_port: int, start: int) -> list[str]:
 UPLINK_ADDRESS = "10.0.2.15"
 UPLINK_PREFIX = 24
 UPLINK_GATEWAY = "10.0.2.2"
-UPLINK_DNS = "10.0.2.3"
 
 
 def uplink_args() -> list[str]:
@@ -383,13 +382,22 @@ def uplink_args() -> list[str]:
     `uml-passt-bridge`'s `--passt` -- so that a guest's uplink looks the
     same whichever machine it turned out to be.
 
-    `--dns-forward` rather than letting passt advertise the host's real
-    resolver: the guest then asks 10.0.2.3, passt answers it, and nothing
-    about the host's network reaches the guest's configuration.
+    **No `--dns-forward`.** Making passt answer DNS on an address of its
+    own is the tidy-looking choice and it does not work here: passt then
+    forwards to whatever the host's `/etc/resolv.conf` names, and on a
+    systemd-resolved host that is the `127.0.0.53` stub -- a loopback
+    address that means passt itself. Queries are answered, with nothing in
+    them. Measured from a pod: `nslookup cache.nixos.org` came back "No
+    answer" while plain HTTP to 1.1.1.1 worked, so it read as broken
+    networking rather than as broken DNS.
+
+    Left to itself passt picks a resolver that can actually be reached and
+    advertises that. It is one of the host's addresses, which is a far
+    smaller thing to tell a guest than the host's own identity -- every
+    NAT tells a guest where to send DNS.
     """
     return [
         "--address", UPLINK_ADDRESS,
         "--netmask", str(UPLINK_PREFIX),
         "--gateway", UPLINK_GATEWAY,
-        "--dns-forward", UPLINK_DNS,
     ]

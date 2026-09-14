@@ -217,11 +217,26 @@ let
       kind = "KubeletConfiguration";
       cgroupDriver = "systemd";
       failSwapOn = false;
-      # Not /etc/resolv.conf.  With networkd that is a symlink to
-      # resolved's stub, which names 127.0.0.53 -- an address that inside a
-      # pod's own network namespace is the pod, so CoreDNS forwards to
-      # itself and its loop detector shoots it.  See the file below.
-      resolvConf = "/etc/kubernetes/resolv.conf";
+      /*
+        Not /etc/resolv.conf.  With networkd that is a symlink to
+        resolved's stub, which names 127.0.0.53 -- an address that inside a
+        pod's own network namespace is the pod, so CoreDNS forwards to
+        itself and its loop detector shoots it.
+
+        Under `images = "nix"` this is a file that resolves nothing at all;
+        see it below.  Under `"pull"` it is resolved's *other* file, the
+        one listing the real upstream servers DHCP gave the guest, because
+        a pod on such a node has names to resolve: the node pulls from
+        registry.k8s.io, and whatever it deploys may substitute from a
+        binary cache.  Measured -- with the unroutable file, nixkube's init
+        container spends its life on "Resolving timed out after 15000
+        milliseconds" against nixkube.cachix.org.
+      */
+      resolvConf =
+        if cfg.images == "nix" then
+          "/etc/kubernetes/resolv.conf"
+        else
+          "/run/systemd/resolve/resolv.conf";
       # Nothing here is fast, and a CRI call that takes a minute on a
       # loaded builder is normal rather than a hung runtime.
       runtimeRequestTimeout = "15m";
@@ -300,6 +315,20 @@ let
     that needs CNI ever gets a sandbox -- which in a cluster this size
     means CoreDNS and nothing else, long after the nodes all went Ready.
   */
+  /*
+    `ipMasq` follows `services.uml-k8s.images`.
+
+    Under `"nix"` a pod has nowhere to go: the node holds every image it
+    will ever run and the guest is in a build sandbox, so masquerading pod
+    traffic out of `vec0` would add a rule nothing ever matches.
+
+    Under `"pull"` it is the difference between a working cluster and a
+    silent one. Pods live on `cni0` in the node's podCIDR, and without
+    SNAT nothing they send past the node is ever answered. Measured: with
+    it off, nixkube's init container spends its life on "Resolving timed
+    out after 15000 milliseconds" and the DaemonSet never rolls out --
+    with no error anywhere naming a route.
+  */
   cniSetup = pkgs.writeShellApplication {
     name = "uml-k8s-cni";
     text = ''
@@ -318,7 +347,7 @@ let
             "bridge": "cni0",
             "isDefaultGateway": true,
             "hairpinMode": true,
-            "ipMasq": false,
+            "ipMasq": ${if cfg.images == "nix" then "false" else "true"},
             "ipam": {
               "type": "host-local",
               "ranges": [ [ { "subnet": "$1" } ] ]
@@ -724,6 +753,25 @@ in
     };
 
     # ── the node itself ────────────────────────────────────────────
+
+    /*
+      The module the sysctls below are settings of.
+
+      The UML kernel is built with br_netfilter in it, so under UML this
+      is already there and asking for it costs nothing. The stock NixOS
+      kernel a QEMU guest boots has it as a module, and nothing else on
+      the node loads it -- `boot.kernel.sysctl` then writes
+      `net.bridge.bridge-nf-call-iptables` into a `/proc` that has no such
+      key, and the setting is quietly not applied.
+
+      What that looks like is the failure the sysctls exist to prevent,
+      only harder to find: on a single-node cluster every pod is on one
+      bridge, so *every* ClusterIP is unreachable from every pod, and
+      CoreDNS answers nothing. Measured -- a pod could reach 1.1.1.1 over
+      HTTP and could not reach 10.96.0.10 at all, which reads as broken
+      DNS rather than as an unloaded module.
+    */
+    boot.kernelModules = [ "br_netfilter" ];
 
     boot.kernel.sysctl = {
       # Traffic between pods on one node crosses the CNI bridge, and
