@@ -41,8 +41,8 @@ let
     fails the build if any of this has drifted.
   */
   tags = {
-    coredns = "v1.14.2";
-    etcd = "3.6.8-0";
+    coredns = "v1.14.6";
+    etcd = "3.7.0-0";
     pause = "3.10.2";
   };
 
