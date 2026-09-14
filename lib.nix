@@ -203,6 +203,10 @@ rec {
       run = pkgs.writeShellApplication {
         name = "run-uml-test-${name}${suffix}";
         runtimeInputs = [ python ];
+        # `UML_TEST_REPORT` is not set here. A run by hand records only
+        # when it is asked to, so nothing writes to a directory nobody
+        # chose; the sandboxed build below always records, because there
+        # is an output to put it in.
         text = ''
           exec python3 ${script} --spec ${spec} "$@"
         '';
@@ -217,9 +221,25 @@ rec {
         requiredSystemFeatures = lib.optional (chosen == "qemu") "kvm";
         passthru = { inherit spec python run; };
       }
+      /*
+        The output is a directory, and what is in it is where the run
+        spent its time.
+
+        A check used to be an empty file, because a derivation that passes
+        or fails needs no content. But a test here is minutes of waiting,
+        which minutes is not guessable, and a run in the sandbox is the
+        one nobody can watch -- so the timings have to come back with it or
+        they are gone. See pkgs/uml-runner/uml_runner/report.py for what is
+        in the file.
+
+        Always, and not behind a flag. A report nobody asked for costs a
+        few hundred kilobytes; a run whose timings were not kept costs
+        another run.
+      */
       ''
         export HOME="$TMPDIR"
+        mkdir -p $out
+        export UML_TEST_REPORT=$out/report.json
         python3 ${script} --spec ${spec}
-        touch $out
       '';
 }

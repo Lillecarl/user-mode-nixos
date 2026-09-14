@@ -245,6 +245,39 @@ Compare runs only back to back. A guest is a process either way and a busy
 host halves both numbers: run these two concurrently rather than one at a
 time and they read 21.78 and 26.87 instead.
 
+### Where a run spent its time
+
+A test here is minutes of waiting and seconds of work, and which minutes is
+not guessable. So every run records itself.
+
+**A check always does**, into its own output — which is why a test's output
+is a directory and not an empty file:
+
+```console
+$ nix build --file . lan --out-link result
+$ jq '{total_seconds, boot_seconds, waiting_seconds}' result/report.json
+{ "total_seconds": 9.106, "boot_seconds": 6.726, "waiting_seconds": 0.04 }
+```
+
+A run outside the sandbox records when `UML_TEST_REPORT` names a file:
+
+```console
+$ UML_TEST_REPORT=/tmp/run.json nix run --file . lan.run
+```
+
+Either way the file holds the per-machine boot time, every round trip to a
+guest with its duration, the poll loops as single steps, the twenty slowest
+steps and a per-command total. Two things to know reading it:
+
+- **A `wait` step contains the `rpc` steps inside it.** A poll loop is many
+  round trips and the sleeps between them, so the two kinds are reported
+  apart and must not be added together.
+- **A failing run writes one too.** The run whose timings you most want is
+  the one that timed out.
+
+Measured on `lan`, which is the cheapest test there is: 9.1 s, of which 6.7
+is booting two guests. On anything small, boot *is* the test.
+
 ### Running outside the sandbox
 
 A test can be run by hand, which is the point of a QEMU guest: it has the
@@ -421,6 +454,7 @@ pkgs/uml-kernel         the UML kernel, built from the guest's own source
 pkgs/uml-passt-bridge   fd plumbing between UML, passt and the host
 pkgs/uml-runner         the host runner, test harness, and guest agent
   backend.py            what to exec for a guest, per backend
+  report.py             where a run spent its time
 tests/                  one file per test
 ```
 

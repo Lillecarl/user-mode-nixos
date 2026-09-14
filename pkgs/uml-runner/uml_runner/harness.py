@@ -28,6 +28,7 @@ from typing import Awaitable, Callable
 from .forward import ForwardError
 from .machine import Machine, MachineError, MachineSpec, Toolchain
 from .net import build_lans
+from . import report
 
 
 class Machines(dict):
@@ -110,9 +111,23 @@ def run_test(test: Callable[[Machines], Awaitable[None]]) -> None:
         async with machines(load_spec()) as vms:
             await test(vms)
 
+    # Written whichever way the run ends, and named by `$UML_TEST_REPORT`.
+    # A run that timed out is the one whose timings are worth reading, so
+    # the failing path must not be the one that skips this. See report.py.
     try:
         asyncio.run(main())
     except (MachineError, ForwardError) as error:
+        _record(False, str(error))
         print(f"[test] FAILED: {error}", file=sys.stderr, flush=True)
         raise SystemExit(1) from None
+    except BaseException as error:
+        _record(False, f"{type(error).__name__}: {error}")
+        raise
+    _record(True)
     print("[test] passed", flush=True)
+
+
+def _record(passed: bool, error: str | None = None) -> None:
+    where = report.RUN.write_if_asked(passed, error)
+    if where:
+        print(f"[test] timings in {where}", flush=True)

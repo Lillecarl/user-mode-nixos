@@ -23,6 +23,7 @@ import signal
 import socket
 import subprocess as sync_subprocess
 import tempfile
+import time
 from asyncio import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -31,6 +32,7 @@ from .agent import AGENT_READY
 from .arpyc import AsyncConnection, connect
 from . import backend as backends
 from . import forward
+from . import report
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
 _CONSOLE_HISTORY = 2000
@@ -248,7 +250,17 @@ class Machine:
                 self._wait_for_line(re.compile(re.escape(AGENT_READY))),
                 timeout=self.boot_timeout,
             )
-            self._log(f"up in {loop.time() - started:.1f}s")
+            elapsed = loop.time() - started
+            self._log(f"up in {elapsed:.1f}s")
+            report.RUN.booted(
+                self.name,
+                elapsed,
+                {
+                    "backend": self.spec.backend,
+                    "cpus": self.spec.cpus,
+                    "memory": self.spec.memory,
+                },
+            )
         except asyncio.TimeoutError:
             raise MachineError(
                 f"[{self.name}] agent did not come up within "
@@ -395,7 +407,11 @@ class Machine:
         of memory simply stops replying, and without a deadline the test
         would sit on the future until the whole run is killed -- with no
         clue as to which machine, or what it was asked.
+
+        Every call is also timed here, for the same reason: this is the
+        one place all of them pass through.  See report.py.
         """
+        started = time.monotonic()
         try:
             return await asyncio.wait_for(call, timeout=timeout)
         except asyncio.TimeoutError:
@@ -408,6 +424,8 @@ class Machine:
                 f"[{self.name}] guest went away during: {what}\n"
                 f"{self._console_tail()}"
             ) from None
+        finally:
+            report.RUN.step(self.name, "rpc", what, time.monotonic() - started)
 
     def _console_tail(self, lines: int = 15) -> str:
         """The last thing the guest said, for an error that has no other
@@ -488,8 +506,25 @@ class Machine:
             _SYSTEMD_TIMEOUT,
         )
 
+    def waiting(self, what: str):
+        """Record a wait of the test's own as one step.
+
+        `wait_for_unit` and friends are timed already.  A loop a test
+        writes itself is not, and on a long test that is most of the run:
+        measured on nixkube's nine scenarios, 632 of 786 seconds were in
+        settle loops the runner could not see.  Wrap one and it appears::
+
+            with cp.waiting("the node's state to settle"):
+                await settle(cp)
+        """
+        return report.RUN.waiting(self.name, what)
+
     async def wait_for_unit(self, unit: str, timeout: float = 120) -> None:
         """Wait until *unit* is active, failing fast if it dies first."""
+        with report.RUN.waiting(self.name, f"unit {unit}"):
+            await self._wait_for_unit(unit, timeout)
+
+    async def _wait_for_unit(self, unit: str, timeout: float) -> None:
         deadline = asyncio.get_running_loop().time() + timeout
         while True:
             state = await self.unit_state(unit)

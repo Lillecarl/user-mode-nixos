@@ -50,6 +50,28 @@ grep '\[test\]' /tmp/umlbuild.log
 Every console line is prefixed with the machine it came from, so
 `grep '\[server\]'` narrows to one guest.
 
+## Where the time went
+
+Do not guess at what makes a test slow, and do not add timing prints.
+Every run records itself.
+
+A check writes `report.json` into its own output; that is why a test's
+output is a directory. A run outside the sandbox writes one when
+`UML_TEST_REPORT` names a file. Both write on failure too.
+
+```sh
+jq '{total_seconds, boot_seconds, waiting_seconds}' result/report.json
+jq '.slowest[:5] | .[] | {what, seconds}' result/report.json
+jq '.by_command[:5]' result/report.json
+```
+
+A `wait` step *contains* the `rpc` steps inside it -- a poll loop is many
+round trips and the sleeps between them. Do not sum the two kinds.
+
+`uml_runner/report.py` is the whole of it. `Machine._ask` is the one
+choke point every guest round trip passes through, so a new command type
+is timed without touching it.
+
 ## Measuring the network
 
 `nix build .#iperf` prints what a segment carries. Two things make those

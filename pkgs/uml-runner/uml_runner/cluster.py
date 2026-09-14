@@ -108,7 +108,16 @@ async def until(what, check, timeout, machine):
     tell them apart.  That figure is in the failure too: "stuck for 290s"
     and "still moving, just slow" are different bugs and want different
     fixes.
+
+    Timed as one step, because this is the only poll loop a cluster test
+    has and it is most of the run: measured on nixkube's nine scenarios,
+    632 of 786 seconds were in here and invisible until this line.
     """
+    with machine.waiting(what):
+        return await _until(what, check, timeout, machine)
+
+
+async def _until(what, check, timeout, machine):
     loop = asyncio.get_running_loop()
     started = loop.time()
     deadline = started + timeout
