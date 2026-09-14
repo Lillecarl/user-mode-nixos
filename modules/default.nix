@@ -279,14 +279,30 @@ in
       That is fine for a guest that only runs programs.  It is not fine for
       one that runs Nix: a build or a `nix copy` into a second store finds
       its inputs invalid, tries to substitute them, and a build sandbox has
-      no network.  So this loads a registration for the closure below,
-      which turns a directory the guest can see into a store it can use.
+      no network.  So this builds a database for the closure below, which
+      turns a directory the guest can see into a store it can use.
 
-      Off by default.  It costs a `closureInfo` derivation and one oneshot
-      at boot, and a guest that never runs Nix wants neither.
+      On by default, because it stopped being worth deciding about.  It
+      was off while it cost a oneshot at every boot; now it is built with
+      the image, and measured at 612ms and 256K for a minimal guest and
+      561ms and 268K for a kubeadm control plane, cached after the first
+      build.  Against that, a guest without one looks identical to a guest
+      with one until something runs Nix, and fails then as a network
+      timeout that names nothing.
     */
     nixDatabase = {
-      enable = lib.mkEnableOption "a Nix database for the store the guest sees over hostfs";
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        example = false;
+        description = ''
+          Build a Nix database for the store the guest sees, and put it on
+          the root image.
+
+          Turning this off leaves a guest whose `/nix/store` is full of
+          paths that Nix in there calls invalid.
+        '';
+      };
 
       extraRoots = lib.mkOption {
         type = lib.types.listOf lib.types.str;

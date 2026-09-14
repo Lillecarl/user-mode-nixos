@@ -130,7 +130,6 @@ let
       {
         boot.uml = {
           hostStore.enable = true;
-          nixDatabase.enable = true;
           memory = "1024M";
         };
         environment.systemPackages = [ config.nix.package ];

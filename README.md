@@ -273,15 +273,21 @@ the process rather than leaving a gigabyte in `/tmp`. Measured: `/tmp` is
 unchanged across a full run on either backend.
 
 The guest's `/nix/var` is its own, never the host's — see `guest.nix`. Nix
-inside the guest knows the paths `boot.uml.nixDatabase` registered, and
-nothing else.
+inside the guest knows the paths `boot.uml.nixDatabase` covers, and nothing
+else.
 
 That set is the test's own closure, and `mkTest` works it out: the guest's
 system, plus everything in the test's `settings`. So a store path handed to
 a test the way a caller hands one over — an image, a program, a chart — is
-valid Nix inside the guest without being named twice. It is a dump of a
-closure Nix built, not a read of the host's database, so nothing about it
-can be stale.
+valid Nix inside the guest without being named twice.
+
+**The database is built with the image, not loaded at boot.** It sits on the
+image under `/nix-state`, which is bound onto `/nix/var`, so it is in place
+before pid 1 and a guest cannot come up without one. Measured at 612 ms and
+256 KB for a minimal guest and 561 ms and 268 KB for a kubeadm control
+plane, cached after the first build — small enough that it is on by default.
+It is a dump of a closure Nix built, not a read of the host's database, so
+nothing about it can be stale.
 
 ### The host's whole store, inside the guest
 
