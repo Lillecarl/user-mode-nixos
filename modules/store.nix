@@ -75,12 +75,7 @@ in
     systemd.services.uml-host-store = {
       description = "Check the host's Nix database is readable";
       wantedBy = [ "multi-user.target" ];
-      # Before the registration, which is the first thing to run Nix and
-      # so the first thing to report this as a lock file it cannot open.
-      before = [
-        "multi-user.target"
-        "uml-nix-db.service"
-      ];
+      before = [ "multi-user.target" ];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;

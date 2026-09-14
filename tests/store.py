@@ -92,7 +92,6 @@ def _nix(*args: str) -> str:
 async def test(vms):
     node = vms.node
     await node.wait_for_unit("uml-host-store.service")
-    await node.wait_for_unit("uml-nix-db.service")
 
     # What `settings` handed over, registered by mkTest because it is in
     # `settings` and for no other reason.

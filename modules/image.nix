@@ -69,7 +69,12 @@ lib.mkIf (cfg.backend == "uml") {
     ${lib.optionalString cfg.nixDatabase.enable ''
       mkdir -p root/nix-state/nix/db
       install -m 0644 ${build.umlNixDatabase}/db.sqlite root/nix-state/nix/db/
-      install -m 0644 ${build.umlNixDatabase}/schema root/nix-state/nix/db/''}
+      install -m 0644 ${build.umlNixDatabase}/schema root/nix-state/nix/db/
+      # An empty database looks exactly like a full one until something
+      # runs Nix, and looks then like a network timeout naming nothing.
+      # Fail the build instead.
+      test -s root/nix-state/nix/db/db.sqlite
+      test -s root/nix-state/nix/db/schema''}
     install -m 0555 ${pkgs.pkgsStatic.busybox}/bin/busybox root/bin/busybox
     for cmd in sh mkdir mount echo cat ls; do
       ln -s busybox "root/bin/$cmd"

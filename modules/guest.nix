@@ -175,41 +175,19 @@ in
   };
 
   /*
-    Check the guest booted with the Nix database it was built with.
+    No unit for the Nix database.
 
-    The database is not loaded here any more. It is built with the image
-    and sits on it under `/nix-state`, which the bind above puts at
-    `/nix/var` -- so it is in place before pid 1, and a guest cannot reach
-    userspace without it.
+    There was one, and it loaded a registration at every boot.  The
+    database is built with the image now -- see `system.build.
+    umlNixDatabase` -- and sits on it under `/nix-state`, which the bind
+    above puts at `/nix/var`.  So it is there before pid 1, and the check
+    that it is there belongs to the image derivation, where a missing file
+    stops a build rather than a boot.
 
-    What is left is the check, and the check is worth a unit on its own.
-    An empty database looks exactly like a full one until something runs
-    Nix, and what it looks like then is every path in the guest's own store
-    being invalid and Nix trying to fetch each one from a cache it cannot
-    reach: a network timeout, naming nothing. A missing file here is a bug
-    in this module, and it belongs on the console.
-
-    Ordering, not history, is why this is still a unit: a guest's own
-    services order against it to mean "the store is usable now", and that
-    is as true of a database that was built as of one that was loaded.
+    Nothing should order against "the store is usable" any more.  It is
+    usable as soon as `/nix/var` is mounted, which is `local-fs.target`,
+    which every ordinary service is already after.
   */
-  systemd.services.uml-nix-db = lib.mkIf cfg.nixDatabase.enable {
-    description = "Check the Nix database the guest was built with";
-    wantedBy = [ "multi-user.target" ];
-    before = [ "multi-user.target" ];
-    serviceConfig = {
-      Type = "oneshot";
-      RemainAfterExit = true;
-    };
-    script = ''
-      if [ ! -s /nix/var/nix/db/db.sqlite ] || [ ! -s /nix/var/nix/db/schema ]; then
-        echo "no Nix database at /nix/var/nix/db, so every path in the" >&2
-        echo "guest's own store is invalid -- see boot.uml.nixDatabase" >&2
-        echo "in modules/, and the /nix/var bind in modules/guest.nix" >&2
-        exit 1
-      fi
-    '';
-  };
 
   system.stateVersion = lib.mkDefault "25.05";
 }
