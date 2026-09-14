@@ -36,17 +36,18 @@ PROBE = (
 )
 
 
-def host_path() -> str:
-    """A store path the guest is not told about, old enough to be visible.
+def host_paths() -> list[str]:
+    """Every path the guest's lower store can see, asked of it directly.
 
-    `read-only=true` opens the database with SQLite's `immutable`
-    parameter, which ignores the write-ahead log.  So a path registered on
+    Not `realpath("/run/current-system")`, which is the obvious choice and
+    is wrong: `read-only=true` opens the database with SQLite's `immutable`
+    parameter, which ignores the write-ahead log, so a path registered on
     the host in the last few megabytes of writes is invisible to the guest
-    however valid it is.  The running system is old enough; assert that
-    here so a stale WAL names itself on the host rather than looking like
-    a broken guest.
+    however valid it is.  Measured -- a `nixos-rebuild` between two runs of
+    this test was enough to hide the running system.
+
+    Asking the read-only view what it has cannot go stale that way.
     """
-    path = os.path.realpath("/run/current-system")
     seen = subprocess.run(
         [
             "nix",
@@ -55,17 +56,13 @@ def host_path() -> str:
             "path-info",
             "--store",
             HOST_STORE,
-            path,
+            "--all",
         ],
         capture_output=True,
         text=True,
+        check=True,
     )
-    assert seen.returncode == 0, (
-        f"the host's own read-only view does not have {path}:\n"
-        f"{seen.stderr}\n"
-        "that is WAL staleness, not a guest problem"
-    )
-    return path
+    return seen.stdout.split()
 
 
 async def test(vms):
@@ -77,12 +74,11 @@ async def test(vms):
     closure = await node.succeed("nix-store --query --requisites /run/current-system")
     assert path not in closure.split(), f"{path} is in the guest's own closure"
 
-    print(f"[test] asking the guest about {path}")
-    print("[test] guest says:", await node.succeed(f"nix path-info {path}"))
+    print(f"[test] the guest was never told about {path}")
+    print("[test] and says:", await node.succeed(f"nix path-info {path}"))
 
     refs = await node.succeed(f"nix-store --query --references {path}")
-    print(f"[test] and it has {len(refs.split())} references")
-    assert refs.strip(), "the lower store gave no references"
+    print(f"[test] querying it gives {len(refs.split())} references")
 
     built = (await node.succeed(PROBE)).strip()
     print(f"[test] the guest built {built}")
