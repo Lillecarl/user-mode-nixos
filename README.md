@@ -17,6 +17,7 @@ host-side switch — see [Backends](#backends).
 $ nix build .#lan .#iperf     # run the tests
 $ nix build .#lan.qemu        # the same test, as virtual machines
 $ nix build .#k8s             # three guests, a kubeadm cluster (CI-sized)
+$ nix run --file . lan.run    # the same test, outside the sandbox
 $ nix run .#speedtest         # boot a guest and run speedtest-cli in it
 $ ./run.sh --command hostname # boot the demo guest and poke at it
 ```
@@ -250,11 +251,19 @@ A test can be run by hand, which is the point of a QEMU guest: it has the
 host's network through passt, so a guest can reach a registry or a binary
 cache, and nothing waits for CI.
 
+Every test carries `.run`, which is that test with the sandbox taken off
+and nothing to pass on a command line:
+
 ```console
-$ nix build --file . iperf.qemu.spec -o spec
-$ nix build --file . iperf.qemu.python -o python
-$ ./python/bin/python3 tests/iperf.py --spec ./spec
+$ nix run --file . iperf.run        # whatever `backend` said
+$ nix run --file . iperf.qemu.run   # the same test, as machines
 ```
+
+Nothing about a test belongs on a command line. The spec names the images,
+the toolchain, the addresses and the ports, and Nix built every one of
+them — so the invocation is a store path too, and a run by hand is the
+same run the check makes. Arguments after `--` reach the script, which is
+where a test's own flags go.
 
 **A run leaves nothing behind, including when it is killed.** The guest's
 disk is unlinked before QEMU starts and handed over as file descriptors,
@@ -280,9 +289,7 @@ configuration and no new mount: the host's store below, read-only, and
 sandbox, and writing into the guest's own layer. `store` is the test:
 
 ```console
-$ nix build --file . store.qemu.spec -o spec
-$ nix build --file . store.qemu.python -o python
-$ ./python/bin/python3 tests/store.py --spec ./spec
+$ nix run --file . store.run        # and store.qemu.run
 ```
 
 **Only outside the build sandbox, and it cannot be otherwise.** A sandbox

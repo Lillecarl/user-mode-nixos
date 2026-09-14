@@ -65,6 +65,12 @@ rec {
         nix build --file . iperf        # whatever `backend` said
         nix build --file . iperf.qemu   # the same test, as machines
 
+    And `.run` on each of those is the same test outside the sandbox,
+    with nothing to pass on the command line:
+
+        nix run --file . iperf.run
+        nix run --file . iperf.qemu.run
+
     The one named by `backend` keeps the bare derivation name, and is the
     same derivation as the attribute of that name -- `lan` and `lan.uml`
     are one store path, not two.
@@ -163,6 +169,25 @@ rec {
       );
 
       python = pkgs.python3.withPackages (_: [ first.system.build.umlRunnerPackage ]);
+
+      /*
+        The same run, outside the sandbox: `nix run --file . iperf.run`.
+
+        Nothing about a test belongs on a command line. The spec names the
+        images, the toolchain, the addresses and the ports, and Nix is what
+        built every one of them -- so the invocation is a store path too,
+        and running one by hand is the same run the check makes with the
+        sandbox taken off.
+
+        `$@` reaches the script, which is where a test's own flags go.
+      */
+      run = pkgs.writeShellApplication {
+        name = "run-uml-test-${name}${suffix}";
+        runtimeInputs = [ python ];
+        text = ''
+          exec python3 ${script} --spec ${spec} "$@"
+        '';
+      };
     in
     pkgs.runCommand "uml-test-${name}${suffix}"
       {
@@ -171,11 +196,7 @@ rec {
         # only hands /dev/kvm to a derivation that asks for it. UML asks
         # for nothing, which is the whole point of UML.
         requiredSystemFeatures = lib.optional (chosen == "qemu") "kvm";
-        # For running a test by hand outside the sandbox:
-        #   nix build -f . iperf.spec -o spec
-        #   nix build -f . iperf.python -o python
-        #   ./python/bin/python3 tests/iperf.py --spec ./spec
-        passthru = { inherit spec python; };
+        passthru = { inherit spec python run; };
       }
       ''
         export HOME="$TMPDIR"
