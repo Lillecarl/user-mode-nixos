@@ -230,12 +230,33 @@ async def wait_for_images(vms):
     )
 
 
+# Where kubeadm's own narration lands, so that a deadline does not throw it
+# away.
+#
+# `execute` returns the output when the command returns, and a command that
+# is killed at `timeout` returns nothing at all -- which is how a GHA run of
+# this test failed with "timed out after 300 seconds" and not one word about
+# which phase kubeadm was in.  A file on the node survives the kill.
+INIT_LOG = "/tmp/kubeadm-init.log"
+
+
 async def init_control_plane(cp, nix_images=True):
     print("[k8s] cp: kubeadm init ...", flush=True)
-    rc, out = await cp.execute(
-        "kubeadm init --config /etc/kubernetes/kubeadm-config.yaml --v=2",
-        timeout=INIT_TIMEOUT,
+    # Redirected and then printed, rather than piped through `tee`: a pipe
+    # would report tee's exit status, and /bin/sh here has no `pipefail`.
+    command = (
+        "kubeadm init --config /etc/kubernetes/kubeadm-config.yaml --v=2"
+        f" > {INIT_LOG} 2>&1; rc=$?; cat {INIT_LOG}; exit $rc"
     )
+    try:
+        rc, out = await cp.execute(command, timeout=INIT_TIMEOUT)
+    except Exception as err:
+        raise MachineError(
+            f"[cp] kubeadm init did not finish in {INIT_TIMEOUT}s: {err}\n"
+            + await cp.succeed(f"tail -n 60 {INIT_LOG} 2>&1 || true")
+            + "\n"
+            + await diagnose(cp)
+        ) from err
     if rc != 0:
         raise MachineError(
             f"[cp] kubeadm init failed (exit {rc}):\n{out}\n" + await diagnose(cp)
@@ -344,10 +365,22 @@ async def join(cp, workers):
 
     async def one(worker):
         print(f"[k8s] {worker.name}: kubeadm join ...", flush=True)
-        rc, out = await worker.execute(
-            f"uml-k8s-join {endpoint} {token} {digest}",
-            timeout=JOIN_TIMEOUT,
-        )
+        # Kept on the node for the same reason as `INIT_LOG`.
+        log = "/tmp/kubeadm-join.log"
+        try:
+            rc, out = await worker.execute(
+                f"uml-k8s-join {endpoint} {token} {digest}"
+                f" > {log} 2>&1; rc=$?; cat {log}; exit $rc",
+                timeout=JOIN_TIMEOUT,
+            )
+        except Exception as err:
+            raise MachineError(
+                f"[{worker.name}] kubeadm join did not finish in"
+                f" {JOIN_TIMEOUT}s: {err}\n"
+                + await worker.succeed(f"tail -n 60 {log} 2>&1 || true")
+                + "\n"
+                + await diagnose(worker)
+            ) from err
         if rc != 0:
             raise MachineError(
                 f"[{worker.name}] kubeadm join failed (exit {rc}):\n{out}\n"
