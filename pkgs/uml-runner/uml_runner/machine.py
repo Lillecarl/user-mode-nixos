@@ -434,14 +434,20 @@ class Machine:
         return "\n".join(f"    | {line}" for line in tail) or "    | (silent)"
 
     async def execute(
-        self, command: str, timeout: float | None = None
+        self, command: str, timeout: float | None = None, label: str | None = None
     ) -> tuple[int, str]:
-        """Run a shell command in the guest; returns (exit code, output)."""
+        """Run a shell command in the guest; returns (exit code, output).
+
+        *label* is what the timing report calls this step.  A command
+        carrying shell plumbing -- a redirect kept so that a deadline has
+        something to read -- is unreadable as a report line and says
+        nothing the program name does not.
+        """
         timeout = timeout or self.command_timeout
         # The guest kills the command at `timeout`; give the round trip
         # longer, so its error is what we report, not ours.
         return await self._ask(
-            command, self._agent.run(command, timeout=timeout), timeout + 10
+            label or command, self._agent.run(command, timeout=timeout), timeout + 10
         )
 
     async def succeed(self, command: str, timeout: float | None = None) -> str:

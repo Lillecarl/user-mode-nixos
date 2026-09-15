@@ -249,7 +249,7 @@ async def init_control_plane(cp, nix_images=True):
         f" > {INIT_LOG} 2>&1; rc=$?; cat {INIT_LOG}; exit $rc"
     )
     try:
-        rc, out = await cp.execute(command, timeout=INIT_TIMEOUT)
+        rc, out = await cp.execute(command, timeout=INIT_TIMEOUT, label="kubeadm init")
     except Exception as err:
         raise MachineError(
             f"[cp] kubeadm init did not finish in {INIT_TIMEOUT}s: {err}\n"
@@ -372,6 +372,7 @@ async def join(cp, workers):
                 f"uml-k8s-join {endpoint} {token} {digest}"
                 f" > {log} 2>&1; rc=$?; cat {log}; exit $rc",
                 timeout=JOIN_TIMEOUT,
+                label="kubeadm join",
             )
         except Exception as err:
             raise MachineError(
