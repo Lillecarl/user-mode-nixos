@@ -36,6 +36,19 @@ from . import forward
 class BackendError(Exception):
     """A guest could not be assembled: a helper that would not start."""
 
+
+def _tail(path: Path, lines: int = 20) -> str:
+    """The end of *path*, for a helper that has already exited.
+
+    The end and not the start: passt names the port it could not bind
+    once per port and says why it gave up on the last line.
+    """
+    try:
+        text = path.read_text(errors="replace")
+    except OSError as error:
+        return f"({path} unreadable: {error})"
+    return "\n".join(text.splitlines()[-lines:]) or f"({path} is empty)"
+
 _VECTOR_DEPTH = 64
 """Frames per ``sendmmsg``/``recvmmsg``, and NAPI's poll weight, for UML.
 
@@ -164,7 +177,7 @@ class Qemu:
         disk_fds = self._scratch_disk(tools, rundir, spec.image)
         opened.extend(disk_fds)
 
-        passt_fd, passt_proc = self._passt(tools, machine.forward)
+        passt_fd, passt_proc = self._passt(tools, rundir, machine.forward)
         helpers.append(passt_proc)
         opened.append(passt_fd)
 
@@ -335,28 +348,51 @@ class Qemu:
         return client.detach(), proc
 
     @staticmethod
-    def _passt(tools, rules) -> tuple[int, subprocess.Popen]:
+    def _passt(tools, rundir: Path, rules) -> tuple[int, subprocess.Popen]:
         """Start passt on one end of a socketpair; return QEMU's end.
 
         No bridge: passt frames with a 4-byte big-endian length prefix,
         which is QEMU's own socket protocol, so the two talk directly.
         The specifiers are the ones forward.py builds for UML, unchanged.
+
+        **passt keeps a log and is checked for a pulse**, because it used
+        to have neither.  It ran `--quiet` with both streams on
+        /dev/null and nothing looked at its exit status, so a passt that
+        refused to start -- which it does outright when a port it was
+        asked for will not bind -- left a guest with no uplink and no
+        word said.  What that looks like from inside is a guest whose
+        vec0 has a link-local address and nothing else, two minutes
+        later, reported as a name that would not resolve.  Measured on a
+        GitHub runner; see the `[cp] addresses and routes` of
+        user-mode-nixos run 34943651620.
         """
         qemu_end, passt_end = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+        log = rundir / "passt.log"
+        handle = log.open("wb")
         proc = subprocess.Popen(
             [
                 str(tools.passt),
                 "--foreground",
-                "--quiet",
                 "--fd", str(passt_end.fileno()),
                 *forward.uplink_args(),
                 *forward.to_args(rules),
             ],
             pass_fds=(passt_end.fileno(),),
-            stdout=subprocess.DEVNULL,
+            stdout=handle,
             stderr=subprocess.STDOUT,
         )
         passt_end.close()
+        handle.close()
+
+        # The same readiness check as virtiofsd above, and for the same
+        # reason: passt fails at startup or not at all.
+        time.sleep(0.05)
+        if proc.poll() is not None:
+            qemu_end.close()
+            raise BackendError(
+                f"passt exited ({proc.returncode}) instead of serving the "
+                f"uplink:\n{_tail(log)}"
+            )
         # Kept open until the guest has spawned; Machine closes it after.
         return qemu_end.detach(), proc
 
