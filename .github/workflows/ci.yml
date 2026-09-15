@@ -272,7 +272,7 @@ jobs:
           ls -l /dev/kvm
         timeout-minutes: 5
       - name: 'Run k8s-pull: a node that pulls its images, on a virtual machine'
-        run: nix run --print-build-logs --file . k8s-pull.run
+        run: nix run --print-build-logs ".#k8s-pull.run"
         timeout-minutes: 20
     timeout-minutes: 30
   test-lan:

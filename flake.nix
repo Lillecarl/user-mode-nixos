@@ -31,6 +31,10 @@
           iperf
           containerd
           k8s
+          # Not a check and not buildable: it needs a network and
+          # /dev/kvm, so it is here to be `nix run`, which is what
+          # `test-k8s-pull` does.
+          k8s-pull
           check-k8s-images
           check-k8s-config
           check-workflows
