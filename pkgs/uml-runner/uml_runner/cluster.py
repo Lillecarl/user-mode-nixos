@@ -474,6 +474,35 @@ async def wait_for_pods(cp, selector, namespace="kube-system"):
     await until(f"pods {selector}", check, READY_TIMEOUT, cp)
 
 
+async def wait_for_dns(vm, host="registry.k8s.io", timeout=120):
+    """A node that pulls its images has to resolve a name first.
+
+    kubeadm asks containerd for an image within seconds of the guest
+    reaching multi-user, and the guest's resolver is configured from DHCP
+    by systemd-resolved at about the same moment.  Lose that race and the
+    first thing that happens is `failed to pull and unpack image
+    "registry.k8s.io/etcd:3.6.8-0": ... lookup registry.k8s.io: no such
+    host`, which reads as a broken registry rather than as a resolver
+    that was not ready.  Measured on a GitHub runner, five seconds after
+    boot; this host is slower to start the test and never lost it.
+
+    The evidence is the guest's own nameserver list, because the other
+    thing this failure means is that passt advertised a resolver the
+    guest cannot reach -- and those two look identical from outside.
+    """
+
+    async def check():
+        rc, out = await vm.execute(f"getent hosts {host}")
+        if rc == 0:
+            return True, out.strip()
+        servers = await vm.succeed(
+            "grep '^nameserver' /etc/resolv.conf | tr '\\n' ' ' || true"
+        )
+        return False, f"not yet, and resolv.conf says {servers.strip() or '(nothing)'}"
+
+    await until(f"{vm.name} to resolve {host}", check, timeout, vm)
+
+
 async def untaint(cp):
     """Let workloads run on the control plane.
 
@@ -521,6 +550,8 @@ async def bring_up(
     this waits for that import and gives kube-proxy the store.  Under
     `"pull"` there is no import to wait for -- waiting would hang until
     the deadline on a unit nobody created -- and nothing needs patching.
+    It waits for a name to resolve instead, which is the thing a pulling
+    node cannot start without.  See `wait_for_dns`.
 
     *schedulable* removes the control plane's taint.  The default decides by
     size: a single-node cluster has nowhere else to put a pod, and one with
@@ -542,6 +573,9 @@ async def bring_up(
         await vm.wait_for_unit("containerd.service", timeout=UNIT_TIMEOUT)
     if nix_images:
         await wait_for_images(vms)
+    else:
+        for vm in vms.values():
+            await wait_for_dns(vm)
 
     await init_control_plane(cp, nix_images=nix_images)
     await join(cp, workers)
@@ -578,6 +612,7 @@ __all__ = [
     "provision_storage",
     "untaint",
     "until",
+    "wait_for_dns",
     "wait_for_images",
     "wait_for_pods",
     "wait_for_ready_nodes",
