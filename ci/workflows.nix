@@ -100,6 +100,42 @@ let
   testJobs = lib.mapAttrs' (name: spec: lib.nameValuePair "test-${name}" (testJob name spec)) tests;
 
   /*
+    The one test that boots a virtual machine and reaches a registry.
+
+    Everything above runs in the Nix sandbox, which has no network and no
+    /dev/kvm -- so nothing here exercised a QEMU guest or a node that
+    pulls its own images, and a bug in either was invisible to this
+    repository.
+
+    That is not hypothetical. passt advertised the host's systemd-resolved
+    stub as the guests' resolver, which means the guest's own resolver and
+    answers nothing; every guest quietly fell back to public DNS instead.
+    On a developer machine that works, so the tests passed here for
+    months. It was found in nixkube's CI, on a runner that does not allow
+    public DNS, in a job that is three repositories away from the code.
+
+    `nix run`, not `nix build`: the point is that it is outside the
+    sandbox.
+  */
+  pullJob = job {
+    id = "test-k8s-pull";
+    needs = [ "kernel" ];
+    timeoutMinutes = 30;
+    cond = selectable "test-k8s-pull";
+    steps = [
+      steps.checkout
+      steps.installNix
+      steps.cachix
+      steps.openKvm
+      {
+        name = "Run k8s-pull: a node that pulls its images, on a virtual machine";
+        timeout-minutes = 20;
+        run = "nix run --print-build-logs --file . k8s-pull.run";
+      }
+    ];
+  };
+
+  /*
     The checks that need no guest.
 
     First, and on their own: each is a small derivation, so a stale
@@ -143,6 +179,7 @@ in
     jobs = {
       checks = checksJob;
       kernel = kernelJob;
+      test-k8s-pull = pullJob;
     }
     // testJobs;
   };

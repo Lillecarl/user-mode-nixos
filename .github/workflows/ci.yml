@@ -238,6 +238,43 @@ jobs:
         run: nix build --no-link --print-build-logs --keep-going ".#k8s"
         timeout-minutes: 110
     timeout-minutes: 120
+  test-k8s-pull:
+    if: '!cancelled() && (needs.kernel.result == ''success'' || needs.kernel.result == ''skipped'') && (github.event_name != ''workflow_dispatch'' || inputs.jobs == '''' || contains(format('',{0},'', inputs.jobs), '',test-k8s-pull,''))'
+    needs:
+      - kernel
+    runs-on: ubuntu-24.04
+    steps:
+      - timeout-minutes: 5
+        uses: actions/checkout@main
+      - timeout-minutes: 10
+        uses: cachix/install-nix-action@master
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            # A runner has four cores and the guests are processes: letting
+            # Nix run several builds at once only makes each one slower and
+            # the timings meaningless.
+            max-jobs = 1
+            cores = 4
+      - timeout-minutes: 10
+        uses: cachix/cachix-action@master
+        with:
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          name: lillecarl
+          pushFilter: (-uml-test-)
+          useDaemon: false
+      - name: Let the runner user open /dev/kvm
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+        timeout-minutes: 5
+      - name: 'Run k8s-pull: a node that pulls its images, on a virtual machine'
+        run: nix run --print-build-logs --file . k8s-pull.run
+        timeout-minutes: 20
+    timeout-minutes: 30
   test-lan:
     if: '!cancelled() && (needs.kernel.result == ''success'' || needs.kernel.result == ''skipped'') && (github.event_name != ''workflow_dispatch'' || inputs.jobs == '''' || contains(format('',{0},'', inputs.jobs), '',test-lan,''))'
     needs:

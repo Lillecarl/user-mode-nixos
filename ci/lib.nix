@@ -79,6 +79,26 @@ rec {
       '';
     };
 
+    # /dev/kvm is there on an x64 runner and the runner user is not in the
+    # `kvm` group, so a job that boots a QEMU guest needs this or QEMU
+    # exits with "Could not access KVM kernel module: Permission denied".
+    #
+    # x64 only. GitHub's ARM runners have no /dev/kvm at all, and the QEMU
+    # backend asks for `accel=kvm` and never `accel=kvm:tcg` -- a silent
+    # fall back to emulation would turn a one-minute test into a timeout
+    # nobody could explain.
+    openKvm = {
+      name = "Let the runner user open /dev/kvm";
+      timeout-minutes = 5;
+      run = ''
+        echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+          | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+        sudo udevadm control --reload-rules
+        sudo udevadm trigger --name-match=kvm
+        ls -l /dev/kvm
+      '';
+    };
+
     # A runner starts with about 25 GiB free, and a guest's closure plus
     # the container images for a cluster do not fit beside the toolchains
     # the image ships that no job here uses.
