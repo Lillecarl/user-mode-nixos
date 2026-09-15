@@ -70,11 +70,25 @@ rec {
       };
     };
 
-    # The Nix sandbox is where the guests run, and it needs a user
-    # namespace.  Ubuntu's AppArmor policy denies unprivileged ones by
-    # default, which shows up much later as a build that cannot start.
-    sandboxNamespaces = {
-      name = "Allow the unprivileged namespaces the Nix sandbox needs";
+    /*
+      Two things here need an unprivileged user namespace, and Ubuntu's
+      AppArmor policy denies one by default.
+
+      The Nix sandbox is the obvious one: without this a sandboxed build
+      cannot start.
+
+      passt is the other, and it cost a week. passt isolates itself with
+      `unshare(CLONE_NEWUSER)` before it serves anything -- measured with
+      strace, not assumed -- so on a runner it exits at startup. The guest
+      then boots with a link-local address on vec0, no lease, no route and
+      no resolver, and reports it several minutes later as `lookup
+      registry.k8s.io: no such host`. That reads as a DNS bug, and two
+      rounds of CI went into the resolver before the namespace was found.
+
+      So every job that boots a guest needs this, sandboxed or not.
+    */
+    userNamespaces = {
+      name = "Allow the unprivileged user namespaces Nix and passt need";
       timeout-minutes = 5;
       run = ''
         sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0

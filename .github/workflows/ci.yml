@@ -80,7 +80,7 @@ jobs:
           name: lillecarl
           pushFilter: (-uml-test-)
           useDaemon: false
-      - name: Allow the unprivileged namespaces the Nix sandbox needs
+      - name: Allow the unprivileged user namespaces Nix and passt need
         run: |
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           sudo sysctl -w kernel.unprivileged_userns_clone=1
@@ -115,7 +115,7 @@ jobs:
           name: lillecarl
           pushFilter: (-uml-test-)
           useDaemon: false
-      - name: Allow the unprivileged namespaces the Nix sandbox needs
+      - name: Allow the unprivileged user namespaces Nix and passt need
         run: |
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           sudo sysctl -w kernel.unprivileged_userns_clone=1
@@ -150,7 +150,7 @@ jobs:
           name: lillecarl
           pushFilter: (-uml-test-)
           useDaemon: false
-      - name: Allow the unprivileged namespaces the Nix sandbox needs
+      - name: Allow the unprivileged user namespaces Nix and passt need
         run: |
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           sudo sysctl -w kernel.unprivileged_userns_clone=1
@@ -185,7 +185,7 @@ jobs:
           name: lillecarl
           pushFilter: (-uml-test-)
           useDaemon: false
-      - name: Allow the unprivileged namespaces the Nix sandbox needs
+      - name: Allow the unprivileged user namespaces Nix and passt need
         run: |
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           sudo sysctl -w kernel.unprivileged_userns_clone=1
@@ -228,7 +228,7 @@ jobs:
           name: lillecarl
           pushFilter: (-uml-test-)
           useDaemon: false
-      - name: Allow the unprivileged namespaces the Nix sandbox needs
+      - name: Allow the unprivileged user namespaces Nix and passt need
         run: |
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           sudo sysctl -w kernel.unprivileged_userns_clone=1
@@ -263,6 +263,12 @@ jobs:
           name: lillecarl
           pushFilter: (-uml-test-)
           useDaemon: false
+      - name: Allow the unprivileged user namespaces Nix and passt need
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          sudo sysctl -w kernel.unprivileged_userns_clone=1
+          unshare --user --map-root-user --mount --pid --fork --mount-proc true
+        timeout-minutes: 5
       - name: Let the runner user open /dev/kvm
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
@@ -300,7 +306,7 @@ jobs:
           name: lillecarl
           pushFilter: (-uml-test-)
           useDaemon: false
-      - name: Allow the unprivileged namespaces the Nix sandbox needs
+      - name: Allow the unprivileged user namespaces Nix and passt need
         run: |
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           sudo sysctl -w kernel.unprivileged_userns_clone=1

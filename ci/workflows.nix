@@ -88,7 +88,7 @@ let
         ++ [
           steps.installNix
           steps.cachix
-          steps.sandboxNamespaces
+          steps.userNamespaces
           (steps.build {
             name = "Run ${name}: ${description}";
             attrs = [ name ];
@@ -107,18 +107,16 @@ let
     pulls its own images, and a bug in either was invisible to this
     repository.
 
-    That is not hypothetical. passt advertised the host's systemd-resolved
-    stub as the guests' resolver, which means the guest's own resolver and
-    answers nothing; every guest quietly fell back to public DNS instead.
-    On a developer machine that works, so the tests passed here for
-    months. It was found in nixkube's CI, on a runner that does not allow
-    public DNS, in a job that is three repositories away from the code.
+    That is not hypothetical. passt needs an unprivileged user namespace
+    and Ubuntu denies one, so on a runner it exited at startup and every
+    guest booted with no uplink at all. On a developer machine it starts,
+    so the tests passed here for months, and the failure was found in
+    nixkube's CI three repositories away -- reported as a name that would
+    not resolve, which is what sent two rounds of work at the resolver.
+    `steps.userNamespaces` is the fix and the reason this job exists.
 
     `nix run`, not `nix build`: the point is that it is outside the
     sandbox.
-
-    `--file .` like every other job, which needs a NIX_PATH -- see
-    `steps.installNix`.
   */
   pullJob = job {
     id = "test-k8s-pull";
@@ -129,6 +127,7 @@ let
       steps.checkout
       steps.installNix
       steps.cachix
+      steps.userNamespaces
       steps.openKvm
       {
         name = "Run k8s-pull: a node that pulls its images, on a virtual machine";
