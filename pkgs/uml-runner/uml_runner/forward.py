@@ -375,29 +375,70 @@ UPLINK_PREFIX = 24
 UPLINK_GATEWAY = "10.0.2.2"
 
 
+# Where passt answers DNS for the guest.  Free in the uplink /24, and the
+# address QEMU's own user-mode networking has used for this for years.
+UPLINK_DNS = "10.0.2.3"
+
+# Nameserver files, most specific first.  On a systemd-resolved host
+# `/etc/resolv.conf` is the 127.0.0.53 stub and says nothing about who
+# actually answers; the file under /run is the real upstream list.
+_RESOLV_FILES = ("/run/systemd/resolve/resolv.conf", "/etc/resolv.conf")
+
+
+def host_resolver() -> str | None:
+    """The first nameserver the host uses that is not its own stub.
+
+    A loopback address is no use as a `--dns-host`: it names a resolver
+    reached through the host's own stub, and what passt needs is
+    something it can send a query to and get an answer from.
+    """
+    for path in _RESOLV_FILES:
+        try:
+            text = Path(path).read_text()
+        except OSError:
+            continue
+        for line in text.splitlines():
+            fields = line.split()
+            if len(fields) < 2 or fields[0] != "nameserver":
+                continue
+            address = fields[1]
+            if address.startswith("127.") or address == "::1":
+                continue
+            return address
+    return None
+
+
 def uplink_args() -> list[str]:
-    """passt arguments giving the guest an address of its own.
+    """passt arguments giving the guest an address of its own, and DNS.
 
     Both backends pass these -- QEMU straight to passt, UML through
     `uml-passt-bridge`'s `--passt` -- so that a guest's uplink looks the
     same whichever machine it turned out to be.
 
-    **No `--dns-forward`.** Making passt answer DNS on an address of its
-    own is the tidy-looking choice and it does not work here: passt then
-    forwards to whatever the host's `/etc/resolv.conf` names, and on a
-    systemd-resolved host that is the `127.0.0.53` stub -- a loopback
-    address that means passt itself. Queries are answered, with nothing in
-    them. Measured from a pod: `nslookup cache.nixos.org` came back "No
-    answer" while plain HTTP to 1.1.1.1 worked, so it read as broken
-    networking rather than as broken DNS.
+    **The guest is told to ask passt, and passt asks the host's upstream.**
+    Left alone, passt advertises what the host's `/etc/resolv.conf` names,
+    which on a systemd-resolved host is the `127.0.0.53` stub -- an
+    address that means the guest's own resolver, not the host's. The
+    guest's systemd-resolved then falls back to its built-in public
+    servers, and whether the run works comes down to whether the machine
+    is allowed to reach 1.1.1.1.
 
-    Left to itself passt picks a resolver that can actually be reached and
-    advertises that. It is one of the host's addresses, which is a far
-    smaller thing to tell a guest than the host's own identity -- every
-    NAT tells a guest where to send DNS.
+    A developer machine is. A GitHub runner is not, and every guest CI job
+    failed there with `lookup registry.k8s.io: no such host` while the
+    same code passed on a laptop -- the guest's own resolv.conf naming
+    127.0.0.53 and nothing behind it.
+
+    `--dns-host` is named explicitly for the same reason: passt's default
+    is the first nameserver in `/etc/resolv.conf`, and that is the stub
+    again. `host_resolver` reads the upstream list instead.
     """
-    return [
+    args = [
         "--address", UPLINK_ADDRESS,
         "--netmask", str(UPLINK_PREFIX),
         "--gateway", UPLINK_GATEWAY,
+        "--dns-forward", UPLINK_DNS,
     ]
+    upstream = host_resolver()
+    if upstream:
+        args += ["--dns-host", upstream]
+    return args
