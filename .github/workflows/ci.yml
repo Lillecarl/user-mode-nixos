@@ -1,5 +1,7 @@
 # Generated from ci/workflows.nix -- do not edit.
 # Run `nix run .#render-workflows` after changing the workflow.
+env:
+  UMBRELLA_GIT: "1"
 jobs:
   checks:
     if: (github.event_name != 'workflow_dispatch' || inputs.jobs == '' || contains(format(',{0},', inputs.jobs), ',checks,'))
