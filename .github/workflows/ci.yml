@@ -11,6 +11,7 @@ jobs:
         uses: cachix/install-nix-action@master
         with:
           extra_nix_config: |
+            access-tokens = github.com=${{ github.token }}
             cores = 4
             experimental-features = nix-command flakes
             max-jobs = 1
@@ -35,6 +36,7 @@ jobs:
         uses: cachix/install-nix-action@master
         with:
           extra_nix_config: |
+            access-tokens = github.com=${{ github.token }}
             cores = 4
             experimental-features = nix-command flakes
             max-jobs = 1
@@ -61,6 +63,7 @@ jobs:
         uses: cachix/install-nix-action@master
         with:
           extra_nix_config: |
+            access-tokens = github.com=${{ github.token }}
             cores = 4
             experimental-features = nix-command flakes
             max-jobs = 1
@@ -93,6 +96,7 @@ jobs:
         uses: cachix/install-nix-action@master
         with:
           extra_nix_config: |
+            access-tokens = github.com=${{ github.token }}
             cores = 4
             experimental-features = nix-command flakes
             max-jobs = 1
@@ -125,6 +129,7 @@ jobs:
         uses: cachix/install-nix-action@master
         with:
           extra_nix_config: |
+            access-tokens = github.com=${{ github.token }}
             cores = 4
             experimental-features = nix-command flakes
             max-jobs = 1
@@ -157,6 +162,7 @@ jobs:
         uses: cachix/install-nix-action@master
         with:
           extra_nix_config: |
+            access-tokens = github.com=${{ github.token }}
             cores = 4
             experimental-features = nix-command flakes
             max-jobs = 1
@@ -198,6 +204,7 @@ jobs:
         uses: cachix/install-nix-action@master
         with:
           extra_nix_config: |
+            access-tokens = github.com=${{ github.token }}
             cores = 4
             experimental-features = nix-command flakes
             max-jobs = 1
@@ -230,6 +237,7 @@ jobs:
         uses: cachix/install-nix-action@master
         with:
           extra_nix_config: |
+            access-tokens = github.com=${{ github.token }}
             cores = 4
             experimental-features = nix-command flakes
             max-jobs = 1
@@ -270,6 +278,7 @@ jobs:
         uses: cachix/install-nix-action@master
         with:
           extra_nix_config: |
+            access-tokens = github.com=${{ github.token }}
             cores = 4
             experimental-features = nix-command flakes
             max-jobs = 1
