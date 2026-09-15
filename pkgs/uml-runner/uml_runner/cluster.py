@@ -487,9 +487,15 @@ async def wait_for_dns(vm, host="registry.k8s.io", timeout=120):
     that was not ready.  Measured on a GitHub runner, five seconds after
     boot; this host is slower to start the test and never lost it.
 
-    The evidence is the guest's own nameserver list, because the other
-    thing this failure means is that passt advertised a resolver the
-    guest cannot reach -- and those two look identical from outside.
+    The evidence is `resolvectl dns`, because the other thing this
+    failure means is that the guest was never given a resolver at all,
+    and the two look identical from outside.
+
+    Not `/etc/resolv.conf`: on a systemd-resolved guest that file is the
+    127.0.0.53 stub whatever happens, so it says nothing.  It was the
+    first thing this printed, and it sent the reader of the failing CI
+    job looking at the guest's resolver when the missing piece was on the
+    host -- see `forward.host_resolver`.
     """
 
     async def check():
@@ -497,9 +503,9 @@ async def wait_for_dns(vm, host="registry.k8s.io", timeout=120):
         if rc == 0:
             return True, out.strip()
         servers = await vm.succeed(
-            "grep '^nameserver' /etc/resolv.conf | tr '\\n' ' ' || true"
+            "resolvectl dns 2>/dev/null | tr '\\n' ' ' || true"
         )
-        return False, f"not yet, and resolv.conf says {servers.strip() or '(nothing)'}"
+        return False, f"not yet, and resolvectl says {servers.strip() or '(nothing)'}"
 
     await until(f"{vm.name} to resolve {host}", check, timeout, vm)
 

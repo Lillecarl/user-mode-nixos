@@ -29,6 +29,7 @@ wide range rather than simply added alongside it.
 
 from __future__ import annotations
 
+import os
 import socket
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -384,14 +385,40 @@ UPLINK_DNS = "10.0.2.3"
 # actually answers; the file under /run is the real upstream list.
 _RESOLV_FILES = ("/run/systemd/resolve/resolv.conf", "/etc/resolv.conf")
 
+# Last resort, when the host will not say who resolves for it.  A public
+# resolver is a guess about the network the host is on, which is why it is
+# last and why `UML_DNS_HOST` exists to replace it.
+FALLBACK_DNS = "1.1.1.1"
 
-def host_resolver() -> str | None:
-    """The first nameserver the host uses that is not its own stub.
+# Name a resolver for the guests outright.  For a network where neither
+# the host's files nor 1.1.1.1 is the right answer.
+ENV_DNS = "UML_DNS_HOST"
 
-    A loopback address is no use as a `--dns-host`: it names a resolver
-    reached through the host's own stub, and what passt needs is
-    something it can send a query to and get an answer from.
+
+def host_resolver() -> str:
+    """Where passt should send the guests' DNS queries.
+
+    In order: `$UML_DNS_HOST`, the host's real upstream servers, the
+    host's own stub, and a public resolver.
+
+    **A loopback address is a usable answer here**, which is the thing to
+    know about this function.  passt runs on the host, so `127.0.0.53` --
+    the address systemd-resolved listens on, and on many machines the
+    only nameserver `/etc/resolv.conf` names -- is a resolver passt can
+    reach and the guest cannot.  Measured on a QEMU guest with
+    `UML_DNS_HOST=127.0.0.53`: `registry.k8s.io` resolves on the first
+    try.  Skipping loopback left passt with no `--dns-host` at all on a
+    GitHub runner, which is how both guest CI jobs failed to resolve
+    anything.
+
+    The real upstreams still come first when the host lists them: one
+    fewer process in the path, and a stub that is restarting takes the
+    guests' DNS down with it.
     """
+    override = os.environ.get(ENV_DNS)
+    if override:
+        return override
+    loopback = None
     for path in _RESOLV_FILES:
         try:
             text = Path(path).read_text()
@@ -403,9 +430,10 @@ def host_resolver() -> str | None:
                 continue
             address = fields[1]
             if address.startswith("127.") or address == "::1":
+                loopback = loopback or address
                 continue
             return address
-    return None
+    return loopback or FALLBACK_DNS
 
 
 def uplink_args() -> list[str]:
@@ -428,17 +456,15 @@ def uplink_args() -> list[str]:
     same code passed on a laptop -- the guest's own resolv.conf naming
     127.0.0.53 and nothing behind it.
 
-    `--dns-host` is named explicitly for the same reason: passt's default
-    is the first nameserver in `/etc/resolv.conf`, and that is the stub
-    again. `host_resolver` reads the upstream list instead.
+    `--dns-host` is named explicitly rather than left to passt's default,
+    which is the first nameserver in `/etc/resolv.conf`. That is usually
+    right and is never checked; `host_resolver` says where it looked and
+    has somewhere to go when the host says nothing at all.
     """
-    args = [
+    return [
         "--address", UPLINK_ADDRESS,
         "--netmask", str(UPLINK_PREFIX),
         "--gateway", UPLINK_GATEWAY,
         "--dns-forward", UPLINK_DNS,
+        "--dns-host", host_resolver(),
     ]
-    upstream = host_resolver()
-    if upstream:
-        args += ["--dns-host", upstream]
-    return args
