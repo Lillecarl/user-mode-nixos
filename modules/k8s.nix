@@ -416,6 +416,72 @@ let
       exec kubeadm join --config "$config" --v=2
     '';
   };
+
+  storageRoot = "/var/lib/uml-storage";
+
+  /*
+    A default StorageClass, and the volumes behind it.  See
+    `services.uml-k8s.persistentVolumes`.
+
+    One document, as a `v1 List`, because `yaml.generate` writes a single
+    mapping and `kubectl apply` reads a List as the resources in it.
+
+    The capacity is a label and not a limit: nothing enforces a hostPath
+    volume's size, so this only has to be larger than any claim.  The node's
+    own disk is the real bound -- `boot.uml.diskSize`.
+
+    `WaitForFirstConsumer` with `nodeAffinity`, the way a `local` volume is
+    written.  The directory is on one node, so the scheduler has to place the
+    pod before the claim can bind, or a multi-node cluster binds a claim to a
+    directory on a machine the pod is not on.
+
+    `Retain`, because there is no deleter to call: nothing reclaims a
+    released volume here, and a test that wants a clean one starts a new
+    guest.
+  */
+  storageManifest = yaml.generate "uml-storage.yaml" {
+    apiVersion = "v1";
+    kind = "List";
+    items = [
+      {
+        apiVersion = "storage.k8s.io/v1";
+        kind = "StorageClass";
+        metadata = {
+          name = "standard";
+          annotations."storageclass.kubernetes.io/is-default-class" = "true";
+        };
+        provisioner = "kubernetes.io/no-provisioner";
+        volumeBindingMode = "WaitForFirstConsumer";
+        reclaimPolicy = "Retain";
+      }
+    ]
+    ++ map (index: {
+      apiVersion = "v1";
+      kind = "PersistentVolume";
+      metadata.name = "${config.networking.hostName}-${toString index}";
+      spec = {
+        capacity.storage = "100Gi";
+        accessModes = [ "ReadWriteOnce" ];
+        persistentVolumeReclaimPolicy = "Retain";
+        storageClassName = "standard";
+        hostPath = {
+          path = "${storageRoot}/${toString index}";
+          type = "DirectoryOrCreate";
+        };
+        nodeAffinity.required.nodeSelectorTerms = [
+          {
+            matchExpressions = [
+              {
+                key = "kubernetes.io/hostname";
+                operator = "In";
+                values = [ config.networking.hostName ];
+              }
+            ];
+          }
+        ];
+      };
+    }) (lib.range 1 cfg.persistentVolumes);
+  };
 in
 {
   options.services.uml-k8s = {
@@ -544,6 +610,31 @@ in
         store has to be named separately, or a guest whose /nix/store is the
         build sandbox's will not have it -- see `system.extraDependencies`
         below, which is how the images this module builds do it.
+      '';
+    };
+
+    persistentVolumes = lib.mkOption {
+      type = lib.types.ints.unsigned;
+      default = 0;
+      example = 1;
+      description = ''
+        How many PersistentVolumes this node offers, and whether the
+        cluster gets a default StorageClass at all.
+
+        Above zero, the node writes a StorageClass named `standard` and
+        that many hostPath volumes to `/etc/kubernetes/uml-storage.yaml`,
+        and `bring_up` applies every node's copy once the cluster is up.
+        A chart that leaves `storageClassName` unset then binds, which is
+        what a chart written for a cloud or for kind expects.
+
+        Static volumes and no provisioner, on purpose. kind's `standard`
+        is rancher's local-path-provisioner, which is an image on
+        docker.io and a controller to keep working; these are a few lines
+        of YAML, they need no network, and a pod cannot tell the
+        difference -- both end up a directory on the node.
+
+        The count is the pool. A claim past the last free volume stays
+        Pending, because nothing here creates more.
       '';
     };
 
@@ -785,7 +876,13 @@ in
       "vm.overcommit_memory" = 1;
     };
 
-    environment.etc = {
+    environment.etc = lib.optionalAttrs (cfg.persistentVolumes > 0) {
+      # Where `provision_storage` looks.  A node with no volumes writes no
+      # file and the runner applies nothing, so storage is one knob and not
+      # two -- unlike `skipAddons`, which a test has to repeat in `addons`.
+      "kubernetes/uml-storage.yaml".source = storageManifest;
+    }
+    // {
       # What every pod gets as its /etc/resolv.conf, and what CoreDNS
       # forwards to.  A sandboxed guest can reach no resolver at all, but
       # CoreDNS refuses to start against a file that names none -- so

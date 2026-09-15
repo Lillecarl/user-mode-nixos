@@ -68,6 +68,10 @@ let
         services.uml-k8s = {
           enable = true;
           inherit role;
+          # One each, so the claim tests/k8s.py makes has somewhere to
+          # land whichever worker the scheduler picks.  The control plane
+          # is tainted and gets one anyway: a taint is not a guarantee.
+          persistentVolumes = 1;
         };
         boot.uml = {
           memory = if role == "control-plane" then "2560M" else "1280M";

@@ -76,6 +76,10 @@ CONTROL_PLANE_TAINT = "node-role.kubernetes.io/control-plane"
 # resolves anything unless a test asks it to. Skipping it saves two pods on a
 # one-CPU guest and a great deal of log noise, because a sandboxed CoreDNS
 # spends its life timing out against an upstream resolver it cannot reach.
+# What a node writes when it declares PersistentVolumes -- see
+# `services.uml-k8s.persistentVolumes` and `provision_storage`.
+STORAGE_MANIFEST = "/etc/kubernetes/uml-storage.yaml"
+
 KUBE_PROXY = "--selector k8s-app=kube-proxy"
 KUBE_DNS = "--selector k8s-app=kube-dns"
 
@@ -449,6 +453,28 @@ async def untaint(cp):
     print("[k8s] control plane will schedule workloads", flush=True)
 
 
+async def provision_storage(cp, vms):
+    """Apply the PersistentVolumes every node declares, if any does.
+
+    A node writes ``STORAGE_MANIFEST`` when
+    ``services.uml-k8s.persistentVolumes`` is above zero, and nothing when
+    it is not -- so this asks the guests rather than taking an argument,
+    and a test that wants storage says so in one place.
+
+    Each node's file names volumes pinned to that node, so the file is
+    read where it was written and piped to the one machine that has a
+    kubeconfig.  Applying the same StorageClass once per node is
+    deliberate and costs nothing: `kubectl apply` is idempotent.
+    """
+    for name, vm in vms.items():
+        rc, _ = await vm.execute(f"test -e {STORAGE_MANIFEST}")
+        if rc != 0:
+            continue
+        manifest = await vm.succeed(f"cat {STORAGE_MANIFEST}")
+        await cp.succeed(f"kubectl apply --filename - <<'EOF'\n{manifest}\nEOF")
+        print(f"[k8s] {name} offers storage", flush=True)
+
+
 async def bring_up(
     vms, cp_name="cp", schedulable=None, addons=DEFAULT_ADDONS, nix_images=True
 ):
@@ -489,6 +515,7 @@ async def bring_up(
     await wire_pod_network(cp, vms)
 
     await wait_for_ready_nodes(cp, len(vms))
+    await provision_storage(cp, vms)
     for selector in addons:
         await wait_for_pods(cp, selector)
 
@@ -507,6 +534,7 @@ __all__ = [
     "JOIN_TIMEOUT",
     "POLL",
     "READY_TIMEOUT",
+    "STORAGE_MANIFEST",
     "UNIT_TIMEOUT",
     "bring_up",
     "diagnose",
@@ -514,6 +542,7 @@ __all__ = [
     "init_control_plane",
     "join",
     "kubectl",
+    "provision_storage",
     "untaint",
     "until",
     "wait_for_images",
