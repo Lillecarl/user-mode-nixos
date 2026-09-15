@@ -20,6 +20,7 @@ use nix::{
     sys::{
         signal::{self, kill, Signal},
         socket::{self, AddressFamily, SockType, SockFlag},
+        wait::{waitpid, WaitPidFlag, WaitStatus},
     },
     unistd::{self, ForkResult},
 };
@@ -191,6 +192,25 @@ fn main() {
             }
             eprintln!("poll error: {}", e);
             break;
+        }
+
+        // Ask whether passt is still there, because nothing else will
+        // say.  The parent holds passt's end of the socketpair open --
+        // see above -- so passt can exit without ever giving this loop
+        // an EOF to notice, and the guest then runs on with an uplink
+        // that answers nothing.  passt does exit outright: a port it was
+        // told to bind and cannot, or a user namespace it cannot
+        // unshare, and it is gone before the guest has finished booting.
+        match waitpid(passt_pid, Some(WaitPidFlag::WNOHANG)) {
+            Ok(WaitStatus::Exited(_, code)) => {
+                eprintln!("passt exited ({}); the guest has no uplink", code);
+                break;
+            }
+            Ok(WaitStatus::Signaled(_, sig, _)) => {
+                eprintln!("passt killed by {}; the guest has no uplink", sig);
+                break;
+            }
+            _ => {}
         }
 
         // UML -> passt: read raw frame, prepend 4-byte BE length, forward.
