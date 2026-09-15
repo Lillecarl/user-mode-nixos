@@ -128,6 +128,10 @@ def run_test(test: Callable[[Machines], Awaitable[None]]) -> None:
 
 
 def _record(passed: bool, error: str | None = None) -> None:
+    # Printed whether or not a file is written: `nix run` names no file,
+    # and a CI job that boots a guest should still say where its minutes
+    # went. See report.py.
+    print(report.RUN.summary(), flush=True)
     where = report.RUN.write_if_asked(passed, error)
     if where:
         print(f"[test] timings in {where}", flush=True)

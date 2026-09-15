@@ -131,6 +131,30 @@ class Report:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(body, indent=2) + "\n")
 
+    def summary(self, slowest: int = 5) -> str:
+        """The same numbers as the JSON, short enough for a CI log.
+
+        The file is only written when `$UML_TEST_REPORT` names one, which
+        a sandboxed build always does and `nix run` never does -- so
+        without this a CI job that boots a guest leaves no trace of where
+        its twenty minutes went.
+
+        `recorded` is the honest part of it: the share of the run that any
+        step covers at all.  A low figure means the time went somewhere
+        nothing here is watching, and the answer is another `waiting`,
+        not a bigger deadline.
+        """
+        total = time.monotonic() - self.started
+        accounted = _toplevel(self.steps)
+        share = round(100 * accounted / total) if total else 0
+        boot = max((m["boot_seconds"] for m in self.machines.values()), default=0.0)
+        lines = [
+            f"[time] total {total:.1f}s, recorded {share}%, boot {boot:.1f}s"
+        ]
+        for s in sorted(self.steps, key=lambda s: -s.seconds)[:slowest]:
+            lines.append(f"[time]   {s.seconds:7.1f}s {s.kind:5} {s.what} ({s.machine})")
+        return "\n".join(lines)
+
     def write_if_asked(self, passed: bool, error: str | None = None) -> Path | None:
         where = os.environ.get(ENV)
         if not where:
