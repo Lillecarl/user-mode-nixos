@@ -25,7 +25,7 @@ jobs:
           pushFilter: (-uml-test-)
           useDaemon: false
       - name: Check the generated files, the images and the kubeadm config
-        run: nix build --no-link --print-build-logs --keep-going ".#check-workflows" ".#check-k8s-images" ".#check-k8s-config"
+        run: nix build --no-link --print-build-logs --keep-going --file . check-workflows check-k8s-images check-k8s-config
         timeout-minutes: 20
     timeout-minutes: 30
   kernel:
@@ -52,7 +52,7 @@ jobs:
           pushFilter: (-uml-test-)
           useDaemon: false
       - name: Build the UML kernel
-        run: nix build --no-link --print-build-logs --keep-going ".#umlKernel"
+        run: nix build --no-link --print-build-logs --keep-going --file . umlKernel
         timeout-minutes: 45
     timeout-minutes: 60
   test-containerd:
@@ -87,7 +87,7 @@ jobs:
           unshare --user --map-root-user --mount --pid --fork --mount-proc true
         timeout-minutes: 5
       - name: 'Run containerd: a container runs, out of the host''s store'
-        run: nix build --no-link --print-build-logs --keep-going ".#containerd"
+        run: nix build --no-link --print-build-logs --keep-going --file . containerd
         timeout-minutes: 35
     timeout-minutes: 45
   test-forward:
@@ -122,7 +122,7 @@ jobs:
           unshare --user --map-root-user --mount --pid --fork --mount-proc true
         timeout-minutes: 5
       - name: 'Run forward: the host reaches a service inside a guest'
-        run: nix build --no-link --print-build-logs --keep-going ".#forward"
+        run: nix build --no-link --print-build-logs --keep-going --file . forward
         timeout-minutes: 35
     timeout-minutes: 45
   test-fuse:
@@ -157,7 +157,7 @@ jobs:
           unshare --user --map-root-user --mount --pid --fork --mount-proc true
         timeout-minutes: 5
       - name: 'Run fuse: a userspace filesystem, as root and as a user'
-        run: nix build --no-link --print-build-logs --keep-going ".#fuse"
+        run: nix build --no-link --print-build-logs --keep-going --file . fuse
         timeout-minutes: 5
     timeout-minutes: 15
   test-iperf:
@@ -192,7 +192,7 @@ jobs:
           unshare --user --map-root-user --mount --pid --fork --mount-proc true
         timeout-minutes: 5
       - name: 'Run iperf: what a segment between two guests carries'
-        run: nix build --no-link --print-build-logs --keep-going ".#iperf"
+        run: nix build --no-link --print-build-logs --keep-going --file . iperf
         timeout-minutes: 35
     timeout-minutes: 45
   test-k8s:
@@ -235,7 +235,7 @@ jobs:
           unshare --user --map-root-user --mount --pid --fork --mount-proc true
         timeout-minutes: 5
       - name: 'Run k8s: a three-node kubeadm cluster'
-        run: nix build --no-link --print-build-logs --keep-going ".#k8s"
+        run: nix build --no-link --print-build-logs --keep-going --file . k8s
         timeout-minutes: 110
     timeout-minutes: 120
   test-k8s-pull:
@@ -272,7 +272,7 @@ jobs:
           ls -l /dev/kvm
         timeout-minutes: 5
       - name: 'Run k8s-pull: a node that pulls its images, on a virtual machine'
-        run: nix run --print-build-logs ".#k8s-pull.run"
+        run: nix run --print-build-logs --file . k8s-pull.run
         timeout-minutes: 20
     timeout-minutes: 30
   test-lan:
@@ -307,7 +307,7 @@ jobs:
           unshare --user --map-root-user --mount --pid --fork --mount-proc true
         timeout-minutes: 5
       - name: 'Run lan: two guests on a segment see each other'
-        run: nix build --no-link --print-build-logs --keep-going ".#lan"
+        run: nix build --no-link --print-build-logs --keep-going --file . lan
         timeout-minutes: 35
     timeout-minutes: 45
 name: CI

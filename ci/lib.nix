@@ -25,6 +25,10 @@ rec {
     installNix = {
       uses = "cachix/install-nix-action@master";
       timeout-minutes = 10;
+      # No `nix_path`. `default.nix` asks the umbrella for nixpkgs -- see
+      # ../nix/sources.nix -- so a runner needs nothing in NIX_PATH and
+      # every job here builds against the revision nixidae pins, which is
+      # what makes the cache able to serve them.
       "with".extra_nix_config = ''
         experimental-features = nix-command flakes
         # A runner has four cores and the guests are processes: letting
@@ -125,8 +129,10 @@ rec {
       {
         inherit name;
         timeout-minutes = timeoutMinutes;
-        run = "nix build --no-link --print-build-logs --keep-going ${
-          lib.concatMapStringsSep " " (attr: ''".#${attr}"'') attrs
+        # `--file .`, which is how this repository is built everywhere
+        # else. flake.nix is a second door and CI does not use it.
+        run = "nix build --no-link --print-build-logs --keep-going --file . ${
+          lib.concatStringsSep " " attrs
         }";
       };
   };

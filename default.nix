@@ -10,13 +10,20 @@
 # configuration and a kernel built from the host's own package set; nothing
 # here needs anything else. So this takes a package set and nothing else, and
 # a caller that has one -- a flake, another repository, an umbrella that holds
-# this one as a checkout -- passes it in. `<nixpkgs>` is only the default for
-# somebody with neither.
+# this one as a checkout -- passes it in.
+#
+# A caller with none gets the umbrella's, the way every other project in the
+# umbrella does: `nix/sources.nix` asks nixidae, inside or outside. It used to
+# be `<nixpkgs>`, which meant `nix build --file .` built against whatever the
+# machine's NIX_PATH happened to hold -- nothing on a CI runner, and something
+# other than the umbrella's pin on a developer's. Store paths then agreed with
+# nobody, so no cache could serve them.
 #
 # `mkNode` and `mkTest` come out of `lib.nix` and are re-exported here, so a
 # caller with its own guests and its own script needs nothing else.
 {
-  pkgs ? import <nixpkgs> { },
+  sources ? import ./nix/sources.nix,
+  pkgs ? import sources.nixpkgs { },
 }:
 let
   inherit (pkgs) lib;

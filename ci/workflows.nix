@@ -115,10 +115,10 @@ let
     public DNS, in a job that is three repositories away from the code.
 
     `nix run`, not `nix build`: the point is that it is outside the
-    sandbox.  Through the flake and not `--file .`, like every other job
-    here: `default.nix` falls back to `import <nixpkgs>`, and a runner has
-    no NIX_PATH -- measured as `error: file 'nixpkgs' was not found in the
-    Nix search path`, which is a job that fails before it boots anything.
+    sandbox.
+
+    `--file .` like every other job, which needs a NIX_PATH -- see
+    `steps.installNix`.
   */
   pullJob = job {
     id = "test-k8s-pull";
@@ -133,7 +133,7 @@ let
       {
         name = "Run k8s-pull: a node that pulls its images, on a virtual machine";
         timeout-minutes = 20;
-        run = ''nix run --print-build-logs ".#k8s-pull.run"'';
+        run = "nix run --print-build-logs --file . k8s-pull.run";
       }
     ];
   };

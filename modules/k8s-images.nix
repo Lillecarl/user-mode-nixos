@@ -40,9 +40,12 @@ let
     boot, three minutes into a test.  `check` runs the real kubeadm and
     fails the build if any of this has drifted.
   */
+  # These follow the kubeadm in the nixpkgs `default.nix` is given, which
+  # is the umbrella's pin -- Kubernetes 1.36.3 today.  `flake.nix` brings
+  # a newer nixpkgs of its own and `check-k8s-images` will say so there.
   tags = {
-    coredns = "v1.14.6";
-    etcd = "3.7.0-0";
+    coredns = "v1.14.2";
+    etcd = "3.6.8-0";
     pause = "3.10.2";
   };
 
