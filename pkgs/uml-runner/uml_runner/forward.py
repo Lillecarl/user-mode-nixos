@@ -429,7 +429,13 @@ def host_resolver() -> str:
             if len(fields) < 2 or fields[0] != "nameserver":
                 continue
             address = fields[1]
-            if address.startswith("127.") or address == "::1":
+            # IPv4 only, because `--dns-forward` above is an IPv4 address
+            # and passt keeps the two families apart: a v6 `--dns-host`
+            # leaves the guest with no IPv4 resolver at all, and a guest
+            # whose `resolvectl dns` is empty is what that looks like.
+            if ":" in address:
+                continue
+            if address.startswith("127."):
                 loopback = loopback or address
                 continue
             return address
@@ -461,10 +467,15 @@ def uplink_args() -> list[str]:
     right and is never checked; `host_resolver` says where it looked and
     has somewhere to go when the host says nothing at all.
     """
+    upstream = host_resolver()
+    # Said out loud, because passt's own banner is not in a QEMU run's
+    # output and a guest that cannot resolve gives no clue which of the
+    # two addresses is the wrong one.
+    print(f"[uplink] DNS on {UPLINK_DNS}, forwarded to {upstream}", flush=True)
     return [
         "--address", UPLINK_ADDRESS,
         "--netmask", str(UPLINK_PREFIX),
         "--gateway", UPLINK_GATEWAY,
         "--dns-forward", UPLINK_DNS,
-        "--dns-host", host_resolver(),
+        "--dns-host", upstream,
     ]
