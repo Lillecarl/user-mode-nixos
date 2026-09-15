@@ -380,66 +380,21 @@ UPLINK_GATEWAY = "10.0.2.2"
 # address QEMU's own user-mode networking has used for this for years.
 UPLINK_DNS = "10.0.2.3"
 
-# Nameserver files, most specific first.  On a systemd-resolved host
-# `/etc/resolv.conf` is the 127.0.0.53 stub and says nothing about who
-# actually answers; the file under /run is the real upstream list.
-_RESOLV_FILES = ("/run/systemd/resolve/resolv.conf", "/etc/resolv.conf")
+# Where passt sends a query it is asked to forward.  A constant, and not
+# the host's own resolver: reading the host's nameserver files gave a
+# different answer on a laptop and on a GitHub runner, and the runner's
+# answer was the 127.0.0.53 stub, which no guest can reach.  Two rounds of
+# CI went on deriving this address before the derivation itself was the
+# thing to remove.
+#
+# The guests do not depend on it.  modules/guest.nix names its own
+# resolvers and drops the ones DHCP offers, so this covers only something
+# that asks passt directly.
+UPLINK_UPSTREAM_DNS = "1.1.1.1"
 
-# Last resort, when the host will not say who resolves for it.  A public
-# resolver is a guess about the network the host is on, which is why it is
-# last and why `UML_DNS_HOST` exists to replace it.
-FALLBACK_DNS = "1.1.1.1"
-
-# Name a resolver for the guests outright.  For a network where neither
-# the host's files nor 1.1.1.1 is the right answer.
+# For a network that does not reach 1.1.1.1.  The one knob, and the only
+# thing here that looks at the host at all.
 ENV_DNS = "UML_DNS_HOST"
-
-
-def host_resolver() -> str:
-    """Where passt should send the guests' DNS queries.
-
-    In order: `$UML_DNS_HOST`, the host's real upstream servers, the
-    host's own stub, and a public resolver.
-
-    **A loopback address is a usable answer here**, which is the thing to
-    know about this function.  passt runs on the host, so `127.0.0.53` --
-    the address systemd-resolved listens on, and on many machines the
-    only nameserver `/etc/resolv.conf` names -- is a resolver passt can
-    reach and the guest cannot.  Measured on a QEMU guest with
-    `UML_DNS_HOST=127.0.0.53`: `registry.k8s.io` resolves on the first
-    try.  Skipping loopback left passt with no `--dns-host` at all on a
-    GitHub runner, which is how both guest CI jobs failed to resolve
-    anything.
-
-    The real upstreams still come first when the host lists them: one
-    fewer process in the path, and a stub that is restarting takes the
-    guests' DNS down with it.
-    """
-    override = os.environ.get(ENV_DNS)
-    if override:
-        return override
-    loopback = None
-    for path in _RESOLV_FILES:
-        try:
-            text = Path(path).read_text()
-        except OSError:
-            continue
-        for line in text.splitlines():
-            fields = line.split()
-            if len(fields) < 2 or fields[0] != "nameserver":
-                continue
-            address = fields[1]
-            # IPv4 only, because `--dns-forward` above is an IPv4 address
-            # and passt keeps the two families apart: a v6 `--dns-host`
-            # leaves the guest with no IPv4 resolver at all, and a guest
-            # whose `resolvectl dns` is empty is what that looks like.
-            if ":" in address:
-                continue
-            if address.startswith("127."):
-                loopback = loopback or address
-                continue
-            return address
-    return loopback or FALLBACK_DNS
 
 
 def uplink_args() -> list[str]:
@@ -449,25 +404,14 @@ def uplink_args() -> list[str]:
     `uml-passt-bridge`'s `--passt` -- so that a guest's uplink looks the
     same whichever machine it turned out to be.
 
-    **The guest is told to ask passt, and passt asks the host's upstream.**
-    Left alone, passt advertises what the host's `/etc/resolv.conf` names,
-    which on a systemd-resolved host is the `127.0.0.53` stub -- an
-    address that means the guest's own resolver, not the host's. The
-    guest's systemd-resolved then falls back to its built-in public
-    servers, and whether the run works comes down to whether the machine
-    is allowed to reach 1.1.1.1.
-
-    A developer machine is. A GitHub runner is not, and every guest CI job
-    failed there with `lookup registry.k8s.io: no such host` while the
-    same code passed on a laptop -- the guest's own resolv.conf naming
-    127.0.0.53 and nothing behind it.
-
-    `--dns-host` is named explicitly rather than left to passt's default,
-    which is the first nameserver in `/etc/resolv.conf`. That is usually
-    right and is never checked; `host_resolver` says where it looked and
-    has somewhere to go when the host says nothing at all.
+    `--dns-host` is named rather than left to passt's default, which is
+    the first nameserver in the host's `/etc/resolv.conf`.  On a
+    systemd-resolved host that is `127.0.0.53`, and passt then advertises
+    it to the guest, where it means the guest's own resolver.  That is how
+    every guest CI job came to fail on a runner with `lookup
+    registry.k8s.io: no such host`.
     """
-    upstream = host_resolver()
+    upstream = os.environ.get(ENV_DNS) or UPLINK_UPSTREAM_DNS
     # Said out loud, because passt's own banner is not in a QEMU run's
     # output and a guest that cannot resolve gives no clue which of the
     # two addresses is the wrong one.

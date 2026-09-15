@@ -487,25 +487,27 @@ async def wait_for_dns(vm, host="registry.k8s.io", timeout=120):
     that was not ready.  Measured on a GitHub runner, five seconds after
     boot; this host is slower to start the test and never lost it.
 
-    The evidence is `resolvectl dns`, because the other thing this
-    failure means is that the guest was never given a resolver at all,
-    and the two look identical from outside.
+    **The evidence is vec0's address, not the resolver.**  The resolver
+    is a constant now -- see `networking.nameservers` in
+    modules/guest.nix -- so it is the same on a guest that resolves and
+    on one that does not, and says nothing.  What differs is whether
+    passt's DHCP ever answered: a guest with only a link-local address
+    on vec0 has no route to any resolver, however good the address.
+    That was the whole of it on a GitHub runner, under a report that
+    named the resolver -- run 34943651620.
 
-    Not `/etc/resolv.conf`: on a systemd-resolved guest that file is the
-    127.0.0.53 stub whatever happens, so it says nothing.  It was the
-    first thing this printed, and it sent the reader of the failing CI
-    job looking at the guest's resolver when the missing piece was on the
-    host -- see `forward.host_resolver`.
+    Not `/etc/resolv.conf` either: on a systemd-resolved guest that file
+    is the 127.0.0.53 stub whatever happens.
     """
 
     async def check():
         rc, out = await vm.execute(f"getent hosts {host}")
         if rc == 0:
             return True, out.strip()
-        servers = await vm.succeed(
-            "resolvectl dns 2>/dev/null | tr '\\n' ' ' || true"
+        uplink = await vm.succeed(
+            "ip -4 -brief addr show vec0 2>/dev/null | tr -s ' ' || true"
         )
-        return False, f"not yet, and resolvectl says {servers.strip() or '(nothing)'}"
+        return False, f"not yet, and vec0 has {uplink.strip() or '(no IPv4 address)'}"
 
     await until(f"{vm.name} to resolve {host}", check, timeout, vm)
 

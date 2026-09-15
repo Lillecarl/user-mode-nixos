@@ -95,6 +95,27 @@ in
     # The guest is only reachable through passt's forwards, and a test
     # wants to see what a service does, not what a firewall did to it.
     firewall.enable = lib.mkDefault false;
+    /*
+      A resolver named here, and not whatever the uplink advertises.
+
+      passt tells the guest to use the host's first nameserver, which on a
+      systemd-resolved host is the 127.0.0.53 stub -- an address that inside
+      the guest means the guest.  So the guest resolves nothing, and says so
+      as `lookup registry.k8s.io: no such host` several minutes into a test.
+      Every guest CI job failed that way on a GitHub runner while the same
+      code passed on a laptop, because a laptop's resolved has public
+      fallbacks and a runner's reaches none of them.
+
+      Deriving the right address from the host was two rounds of CI and still
+      wrong.  A constant has no host in it to get wrong.  Two of them, so one
+      resolver refusing the runner's traffic is not the end of the run.
+
+      `mkDefault`, so a test on a network that resolves neither can say so.
+    */
+    nameservers = lib.mkDefault [
+      "1.1.1.1"
+      "8.8.8.8"
+    ];
     interfaces.vec0.useDHCP = true;
     interfaces.vec1 = lib.mkIf (cfg.lan.network != null) (
       {
@@ -105,6 +126,19 @@ in
       }
     );
   };
+  # Take the address and the route from DHCP, not the resolver.  passt
+  # advertises one, resolved adds it to the link, and a link server is
+  # queried beside the global ones above -- so whichever answers first
+  # decides, which is the non-determinism `nameservers` is here to remove.
+  # All three, because passt advertises a resolver over DHCPv4, over
+  # DHCPv6 and in a router advertisement, and one of them left open puts
+  # the address back on the link.
+  systemd.network.networks."40-vec0" = {
+    dhcpV4Config.UseDNS = false;
+    dhcpV6Config.UseDNS = false;
+    ipv6AcceptRAConfig.UseDNS = false;
+  };
+
   # vec0 gets its address from passt within a second; blocking boot on a
   # 90s timeout only ever makes tests slower.
   systemd.network.wait-online.enable = false;
