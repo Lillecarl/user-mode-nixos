@@ -376,6 +376,12 @@ on one worker reaching a Service backed by a pod on the other. That last
 step is the point — it only passes if the CNI bridge, the routes between
 the nodes, kube-proxy's iptables rules and cluster DNS all work.
 
+Then storage. `services.uml-k8s.persistentVolumes` gives a node that many
+hostPath volumes and the cluster a default StorageClass named `standard`,
+which is what a chart that names no class needs. The test writes from one
+pod and reads from the next, because a volume that kept nothing would pass
+a single-pod test.
+
 Two things make it possible at all:
 
 **The images have nothing in them.** Every guest already sees the host's
