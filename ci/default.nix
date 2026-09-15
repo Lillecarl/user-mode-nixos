@@ -7,13 +7,21 @@
 # `check` is what keeps the two honest.
 {
   lib,
+  sources,
   runCommand,
   writeShellApplication,
   yq-go,
   diffutils,
 }:
 let
-  workflows = import ./workflows.nix { inherit lib; };
+  # ghanix is the schema: it takes `lib` and nothing else, so it costs this
+  # repository no dependency it did not already have. Before it, ci/lib.nix
+  # carried its own copy of the checkout, the Nix install, cachix, the
+  # user-namespace sysctls and the /dev/kvm rule -- the same five steps
+  # nixkube and nanopynix each had a copy of.
+  ghalib = import sources.ghanix { inherit lib; };
+
+  workflows = import ./workflows.nix { inherit lib ghalib; };
 
   header = name: ''
     # Generated from ci/workflows.nix -- do not edit.

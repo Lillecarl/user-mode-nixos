@@ -5,19 +5,16 @@ jobs:
     if: (github.event_name != 'workflow_dispatch' || inputs.jobs == '' || contains(format(',{0},', inputs.jobs), ',checks,'))
     runs-on: ubuntu-24.04
     steps:
-      - timeout-minutes: 5
-        uses: actions/checkout@main
       - timeout-minutes: 10
+        uses: actions/checkout@main
+      - timeout-minutes: 15
         uses: cachix/install-nix-action@master
         with:
           extra_nix_config: |
-            experimental-features = nix-command flakes
-            # A runner has four cores and the guests are processes: letting
-            # Nix run several builds at once only makes each one slower and
-            # the timings meaningless.
-            max-jobs = 1
             cores = 4
-      - timeout-minutes: 10
+            experimental-features = nix-command flakes
+            max-jobs = 1
+      - timeout-minutes: 15
         uses: cachix/cachix-action@master
         with:
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -32,19 +29,16 @@ jobs:
     if: (github.event_name != 'workflow_dispatch' || inputs.jobs == '' || contains(format(',{0},', inputs.jobs), ',kernel,'))
     runs-on: ubuntu-24.04
     steps:
-      - timeout-minutes: 5
-        uses: actions/checkout@main
       - timeout-minutes: 10
+        uses: actions/checkout@main
+      - timeout-minutes: 15
         uses: cachix/install-nix-action@master
         with:
           extra_nix_config: |
-            experimental-features = nix-command flakes
-            # A runner has four cores and the guests are processes: letting
-            # Nix run several builds at once only makes each one slower and
-            # the timings meaningless.
-            max-jobs = 1
             cores = 4
-      - timeout-minutes: 10
+            experimental-features = nix-command flakes
+            max-jobs = 1
+      - timeout-minutes: 15
         uses: cachix/cachix-action@master
         with:
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -61,19 +55,16 @@ jobs:
       - kernel
     runs-on: ubuntu-24.04
     steps:
-      - timeout-minutes: 5
-        uses: actions/checkout@main
       - timeout-minutes: 10
+        uses: actions/checkout@main
+      - timeout-minutes: 15
         uses: cachix/install-nix-action@master
         with:
           extra_nix_config: |
-            experimental-features = nix-command flakes
-            # A runner has four cores and the guests are processes: letting
-            # Nix run several builds at once only makes each one slower and
-            # the timings meaningless.
-            max-jobs = 1
             cores = 4
-      - timeout-minutes: 10
+            experimental-features = nix-command flakes
+            max-jobs = 1
+      - timeout-minutes: 15
         uses: cachix/cachix-action@master
         with:
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -96,19 +87,16 @@ jobs:
       - kernel
     runs-on: ubuntu-24.04
     steps:
-      - timeout-minutes: 5
-        uses: actions/checkout@main
       - timeout-minutes: 10
+        uses: actions/checkout@main
+      - timeout-minutes: 15
         uses: cachix/install-nix-action@master
         with:
           extra_nix_config: |
-            experimental-features = nix-command flakes
-            # A runner has four cores and the guests are processes: letting
-            # Nix run several builds at once only makes each one slower and
-            # the timings meaningless.
-            max-jobs = 1
             cores = 4
-      - timeout-minutes: 10
+            experimental-features = nix-command flakes
+            max-jobs = 1
+      - timeout-minutes: 15
         uses: cachix/cachix-action@master
         with:
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -131,19 +119,16 @@ jobs:
       - kernel
     runs-on: ubuntu-24.04
     steps:
-      - timeout-minutes: 5
-        uses: actions/checkout@main
       - timeout-minutes: 10
+        uses: actions/checkout@main
+      - timeout-minutes: 15
         uses: cachix/install-nix-action@master
         with:
           extra_nix_config: |
-            experimental-features = nix-command flakes
-            # A runner has four cores and the guests are processes: letting
-            # Nix run several builds at once only makes each one slower and
-            # the timings meaningless.
-            max-jobs = 1
             cores = 4
-      - timeout-minutes: 10
+            experimental-features = nix-command flakes
+            max-jobs = 1
+      - timeout-minutes: 15
         uses: cachix/cachix-action@master
         with:
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -166,19 +151,16 @@ jobs:
       - kernel
     runs-on: ubuntu-24.04
     steps:
-      - timeout-minutes: 5
-        uses: actions/checkout@main
       - timeout-minutes: 10
+        uses: actions/checkout@main
+      - timeout-minutes: 15
         uses: cachix/install-nix-action@master
         with:
           extra_nix_config: |
-            experimental-features = nix-command flakes
-            # A runner has four cores and the guests are processes: letting
-            # Nix run several builds at once only makes each one slower and
-            # the timings meaningless.
-            max-jobs = 1
             cores = 4
-      - timeout-minutes: 10
+            experimental-features = nix-command flakes
+            max-jobs = 1
+      - timeout-minutes: 15
         uses: cachix/cachix-action@master
         with:
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -202,26 +184,24 @@ jobs:
       - test-containerd
     runs-on: ubuntu-24.04
     steps:
-      - timeout-minutes: 5
+      - timeout-minutes: 10
         uses: actions/checkout@main
-      - name: Make room for the guests' closures
+      - name: Make room on the runner
         run: |
           df -h /
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
-                      /usr/local/share/boost /usr/lib/jvm
+          sudo rm -rf /usr/lib/jvm /usr/share/dotnet /usr/share/swift /usr/local/.ghcup /usr/local/julia* /usr/local/lib/android /opt/az /usr/local/share/powershell /opt/hostedtoolcache /usr/local/share/chromium /opt/microsoft /opt/google /usr/lib/firefox
+          docker system prune --all --force
+          docker builder prune --all --force
           df -h /
         timeout-minutes: 10
-      - timeout-minutes: 10
+      - timeout-minutes: 15
         uses: cachix/install-nix-action@master
         with:
           extra_nix_config: |
-            experimental-features = nix-command flakes
-            # A runner has four cores and the guests are processes: letting
-            # Nix run several builds at once only makes each one slower and
-            # the timings meaningless.
-            max-jobs = 1
             cores = 4
-      - timeout-minutes: 10
+            experimental-features = nix-command flakes
+            max-jobs = 1
+      - timeout-minutes: 15
         uses: cachix/cachix-action@master
         with:
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -244,19 +224,16 @@ jobs:
       - kernel
     runs-on: ubuntu-24.04
     steps:
-      - timeout-minutes: 5
-        uses: actions/checkout@main
       - timeout-minutes: 10
+        uses: actions/checkout@main
+      - timeout-minutes: 15
         uses: cachix/install-nix-action@master
         with:
           extra_nix_config: |
-            experimental-features = nix-command flakes
-            # A runner has four cores and the guests are processes: letting
-            # Nix run several builds at once only makes each one slower and
-            # the timings meaningless.
-            max-jobs = 1
             cores = 4
-      - timeout-minutes: 10
+            experimental-features = nix-command flakes
+            max-jobs = 1
+      - timeout-minutes: 15
         uses: cachix/cachix-action@master
         with:
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -287,19 +264,16 @@ jobs:
       - kernel
     runs-on: ubuntu-24.04
     steps:
-      - timeout-minutes: 5
-        uses: actions/checkout@main
       - timeout-minutes: 10
+        uses: actions/checkout@main
+      - timeout-minutes: 15
         uses: cachix/install-nix-action@master
         with:
           extra_nix_config: |
-            experimental-features = nix-command flakes
-            # A runner has four cores and the guests are processes: letting
-            # Nix run several builds at once only makes each one slower and
-            # the timings meaningless.
-            max-jobs = 1
             cores = 4
-      - timeout-minutes: 10
+            experimental-features = nix-command flakes
+            max-jobs = 1
+      - timeout-minutes: 15
         uses: cachix/cachix-action@master
         with:
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}

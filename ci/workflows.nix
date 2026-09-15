@@ -1,10 +1,27 @@
 # The workflows, as data.  `nix run .#render-workflows` turns each
 # attribute here into .github/workflows/<name>.yml, and `nix build
 # .#check-workflows` fails when the two have drifted.
-{ lib }:
+{ lib, ghalib }:
 let
   ci = import ./lib.nix { inherit lib; };
-  inherit (ci) steps job selectable;
+  inherit (ci) steps job selectable bootstrap;
+
+  # A job that boots a guest needs the user namespace, whether the guest is
+  # a UML process inside the Nix sandbox or a QEMU machine outside it: the
+  # sandbox unshares one, and so does passt. A QEMU guest needs /dev/kvm on
+  # top.
+  #
+  # `mkMerge` and not `//`, which is shallow: an addition under `nix` would
+  # otherwise replace the whole install block and take the cache with it.
+  sandboxBootstrap = lib.mkMerge [
+    bootstrap
+    { userNamespaces.enable = true; }
+  ];
+
+  guestBootstrap = lib.mkMerge [
+    sandboxBootstrap
+    { openKvm.enable = true; }
+  ];
 
   /*
     The integration tests, and what each one costs.
@@ -58,9 +75,6 @@ let
     timeoutMinutes = 60;
     cond = selectable "kernel";
     steps = [
-      steps.checkout
-      steps.installNix
-      steps.cachix
       (steps.build {
         name = "Build the UML kernel";
         attrs = [ "umlKernel" ];
@@ -82,19 +96,17 @@ let
       needs = [ "kernel" ] ++ after;
       inherit timeoutMinutes;
       cond = selectable "test-${name}";
-      steps =
-        [ steps.checkout ]
-        ++ lib.optional heavy steps.freeDiskSpace
-        ++ [
-          steps.installNix
-          steps.cachix
-          steps.userNamespaces
-          (steps.build {
-            name = "Run ${name}: ${description}";
-            attrs = [ name ];
-            timeoutMinutes = timeoutMinutes - 10;
-          })
-        ];
+      ghanix = lib.mkMerge [
+        sandboxBootstrap
+        { freeDiskSpace.enable = heavy; }
+      ];
+      steps = [
+        (steps.build {
+          name = "Run ${name}: ${description}";
+          attrs = [ name ];
+          timeoutMinutes = timeoutMinutes - 10;
+        })
+      ];
     };
 
   testJobs = lib.mapAttrs' (name: spec: lib.nameValuePair "test-${name}" (testJob name spec)) tests;
@@ -113,7 +125,7 @@ let
     so the tests passed here for months, and the failure was found in
     nixkube's CI three repositories away -- reported as a name that would
     not resolve, which is what sent two rounds of work at the resolver.
-    `steps.userNamespaces` is the fix and the reason this job exists.
+    `ghanix.userNamespaces` is the fix and the reason this job exists.
 
     `nix run`, not `nix build`: the point is that it is outside the
     sandbox.
@@ -123,12 +135,8 @@ let
     needs = [ "kernel" ];
     timeoutMinutes = 30;
     cond = selectable "test-k8s-pull";
+    ghanix = guestBootstrap;
     steps = [
-      steps.checkout
-      steps.installNix
-      steps.cachix
-      steps.userNamespaces
-      steps.openKvm
       {
         name = "Run k8s-pull: a node that pulls its images, on a virtual machine";
         timeout-minutes = 20;
@@ -150,9 +158,6 @@ let
     timeoutMinutes = 30;
     cond = selectable "checks";
     steps = [
-      steps.checkout
-      steps.installNix
-      steps.cachix
       (steps.build {
         name = "Check the generated files, the images and the kubeadm config";
         attrs = [
@@ -166,7 +171,10 @@ let
   };
 in
 {
-  ci = {
+  # Through ghanix's schema rather than straight to YAML. That is what
+  # turns each job's `ghanix` attribute into steps, drops the options a job
+  # left unset, and refuses a job with no steps at all.
+  ci = ghalib.evalWorkflow {
     name = "CI";
     on = {
       push = { };

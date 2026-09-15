@@ -16,121 +16,59 @@ rec {
   # pass `cond` and this puts it under the quoted name GitHub wants.
   withCond = cond: attrs: if cond == null then attrs else attrs // { "if" = cond; };
 
-  steps = {
-    checkout = {
-      uses = "actions/checkout@main";
-      timeout-minutes = 5;
-    };
+  /*
+    What every job here asks ghanix for before it does anything of its own.
 
-    installNix = {
-      uses = "cachix/install-nix-action@master";
-      timeout-minutes = 10;
+    These were five step definitions in this file: a checkout, the Nix
+    install, cachix, the user-namespace sysctls and the /dev/kvm udev rule.
+    nixkube had its own copies of the last two and nanopynix a third copy
+    of one, which is how the copies drifted and how the job that needed the
+    namespace most came to be without it -- nixkube issue #35.
+
+    `job.ghanix` is ghanix's own and never reaches the YAML; each option
+    enabled here puts a step at the front of that job's `steps`.
+  */
+  bootstrap = {
+    checkout.enable = true;
+    nix.install = {
+      enable = true;
       # No `nix_path`. `default.nix` asks the umbrella for nixpkgs -- see
       # ../nix/sources.nix -- so a runner needs nothing in NIX_PATH and
       # every job here builds against the revision nixidae pins, which is
       # what makes the cache able to serve them.
-      "with".extra_nix_config = ''
-        experimental-features = nix-command flakes
+      settings = {
         # A runner has four cores and the guests are processes: letting
         # Nix run several builds at once only makes each one slower and
         # the timings meaningless.
-        max-jobs = 1
-        cores = 4
-      '';
-    };
-
-    # Reading is unauthenticated, so a fork's pull request still gets the
-    # cache; only a push with the secret writes to it.
-    cachix = {
-      uses = "cachix/cachix-action@master";
-      timeout-minutes = 10;
-      "with" = {
-        name = "lillecarl";
-        authToken = "\${{ secrets.CACHIX_AUTH_TOKEN }}";
-        useDaemon = false;
-        /*
-          Cache what the tests are built out of, not whether they passed.
-
-          A `uml-test-*` output is an empty file whose existence means
-          "this booted some guests and they behaved".  Push that and the
-          next run with the same inputs substitutes it instead of booting
-          anything -- so re-running a commit, which is the one thing you
-          do when you suspect a result, is guaranteed to agree with
-          itself.
-
-          The cheap checks stay cacheable on purpose.  Asking kubeadm
-          whether it accepts a config is a pure function of that config,
-          so a cached yes is as good as a fresh one.  A test that boots
-          three guests and waits on a control plane is not pure in that
-          way however much Nix would like it to be, and those are exactly
-          the ones worth paying to repeat.  The kernel -- the only build
-          here that costs real time -- is unaffected.
-        */
-        pushFilter = "(-uml-test-)";
+        max-jobs = 1;
+        cores = 4;
       };
     };
+    nix.cachix = {
+      enable = true;
+      /*
+        Cache what the tests are built out of, not whether they passed.
 
-    /*
-      Two things here need an unprivileged user namespace, and Ubuntu's
-      AppArmor policy denies one by default.
+        A `uml-test-*` output is an empty file whose existence means
+        "this booted some guests and they behaved".  Push that and the
+        next run with the same inputs substitutes it instead of booting
+        anything -- so re-running a commit, which is the one thing you
+        do when you suspect a result, is guaranteed to agree with
+        itself.
 
-      The Nix sandbox is the obvious one: without this a sandboxed build
-      cannot start.
-
-      passt is the other, and it cost a week. passt isolates itself with
-      `unshare(CLONE_NEWUSER)` before it serves anything -- measured with
-      strace, not assumed -- so on a runner it exits at startup. The guest
-      then boots with a link-local address on vec0, no lease, no route and
-      no resolver, and reports it several minutes later as `lookup
-      registry.k8s.io: no such host`. That reads as a DNS bug, and two
-      rounds of CI went into the resolver before the namespace was found.
-
-      So every job that boots a guest needs this, sandboxed or not.
-    */
-    userNamespaces = {
-      name = "Allow the unprivileged user namespaces Nix and passt need";
-      timeout-minutes = 5;
-      run = ''
-        sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-        sudo sysctl -w kernel.unprivileged_userns_clone=1
-        unshare --user --map-root-user --mount --pid --fork --mount-proc true
-      '';
+        The cheap checks stay cacheable on purpose.  Asking kubeadm
+        whether it accepts a config is a pure function of that config,
+        so a cached yes is as good as a fresh one.  A test that boots
+        three guests and waits on a control plane is not pure in that
+        way however much Nix would like it to be, and those are exactly
+        the ones worth paying to repeat.  The kernel -- the only build
+        here that costs real time -- is unaffected.
+      */
+      pushFilter = "(-uml-test-)";
     };
+  };
 
-    # /dev/kvm is there on an x64 runner and the runner user is not in the
-    # `kvm` group, so a job that boots a QEMU guest needs this or QEMU
-    # exits with "Could not access KVM kernel module: Permission denied".
-    #
-    # x64 only. GitHub's ARM runners have no /dev/kvm at all, and the QEMU
-    # backend asks for `accel=kvm` and never `accel=kvm:tcg` -- a silent
-    # fall back to emulation would turn a one-minute test into a timeout
-    # nobody could explain.
-    openKvm = {
-      name = "Let the runner user open /dev/kvm";
-      timeout-minutes = 5;
-      run = ''
-        echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
-          | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-        sudo udevadm control --reload-rules
-        sudo udevadm trigger --name-match=kvm
-        ls -l /dev/kvm
-      '';
-    };
-
-    # A runner starts with about 25 GiB free, and a guest's closure plus
-    # the container images for a cluster do not fit beside the toolchains
-    # the image ships that no job here uses.
-    freeDiskSpace = {
-      name = "Make room for the guests' closures";
-      timeout-minutes = 10;
-      run = ''
-        df -h /
-        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
-                    /usr/local/share/boost /usr/lib/jvm
-        df -h /
-      '';
-    };
-
+  steps = {
     # `--keep-going` so that one failing attribute does not hide whether
     # the others build; `--print-build-logs` because the test output *is*
     # the build log.
@@ -180,6 +118,7 @@ rec {
     {
       id,
       steps,
+      ghanix ? bootstrap,
       needs ? [ ],
       timeoutMinutes,
       cond ? null,
@@ -190,7 +129,7 @@ rec {
     withCond (if parts == [ ] then null else lib.concatStringsSep " && " parts) {
       runs-on = runsOn;
       timeout-minutes = timeoutMinutes;
-      inherit steps;
+      inherit steps ghanix;
     }
     // lib.optionalAttrs (needs != [ ]) { inherit needs; };
 

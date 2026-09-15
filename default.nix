@@ -106,7 +106,7 @@ let
 
   # The GitHub Actions workflows, and the check that the generated
   # YAML in .github is still what they render to.
-  ci = pkgs.callPackage ./ci { };
+  ci = pkgs.callPackage ./ci { inherit sources; };
 
   demo = mkNode {
     boot.uml.memory = "512M";
