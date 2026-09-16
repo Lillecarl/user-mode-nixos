@@ -570,8 +570,13 @@ class Machine:
                     f"{await self.journal(unit)}"
                 )
             if asyncio.get_running_loop().time() > deadline:
+                # With the journal, the way a `failed` unit reports one.
+                # A unit that never starts is the harder case of the two
+                # -- `inactive` says only that nothing happened, and what
+                # did not happen is in the log of whatever was supposed
+                # to pull it in.
                 raise MachineError(
                     f"[{self.name}] timed out waiting for unit {unit} "
-                    f"(state: {state})"
+                    f"(state: {state})\n{await self.journal(unit)}"
                 )
             await asyncio.sleep(0.5)
