@@ -29,7 +29,7 @@ let
   inherit (pkgs) lib;
 
   uml = import ./lib.nix { inherit pkgs lib; };
-  inherit (uml) mkNode mkTest;
+  inherit (uml) mkNode mkTest runner typeCheck;
 
   # Two guests on one segment, addressed statically.
   pair = network: {
@@ -310,13 +310,25 @@ let
         );
 
     check-workflows = ci.check ./.github/workflows;
+
+    # Do the scripts in tests/ type check against the library they drive?
+    # Cheap, and it is also the check that `typeCheck` itself works -- the
+    # facility a consumer's own scripts depend on.
+    check-scripts = uml.typeCheck {
+      name = "own-scripts";
+      # `.py` only: `__pycache__` sits beside them after a run outside
+      # the sandbox, and pyright has nothing to say about a `.pyc`.
+      scripts = lib.filter (p: lib.hasSuffix ".py" (toString p)) (
+        lib.filesystem.listFilesRecursive ./tests
+      );
+    };
   };
 in
 tests
 // {
   # The library, for a caller that writes its own test.
-  inherit mkNode mkTest;
-  lib = { inherit mkNode mkTest; };
+  inherit mkNode mkTest runner typeCheck;
+  lib = { inherit mkNode mkTest runner typeCheck; };
 
   inherit demo store k8s-pull;
   inherit (demo.config.system.build) umlRunner umlRootImage toplevel;

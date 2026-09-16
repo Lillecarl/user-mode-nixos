@@ -15,6 +15,85 @@
   lib ? pkgs.lib,
 }:
 rec {
+  /*
+    The library a test script imports.
+
+    A test script belongs to the project under test, not here: this
+    repository supplies `mkTest` and the Python it calls, and the script
+    that says what a cluster of guests must do lives beside the thing it
+    is testing.
+
+    So the package is reachable without evaluating a guest.  A caller puts
+    it in the Python it type checks with, and pyright reads `vms.node` as
+    a `Machine` rather than as Unknown -- the package carries `py.typed`::
+
+        python3.withPackages (_: [ uml.runner ])
+
+    `mkTest` builds its own environment from a guest's own
+    `system.build.umlRunnerPackage`, which is this same derivation.
+  */
+  runner = pkgs.callPackage ./pkgs/uml-runner { };
+
+  /*
+    pyright over a caller's test scripts, against this library.
+
+    A script is Python that nothing imports and no test runs until a
+    guest has booted, so a typo in it costs a build and twenty minutes.
+    This is the check that costs seconds::
+
+        typeCheck { scripts = [ ./tests/uml/run.py ]; }
+
+    `extraPackages` is whatever else the script imports.  The scripts are
+    copied in rather than checked in place, because pyright follows a
+    path and a store path is read-only.
+  */
+  typeCheck =
+    {
+      name ? "uml-test-scripts",
+      scripts,
+      extraPackages ? (_: [ ]),
+      strict ? false,
+    }:
+    let
+      python = pkgs.python3.withPackages (ps: [ runner ] ++ extraPackages ps);
+    in
+    pkgs.runCommand "typecheck-${name}"
+      {
+        nativeBuildInputs = [
+          pkgs.pyright
+          python
+        ];
+      }
+      ''
+        mkdir -p scripts
+        ${lib.concatMapStringsSep "\n" (
+          script: "cp ${script} scripts/${baseNameOf script}"
+        ) scripts}
+        # `reportMissingParameterType`, which neither standard nor strict
+        # turns on by itself, is what makes the rest of this worth
+        # running. A script written `async def test(vms)` has an Unknown
+        # parameter, and pyright checks nothing done to an Unknown --
+        # measured: `await vms.node.succeed(123)` and a call to a method
+        # that does not exist both passed. Annotate it `vms: Machines`.
+        cat > pyrightconfig.json <<EOF
+        {
+          "typeCheckingMode": "${if strict then "strict" else "standard"}",
+          "pythonVersion": "${lib.versions.majorMinor python.python.version}",
+          "reportMissingImports": "error",
+          "reportMissingParameterType": "error"
+        }
+        EOF
+        # Offline: pyright downloads a node runtime unless it is told
+        # which one to use, and a build sandbox has no network.
+        export HOME=$TMPDIR
+        pyright --pythonpath ${python}/bin/python --outputjson scripts > report.json || {
+          cat report.json
+          echo "the scripts above do not type check against uml_runner" >&2
+          exit 1
+        }
+        cp report.json $out
+      '';
+
   # A guest: an ordinary NixOS configuration plus ./modules.
   #
   # `eval-config.nix` and not `lib.nixosSystem`. That name only exists on the
@@ -71,6 +150,16 @@ rec {
         nix run --file . iperf.run
         nix run --file . iperf.qemu.run
 
+    `passthru` is for whatever else a caller wants to reach off its test,
+    such as `typeCheck` over the script.
+
+    **A test derivation never fails.** `.attempt` is the run, and it
+    always succeeds; the test itself reads the exit code `.attempt` wrote
+    and fails on that. So a failed run keeps its log, its timings and
+    whatever the guests wrote to `/artifacts`, and the check's build log
+    says where they are. Nix deletes the output of a build that fails,
+    which would be the one run anybody wanted to read.
+
     The one named by `backend` keeps the bare derivation name, and is the
     same derivation as the attribute of that name -- `lan` and `lan.uml`
     are one store path, not two.
@@ -95,6 +184,11 @@ rec {
       script,
       nodes,
       settings ? { },
+      # Anything the caller wants to reach off the test: a type check
+      # over its script, a second derivation that reads its artifacts.
+      # `.uml`, `.qemu`, `.attempt` and `.run` are added after this, so a
+      # name here cannot take one of theirs.
+      passthru ? { },
       chosen,
       backend,
     }:

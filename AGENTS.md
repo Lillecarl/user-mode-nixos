@@ -2,6 +2,51 @@
 
 Read README.md first — it explains how the pieces fit together.
 
+## Where a test script belongs
+
+**The goal: a test script lives in the project it tests, not here.** This
+repository is a library. It supplies `mkTest`, the guest modules, and
+`uml.runner` — the `uml_runner` Python package, which carries `py.typed`
+so the owning project's pyright checks the script. The project imports
+`lib.nix`, writes its own script, and keeps both beside the code under
+test.
+
+    let uml = import (sources.user-mode-nixos + "/lib.nix") { inherit pkgs; };
+    in uml.mkTest { name = "..."; script = ./tests/uml/mine.py; nodes = { ... }; }
+
+`tests/` here does not follow that yet, and most of it never will: those
+scripts test this repository's own facilities — the segment, the
+forwards, the store, `/artifacts` — so this is where they belong. What
+does not belong here is a script about another project. pynixd is the
+first consumer written the new way; do not add a second project's script
+to `tests/`.
+
+**A helper a second script wants belongs in `uml_runner`, not in a
+script.** Waiting on a unit, reading a journal, asking systemd what
+failed — anything of that kind is the library's job. A consumer copying
+one out of `tests/` is the signal that it should have been a method on
+`Machine`.
+
+`typeCheck` is what makes a script in another repository safe to write:
+
+```nix
+uml.typeCheck { name = "mine"; scripts = [ ./tests/uml/run.py ]; }
+```
+
+It runs pyright against `uml_runner` in a derivation, so a typo costs
+seconds rather than a boot. **Annotate the parameter** — `async def
+test(vms: Machines) -> None`. Without it `vms` is Unknown and pyright
+checks nothing done to it; measured, `await vms.node.succeed(123)` and a
+call to a method that does not exist both passed. The check turns
+`reportMissingParameterType` on for that reason and will not let an
+unannotated script through.
+
+**Not done yet: a pytest plugin.** The goal is that a project writes its
+guest tests as ordinary pytest tests — fixtures for the guests, the
+project's own runner, its own reporting — instead of a script with one
+`test` coroutine in it. `run_test` is the shape to grow out of, not the
+shape to keep.
+
 ## VCS
 
 This project uses jj (Jujutsu), not git. Do not use git commands.

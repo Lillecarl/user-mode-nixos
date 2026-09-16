@@ -28,8 +28,8 @@ jobs:
           name: lillecarl
           pushFilter: (-uml-test-)
           useDaemon: false
-      - name: Check the generated files, the images and the kubeadm config
-        run: nix build --no-link --print-build-logs --keep-going --file . check-workflows check-k8s-images check-k8s-config
+      - name: Check the generated files, the scripts, the images and the kubeadm config
+        run: nix build --no-link --print-build-logs --keep-going --file . check-workflows check-scripts check-k8s-images check-k8s-config
         timeout-minutes: 20
     timeout-minutes: 30
   kernel:
