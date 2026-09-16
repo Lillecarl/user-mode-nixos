@@ -141,6 +141,20 @@ class MachineSpec:
         return f"52:54:00:12:{nic:02x}:{self.index:02x}"
 
 
+def _killpg(pid: int, sig: int) -> None:
+    """Signal *pid*'s whole process group, and tolerate it being gone.
+
+    The group and not the process: a guest is a tree -- the UML bridge
+    starts passt and the kernel under it, QEMU starts nothing but is
+    itself one of several -- and signalling only the leader leaves the
+    rest running with nothing to report to.
+    """
+    try:
+        os.killpg(os.getpgid(pid), sig)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
 class Machine:
     """Boots a guest and drives it, in the style of a NixOS test node."""
 
@@ -245,6 +259,8 @@ class Machine:
             # Own process group, so everything the backend started under
             # it dies together when we signal it.
             start_new_session=True,
+            # And the kernel kills it if we never get to signal anything.
+            preexec_fn=backends.die_with_parent,
             pass_fds=launch.pass_fds,
         )
         for fd in self._spare_fds:
@@ -303,9 +319,13 @@ class Machine:
 
         # virtiofsd and passt, where the backend started them itself.
         # Under UML they are children of the bridge and went with it.
+        #
+        # By group and not by pid: each one leads its own session, and a
+        # helper that forked -- passt does -- leaves the child behind when
+        # only the leader is killed.
         for helper in self._helpers:
             if helper.poll() is None:
-                helper.kill()
+                _killpg(helper.pid, signal.SIGKILL)
                 helper.wait()
         self._helpers = []
 
@@ -336,10 +356,7 @@ class Machine:
     def _signal(self, sig: int) -> None:
         if self._process is None or self._process.returncode is not None:
             return
-        try:
-            os.killpg(os.getpgid(self._process.pid), sig)
-        except (ProcessLookupError, PermissionError):
-            pass
+        _killpg(self._process.pid, sig)
 
     async def wait(self, timeout: float | None = 90) -> int:
         """Wait for the UML process to exit; returns its exit code."""

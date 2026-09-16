@@ -20,6 +20,7 @@ import argparse
 import asyncio
 import json
 import os
+import signal
 import sys
 import tempfile
 from collections import defaultdict
@@ -163,6 +164,7 @@ def run_test(test: Callable[[Machines], Awaitable[None]]) -> None:
     """Boot the spec's machines, run *test* against them, and exit."""
 
     async def main() -> None:
+        _unwind_on_signal()
         async with machines(load_spec()) as vms:
             await test(vms)
 
@@ -175,11 +177,48 @@ def run_test(test: Callable[[Machines], Awaitable[None]]) -> None:
         _record(False, str(error))
         print(f"[test] FAILED: {error}", file=sys.stderr, flush=True)
         raise SystemExit(1) from None
+    except asyncio.CancelledError:
+        # A signal got here through `_unwind_on_signal`, so the guests are
+        # already down. Exit the way a shell reads an interrupt, and
+        # without a traceback that says nothing.
+        _record(False, "interrupted by a signal")
+        print("[test] interrupted; the guests are down", file=sys.stderr, flush=True)
+        raise SystemExit(130) from None
     except BaseException as error:
         _record(False, f"{type(error).__name__}: {error}")
         raise
     _record(True)
     print("[test] passed", flush=True)
+
+
+def _unwind_on_signal() -> None:
+    """Turn a terminating signal into a cancellation.
+
+    Python's default for SIGTERM and SIGHUP is to die where it stands, so
+    no ``finally`` runs and every guest is orphaned.  That is how a run
+    stopped by hand, by a CI timeout, or by a parent shell leaves a UML
+    kernel spinning on a core for days.
+
+    Cancelling the task instead unwinds :func:`machines`, whose teardown
+    kills each guest's process group.  SIGKILL still cannot be caught --
+    :func:`uml_runner.backend.die_with_parent` is what covers that.
+    """
+    loop = asyncio.get_running_loop()
+    task = asyncio.current_task()
+
+    def stop(signame: str) -> None:
+        print(f"[test] {signame}, shutting the guests down ...", flush=True)
+        if task is not None:
+            task.cancel()
+
+    for signame in ("SIGTERM", "SIGINT", "SIGHUP"):
+        sig = getattr(signal, signame)
+        try:
+            loop.add_signal_handler(sig, stop, signame)
+        except (NotImplementedError, RuntimeError):
+            # No signal handlers off the main thread; the teardown in
+            # `machines` still runs for every ordinary exit.
+            pass
 
 
 def _record(passed: bool, error: str | None = None) -> None:
