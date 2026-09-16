@@ -195,11 +195,14 @@ in
         filter and falls back to ptrace where it does not. `off` is the
         ptrace userspace, which is a decade older and much better tested.
 
-        `off` is the lever to reach for when a guest panics inside the
-        memory manager. UML's own `--help` says the filter "is not (yet)
-        restrictive enough to prevent userspace from reading and writing
-        all physical memory", so a guest process can corrupt the guest
-        kernel's own structures. See issue #8.
+        UML's own `--help` says the filter "is not (yet) restrictive
+        enough to prevent userspace from reading and writing all physical
+        memory", so a guest process can corrupt the guest kernel's own
+        structures.
+
+        This is not the lever for a panic in the memory manager, whatever
+        that suggests: issue #8 panics on both userspaces, and the cause
+        was io_uring. See modules/guest.nix.
       '';
     };
 
