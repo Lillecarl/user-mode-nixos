@@ -35,6 +35,11 @@ let
     lan = {
       description = "two guests on a segment see each other";
       timeoutMinutes = 45;
+      # The one job left on UML, and the reason the kernel is still
+      # built: every other test moved to QEMU for the speed, and a
+      # repository named after User-Mode Linux that never boots one in CI
+      # would find a UML regression somewhere else.
+      backend = "uml";
     };
     iperf = {
       description = "what a segment between two guests carries";
@@ -89,6 +94,20 @@ let
     ];
   };
 
+  /*
+    One test, on one backend.
+
+    QEMU by default, because it is much faster: a guest runs on the
+    processor instead of trapping every syscall into the host kernel, and
+    a job that takes it does not wait on `umlKernel` at all -- which is
+    the ten-minute build the `kernel` job exists to do once.
+
+    It costs /dev/kvm, which is what `guestBootstrap` is for: a runner
+    has the device, and the udev rule is what lets the sandbox's build
+    user open it. A `.qemu` derivation asks the daemon for the `kvm`
+    feature, so a runner without it refuses the build rather than failing
+    it -- which is a job that does not start, not a red one.
+  */
   testJob =
     name:
     {
@@ -96,20 +115,21 @@ let
       timeoutMinutes,
       heavy ? false,
       after ? [ ],
+      backend ? "qemu",
     }:
     job {
       id = "test-${name}";
-      needs = [ "kernel" ] ++ after;
+      needs = (lib.optional (backend == "uml") "kernel") ++ after;
       inherit timeoutMinutes;
       cond = selectable "test-${name}";
       ghanix = lib.mkMerge [
-        sandboxBootstrap
+        (if backend == "qemu" then guestBootstrap else sandboxBootstrap)
         { freeDiskSpace.enable = heavy; }
       ];
       steps = [
         (steps.build {
-          name = "Run ${name}: ${description}";
-          attrs = [ name ];
+          name = "Run ${name} on ${backend}: ${description}";
+          attrs = [ (if backend == "qemu" then "${name}.qemu" else name) ];
           timeoutMinutes = timeoutMinutes - 10;
         })
       ];
