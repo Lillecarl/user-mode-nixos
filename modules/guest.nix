@@ -173,24 +173,33 @@ in
   # 720 KB of wrappers.
 
   /*
-    No io_uring in a UML guest, asked of userspace because the kernel
-    cannot answer no: `config IO_URING` is `bool if EXPERT`, and an EXPERT
-    allnoconfig kernel never reaches init.  See pkgs/uml-kernel.
+    No io_uring in a UML guest.  UML's memory manager cannot host the
+    rings `io_uring_mmap` installs: a process that uses one prints
+    `BUG: Bad page map ... file:[io_uring]` once per ring page and then
+    takes the guest down, which the host sees as a command that never
+    returns.  Measured on pynixd's suite, which forces uvloop.
 
-    UML's memory manager cannot host the rings `io_uring_mmap` installs. A
-    process that uses one prints `BUG: Bad page map ... file:[io_uring]`
-    once per ring page and then takes the guest down with it, which the
-    host sees as a command that never returns.  Measured twice on pynixd's
-    suite.
+    The sysctl, and not the `UV_USE_IO_URING=0` that stood here until it
+    was measured to do nothing.  libuv reads that variable only on the
+    SQPOLL path, and there as an opt-in.  The ring that panics is the one
+    `uv__platform_loop_init` maps with flags 0 on every event loop, and
+    libuv maps that one unconditionally since 1.50.0 -- "always use
+    io_uring for epoll batching".  The old note was true when it was
+    written and went stale with no error, because nothing checks that an
+    environment variable changed anything.
 
-    libuv reads this and uses epoll, so uvloop keeps working.  Both
-    places, because they reach different processes: `variables` is
-    /etc/profile, for a login shell, and `globalEnvironment` is systemd's
-    `DefaultEnvironment` -- which `uml-agent` gets, so every command a
-    test runs inherits it.
+    2 is "off for everyone": `io_uring_setup` returns -EPERM, and libuv
+    gives up before it maps anything.  2 and not 1, because 1 still
+    allows `CAP_SYS_ADMIN`.  Guest-wide rather than libuv-only, which is
+    what pkgs/uml-kernel wanted and could not get -- `config IO_URING` is
+    `bool if EXPERT`, and an EXPERT allnoconfig kernel never reaches
+    init.
+
+    The knob is 0644 and takes 0 to 2, so root in a guest can set it back
+    to 0 and panic the guest again.  `CONFIG_IO_URING=n` would be the
+    absolute version, if the config could say it.
   */
-  environment.variables.UV_USE_IO_URING = lib.mkIf (cfg.backend == "uml") "0";
-  systemd.globalEnvironment.UV_USE_IO_URING = lib.mkIf (cfg.backend == "uml") "0";
+  boot.kernel.sysctl."kernel.io_uring_disabled" = lib.mkIf (cfg.backend == "uml") 2;
 
   users.mutableUsers = false;
   users.users.root.initialPassword = cfg.rootPassword;

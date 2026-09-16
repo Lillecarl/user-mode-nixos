@@ -119,12 +119,13 @@ let
     FUSE_FS = yes;
 
     /*
-      io_uring is on, and it does not work.  Left on anyway; read this
-      before deciding otherwise.
+      io_uring is on, and it does not work.  Left on here and refused at
+      runtime instead; read this before deciding otherwise.
 
       allnoconfig leaves IO_URING at its `default y`, so a guest has it.
-      A process that uses it takes the guest down.  Headless chromium
-      does, and gets as far as launching before the kernel says
+      Without the sysctl below, a process that uses it takes the guest
+      down.  Headless chromium did, and got as far as launching before
+      the kernel said
 
           BUG: Bad page map in process chrome-headless  pte:0e6c5061
           file:[io_uring] fault:0x0 mmap:io_uring_mmap
@@ -142,13 +143,18 @@ let
       built that way prints nothing at all, not one line, and never
       reaches init.
 
-      So a guest that needs a browser wants firefox, which does not use
-      io_uring.  Fixing this properly is UML mm work upstream, and the
-      note is here so the next person reaches that conclusion in a
-      minute rather than in an afternoon.
+      So the guest refuses it at runtime instead:
+      `kernel.io_uring_disabled=2`, set for every UML guest in
+      modules/guest.nix.  `io_uring_setup` then returns -EPERM, which a
+      caller handles, rather than a mapping that panics.
 
-      The answer is in userspace: `UV_USE_IO_URING=0`, set for every UML
-      guest in modules/guest.nix.
+      Chromium was the first thing to hit this, and the workaround then
+      was firefox, which does not use io_uring.  Not retried since the
+      sysctl.
+
+      Fixing this properly is UML mm work upstream, and the note is here
+      so the next person reaches that conclusion in a minute rather than
+      in an afternoon.
     */
   };
 
