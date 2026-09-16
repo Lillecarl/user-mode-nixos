@@ -19,7 +19,13 @@ let
   # carried its own copy of the checkout, the Nix install, cachix, the
   # user-namespace sysctls and the /dev/kvm rule -- the same five steps
   # nixkube and nanopynix each had a copy of.
-  ghalib = import sources.ghanix { inherit lib; };
+  ghanix = import sources.ghanix { inherit lib; };
+
+  # Every job of every workflow reads one umbrella revision, resolved once per
+  # run. ./umbrella-rev.nix says what goes wrong without it.
+  ghalib = ghanix // {
+    evalWorkflow = import ./umbrella-rev.nix ghanix.evalWorkflow;
+  };
 
   workflows = import ./workflows.nix { inherit lib ghalib; };
 

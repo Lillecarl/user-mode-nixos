@@ -4,7 +4,11 @@ env:
   UMBRELLA_GIT: "1"
 jobs:
   checks:
+    env:
+      UMBRELLA_REV: ${{ needs.umbrella-rev.outputs.rev }}
     if: (github.event_name != 'workflow_dispatch' || inputs.jobs == '' || contains(format(',{0},', inputs.jobs), ',checks,'))
+    needs:
+      - umbrella-rev
     runs-on: ubuntu-24.04
     steps:
       - timeout-minutes: 10
@@ -29,7 +33,11 @@ jobs:
         timeout-minutes: 20
     timeout-minutes: 30
   kernel:
+    env:
+      UMBRELLA_REV: ${{ needs.umbrella-rev.outputs.rev }}
     if: (github.event_name != 'workflow_dispatch' || inputs.jobs == '' || contains(format(',{0},', inputs.jobs), ',kernel,'))
+    needs:
+      - umbrella-rev
     runs-on: ubuntu-24.04
     steps:
       - timeout-minutes: 10
@@ -54,9 +62,12 @@ jobs:
         timeout-minutes: 45
     timeout-minutes: 60
   test-containerd:
+    env:
+      UMBRELLA_REV: ${{ needs.umbrella-rev.outputs.rev }}
     if: '!cancelled() && (needs.kernel.result == ''success'' || needs.kernel.result == ''skipped'') && (github.event_name != ''workflow_dispatch'' || inputs.jobs == '''' || contains(format('',{0},'', inputs.jobs), '',test-containerd,''))'
     needs:
       - kernel
+      - umbrella-rev
     runs-on: ubuntu-24.04
     steps:
       - timeout-minutes: 10
@@ -87,9 +98,12 @@ jobs:
         timeout-minutes: 35
     timeout-minutes: 45
   test-forward:
+    env:
+      UMBRELLA_REV: ${{ needs.umbrella-rev.outputs.rev }}
     if: '!cancelled() && (needs.kernel.result == ''success'' || needs.kernel.result == ''skipped'') && (github.event_name != ''workflow_dispatch'' || inputs.jobs == '''' || contains(format('',{0},'', inputs.jobs), '',test-forward,''))'
     needs:
       - kernel
+      - umbrella-rev
     runs-on: ubuntu-24.04
     steps:
       - timeout-minutes: 10
@@ -120,9 +134,12 @@ jobs:
         timeout-minutes: 35
     timeout-minutes: 45
   test-fuse:
+    env:
+      UMBRELLA_REV: ${{ needs.umbrella-rev.outputs.rev }}
     if: '!cancelled() && (needs.kernel.result == ''success'' || needs.kernel.result == ''skipped'') && (github.event_name != ''workflow_dispatch'' || inputs.jobs == '''' || contains(format('',{0},'', inputs.jobs), '',test-fuse,''))'
     needs:
       - kernel
+      - umbrella-rev
     runs-on: ubuntu-24.04
     steps:
       - timeout-minutes: 10
@@ -153,9 +170,12 @@ jobs:
         timeout-minutes: 5
     timeout-minutes: 15
   test-iperf:
+    env:
+      UMBRELLA_REV: ${{ needs.umbrella-rev.outputs.rev }}
     if: '!cancelled() && (needs.kernel.result == ''success'' || needs.kernel.result == ''skipped'') && (github.event_name != ''workflow_dispatch'' || inputs.jobs == '''' || contains(format('',{0},'', inputs.jobs), '',test-iperf,''))'
     needs:
       - kernel
+      - umbrella-rev
     runs-on: ubuntu-24.04
     steps:
       - timeout-minutes: 10
@@ -186,10 +206,13 @@ jobs:
         timeout-minutes: 35
     timeout-minutes: 45
   test-k8s:
+    env:
+      UMBRELLA_REV: ${{ needs.umbrella-rev.outputs.rev }}
     if: '!cancelled() && (needs.kernel.result == ''success'' || needs.kernel.result == ''skipped'') && (needs.test-containerd.result == ''success'' || needs.test-containerd.result == ''skipped'') && (github.event_name != ''workflow_dispatch'' || inputs.jobs == '''' || contains(format('',{0},'', inputs.jobs), '',test-k8s,''))'
     needs:
       - kernel
       - test-containerd
+      - umbrella-rev
     runs-on: ubuntu-24.04
     steps:
       - timeout-minutes: 10
@@ -228,9 +251,12 @@ jobs:
         timeout-minutes: 110
     timeout-minutes: 120
   test-k8s-pull:
+    env:
+      UMBRELLA_REV: ${{ needs.umbrella-rev.outputs.rev }}
     if: '!cancelled() && (needs.kernel.result == ''success'' || needs.kernel.result == ''skipped'') && (github.event_name != ''workflow_dispatch'' || inputs.jobs == '''' || contains(format('',{0},'', inputs.jobs), '',test-k8s-pull,''))'
     needs:
       - kernel
+      - umbrella-rev
     runs-on: ubuntu-24.04
     steps:
       - timeout-minutes: 10
@@ -269,9 +295,12 @@ jobs:
         timeout-minutes: 20
     timeout-minutes: 30
   test-lan:
+    env:
+      UMBRELLA_REV: ${{ needs.umbrella-rev.outputs.rev }}
     if: '!cancelled() && (needs.kernel.result == ''success'' || needs.kernel.result == ''skipped'') && (github.event_name != ''workflow_dispatch'' || inputs.jobs == '''' || contains(format('',{0},'', inputs.jobs), '',test-lan,''))'
     needs:
       - kernel
+      - umbrella-rev
     runs-on: ubuntu-24.04
     steps:
       - timeout-minutes: 10
@@ -301,6 +330,15 @@ jobs:
         run: nix build --no-link --print-build-logs --keep-going --file . lan
         timeout-minutes: 35
     timeout-minutes: 45
+  umbrella-rev:
+    outputs:
+      rev: ${{ steps.resolve.outputs.rev }}
+    runs-on: ubuntu-24.04
+    steps:
+      - id: resolve
+        name: Resolve the umbrella revision
+        run: git ls-remote https://github.com/nixidae/nixidae main | cut -f1 | sed 's/^/rev=/' >> "$GITHUB_OUTPUT"
+    timeout-minutes: 5
 name: CI
 on:
   pull_request: {}
