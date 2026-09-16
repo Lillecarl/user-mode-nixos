@@ -49,14 +49,14 @@ let
       -o lowerdir=/host/nix,upperdir=/.nix-upper,workdir=/.nix-work \
       /nix
 
-    # A host directory the guest writes its evidence into, named by the
-    # runner on the kernel command line.  The kernel does not know the
-    # parameter, so it arrives here as an environment variable.
+    # The runner names a host directory on the kernel command line. The
+    # kernel does not know the parameter, so it arrives here as an
+    # environment variable.
     #
     # Here, with busybox, rather than as a systemd mount unit: util-linux
     # mounts through fsconfig(2), and hostfs takes no parameter naming the
     # host directory, so the new API can only give the guest the host's
-    # whole root.  Measured -- "hostfs: Unknown parameter '/some/dir'".
+    # whole root. Measured -- "hostfs: Unknown parameter '/some/dir'".
     if [ -n "$UML_ARTIFACTS" ]; then
       echo "uml-init: mounting $UML_ARTIFACTS on /artifacts ..."
       mkdir -p /artifacts
@@ -74,22 +74,18 @@ in
 # the runner names, is not even built.
 lib.mkIf (cfg.backend == "uml") {
   /*
-    The image is root's, and `fakeroot` is how a build that is not root
-    says so.
+    `fakeroot`, because `mkfs.ext4 -d` copies each file's ownership from
+    the build directory, and that directory belongs to the build user --
+    uid 1000 where Nix builds as the calling user.  A guest with an
+    ordinary user at uid 1000 then handed that user `/nix/var`,
+    `/nix-state` and its own root.
 
-    `mkfs.ext4 -d` copies each file's ownership from the build directory,
-    and a build directory belongs to the build user -- uid 1000 on a
-    machine whose Nix runs builds as the calling user. So every directory
-    in the guest belonged to uid 1000, and a guest with an ordinary user
-    at uid 1000 handed that user `/nix/var`, `/nix-state` and the root of
-    its own filesystem.
-
-    What that costs is not a permission error. Nix's `auto` store reads
-    `/nix/var/nix` and opens a *local* store when it can write there, so
-    such a user gets no daemon at all -- and then fails on the store it
-    cannot write, as `creating directory "/nix/store/.links": Permission
-    denied`. Measured on pynixd's suite: 21 errors naming a directory,
-    with a working daemon socket one bind away.
+    What that costs is not a permission error.  Nix's `auto` store opens a
+    *local* store when it can write `/nix/var/nix`, so such a user gets no
+    daemon at all, and fails on the store it cannot write.  Measured on
+    pynixd's suite: 21 errors reading `creating directory
+    "/nix/store/.links": Permission denied`, with a working daemon socket
+    one bind away.
 
     `fakeroot` answers `stat` with what `chown` was told, which is all
     `mkfs.ext4 -d` reads.
@@ -100,13 +96,10 @@ lib.mkIf (cfg.backend == "uml") {
     mkdir -p root/{dev,proc,sys,tmp,run,var,root,home,bin,sbin,artifacts}
     mkdir -p root/nix root/.nix-upper/store root/.nix-work root/host/nix root/nix-state
     # `nix-daemon.socket` carries
-    # `ConditionPathIsReadWrite=/nix/var/nix/daemon-socket`, and a
-    # condition that fails skips a unit rather than failing it -- so
-    # without this directory the guest has no daemon, says nothing about
-    # it, and every `nix` call by a user who does not own the store fails
-    # as `creating directory "/nix/store/.links": Permission denied`.
-    # Here rather than in tmpfiles, for the reason the database is here:
-    # it is then in place before pid 1.
+    # `ConditionPathIsReadWrite=/nix/var/nix/daemon-socket`, and an unmet
+    # condition skips a unit silently. Without this directory the guest
+    # has no daemon and says nothing about it. Here rather than in
+    # tmpfiles, for the reason the database is here: in place before pid 1.
     mkdir -p root/nix-state/nix/daemon-socket
 
     install -m 0555 ${init} root/init

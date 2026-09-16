@@ -68,16 +68,13 @@ lib.mkIf (cfg.backend == "qemu") {
     The image is read-only in the store and the runner puts a per-run
     qcow2 over it, which is what UML's `ubd0=<cow>,<image>` does.
   */
-  # `fakeroot` for the ownership, and modules/image.nix says why: without
-  # it every directory in the guest belongs to the build user, and a guest
-  # user at that uid quietly owns `/nix/var`.
+  # `fakeroot` for the ownership -- modules/image.nix says why.
   system.build.umlRootImage = pkgs.runCommand "qemu-root-image" {
     nativeBuildInputs = [ pkgs.e2fsprogs pkgs.fakeroot ];
   } ''
     mkdir -p root/{dev,proc,sys,tmp,run,var,root,home,artifacts}
     mkdir -p root/nix root/.nix-upper/store root/.nix-work root/host/nix root/nix-state
-    # See modules/image.nix: without this the guest's nix-daemon.socket
-    # is skipped on an unmet condition and nothing says so.
+    # Without it nix-daemon.socket is skipped silently -- see image.nix.
     mkdir -p root/nix-state/nix/daemon-socket
     ${lib.optionalString cfg.nixDatabase.enable ''
       mkdir -p root/nix-state/nix/db
@@ -115,15 +112,12 @@ lib.mkIf (cfg.backend == "qemu") {
   };
 
   /*
-    Where the guest puts what the run is meant to keep.
+    The same directory a UML guest gets over hostfs, so a test writes to
+    `/artifacts` and never asks which backend it got.  A second virtiofsd
+    serves it under the tag named here.
 
-    The same directory a UML guest gets over hostfs -- see
-    modules/image.nix -- so a test writes to `/artifacts` and never asks
-    which backend it got.  The runner serves it from a second virtiofsd
-    under the tag named here.
-
-    `nofail`, because the runner only serves it when it has a directory
-    to serve, and a guest booted without one must still come up.
+    `nofail`, because the runner serves it only when it has a directory to
+    serve, and a guest booted without one must still come up.
   */
   fileSystems."/artifacts" = {
     device = "artifacts";

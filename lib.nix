@@ -16,40 +16,21 @@
 }:
 rec {
   /*
-    The library a test script imports.
-
-    A test script belongs to the project under test, not here: this
-    repository supplies `mkTest` and the Python it calls, and the script
-    that says what a cluster of guests must do lives beside the thing it
-    is testing.
-
-    So the package is reachable without evaluating a guest.  A caller puts
-    it in the Python it type checks with, and pyright reads `vms.node` as
-    a `Machine` rather than as Unknown -- the package carries `py.typed`::
+    The library a test script imports, reachable without evaluating a
+    guest: a caller puts it in the Python it type checks with.  It carries
+    `py.typed`, so pyright reads `vms.node` as a `Machine`.
 
         python3.withPackages (_: [ uml.runner ])
-
-    `mkTest` builds its own environment from a guest's own
-    `system.build.umlRunnerPackage`, which is this same derivation.
   */
   runner = pkgs.callPackage ./pkgs/uml-runner { };
 
   /*
     pyright over a caller's test scripts, against this library.
 
-    A script is Python that nothing imports and no test runs until a
-    guest has booted, so a typo in it costs a build and twenty minutes.
-    This is the check that costs seconds::
-
         typeCheck { scripts = [ ./tests/uml/run.py ]; }
 
-    `extraPackages` is whatever else the script imports.  The scripts are
-    copied in rather than checked in place, because pyright follows a
-    path and a store path is read-only.
-
-    `mkTest` calls this itself, as an input of the test -- see
-    `boot.uml.typeCheck`.  Calling it directly is for scripts that are not
-    a test's, the way `check-scripts` checks the ones in `tests/`.
+    `mkTest` calls this itself -- see `boot.uml.typeCheck`.  Call it
+    directly for scripts that are not a test's.
   */
   typeCheck =
     {
@@ -62,10 +43,8 @@ rec {
     let
       python = pkgs.python3.withPackages (_: [ runner ] ++ extraPackages);
 
-      # `ignore` is pyright's rule names, the way `writePython3Bin`'s
-      # `flakeIgnore` is flake8's codes: each one turned off for every
-      # script, for a check that is otherwise right about a thing the
-      # author cannot fix.
+      # pyright's rule names, the way `writePython3Bin`'s `flakeIgnore`
+      # is flake8's codes.
       rules = lib.listToAttrs (
         map (rule: lib.nameValuePair rule "none") ignore
       );
@@ -76,9 +55,9 @@ rec {
         reportMissingImports = "error";
         # Neither standard nor strict turns this on, and it is what makes
         # the rest worth running: an unannotated parameter is Unknown, and
-        # nothing done to an Unknown is checked at all. Measured --
+        # nothing done to an Unknown is checked. Measured -- without it,
         # `await vms.node.succeed(123)` and a call to a method that does
-        # not exist both passed without it.
+        # not exist both passed.
         reportMissingParameterType = "error";
       }
       // rules;
@@ -91,6 +70,8 @@ rec {
         ];
       }
       ''
+        # Copied in rather than checked in place: pyright follows a path,
+        # and a store path is read-only.
         mkdir -p scripts
         ${lib.concatMapStringsSep "\n" (
           script: "cp ${script} scripts/${baseNameOf script}"
@@ -164,20 +145,13 @@ rec {
         nix run --file . iperf.run
         nix run --file . iperf.qemu.run
 
-    `passthru` is for whatever else a caller wants to reach off its test,
-    such as a second derivation that reads its artifacts.
+    **A test derivation never fails.** `.attempt` is the run and always
+    succeeds; the test reads the exit code it wrote and fails on that.  So
+    a failed run keeps its log, its timings and what the guests wrote to
+    `/artifacts`, and the build log says where.
 
-    pyright runs over `script` as an input of the test, so a typo in it
-    stops a derivation that takes seconds rather than one that boots
-    guests.  `boot.uml.typeCheck` on any guest is the switch, and carries
-    the packages the script imports and the rules to ignore.
-
-    **A test derivation never fails.** `.attempt` is the run, and it
-    always succeeds; the test itself reads the exit code `.attempt` wrote
-    and fails on that. So a failed run keeps its log, its timings and
-    whatever the guests wrote to `/artifacts`, and the check's build log
-    says where they are. Nix deletes the output of a build that fails,
-    which would be the one run anybody wanted to read.
+    pyright runs over `script` as an input of the test.
+    `boot.uml.typeCheck` on the first guest is the switch.
 
     The one named by `backend` keeps the bare derivation name, and is the
     same derivation as the attribute of that name -- `lan` and `lan.uml`
@@ -203,8 +177,6 @@ rec {
       script,
       nodes,
       settings ? { },
-      # Anything the caller wants to reach off the test: a type check
-      # over its script, a second derivation that reads its artifacts.
       # `.uml`, `.qemu`, `.attempt` and `.run` are added after this, so a
       # name here cannot take one of theirs.
       passthru ? { },
@@ -249,17 +221,9 @@ rec {
       # will do.
       first = lib.head machines;
 
-      /*
-        pyright over the script, as an input of the run below.
-
-        Named in the builder rather than added to it: naming a store path
-        is what makes Nix build it, so the check runs before the guests
-        do, and a script that does not type check stops the test at a
-        derivation that takes seconds.
-
-        `boot.uml.typeCheck` turns it off, for a script the check's
-        environment cannot resolve the imports of.
-      */
+      # Named in the builder below rather than added to it: naming a store
+      # path is what makes Nix build it, so the check runs before the
+      # guests do.
       checked =
         let
           cfg = first.boot.uml.typeCheck;
@@ -345,25 +309,20 @@ rec {
           exec python3 ${script} --spec ${spec} "$@"
         '';
       };
+
       /*
         The run itself, which never fails.
 
         Nix deletes the output of a derivation that fails, so a test that
         reports failure by failing throws away the evidence of the one run
         anybody wanted to read.  This one always succeeds and writes what
-        happened to `status`; the derivation below is what fails, and it
-        reads nothing but that file.
-
-        So the output is a directory:
+        happened to `status`; the derivation below fails, and reads nothing
+        but that file.
 
             status       the run's exit code, as text
             log          everything the run printed
             report.json  where the time went, see report.py
             artifacts/   what the guests wrote to /artifacts
-
-        Always, and not behind a flag.  A report nobody asked for costs a
-        few hundred kilobytes; a run whose evidence was not kept costs
-        another run.
       */
       attempt = pkgs.runCommand "uml-test-${name}${suffix}-attempt"
         {
@@ -377,20 +336,15 @@ rec {
         ''
           export HOME="$TMPDIR"
           mkdir -p "$out/artifacts"
-          # The script type checked, or this line names a path that could
-          # not be built and the run never starts. Empty when
-          # `boot.uml.typeCheck.enable` is off.
+          # Empty when `boot.uml.typeCheck.enable` is off.
           echo "script checked: ${checked}" > "$out/typecheck"
           export UML_TEST_REPORT=$out/report.json
           export UML_TEST_ARTIFACTS=$out/artifacts
 
-          # The shell writes the marker, not the runner: the runner can
-          # die before any Python of ours runs, and a missing marker would
-          # then be read as a pass.
-          #
-          # `tee`, so `--print-build-logs` still streams the run while it
-          # happens; PIPESTATUS, because the exit code wanted is the
-          # runner's and not tee's.
+          # The shell writes the marker, not the runner: the runner can die
+          # before any Python of ours runs, and a missing marker would then
+          # be read as a pass. `tee` keeps `--print-build-logs` streaming;
+          # PIPESTATUS is the runner's exit code rather than tee's.
           set +e
           python3 ${script} --spec ${spec} 2>&1 | tee "$out/log"
           status=''${PIPESTATUS[0]}
@@ -399,17 +353,12 @@ rec {
         '';
     in
     /*
-      The check, which is the marker and nothing else.
+      The check reads the marker and nothing else, and names the run's
+      output in the build log -- the one thing a failed build leaves.
 
-      It fails when the run did, and it says where the run's own output
-      is -- in the build log, which is the one thing a failed build leaves
-      behind.
-
-      What this costs: a failed run is a *successful* build of `attempt`,
-      so Nix caches it.  Building the test again re-reads the marker and
-      fails again in a second, without booting anything, until an input
-      changes.  That is the pattern working, not a bug: the second run of
-      a failed test tells you nothing the first did not.
+      The trap: a failed run is a *successful* build of `attempt`, so Nix
+      caches it.  Building the test again re-reads the marker and fails in
+      a second, booting nothing, until an input changes.
     */
     pkgs.runCommand "uml-test-${name}${suffix}"
       {
