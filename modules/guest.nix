@@ -172,6 +172,32 @@ in
   # nosuid, so the bit is set and honoured.  It costs that tmpfs and about
   # 720 KB of wrappers.
 
+  /*
+    No io_uring in a UML guest, asked of userspace rather than of the
+    kernel.
+
+    UML's memory manager cannot host the rings `io_uring_mmap` installs.
+    A process that uses io_uring prints `BUG: Bad page map ...
+    file:[io_uring]` once per ring page and then takes the guest down
+    with it -- and what the host sees is a command that never returns,
+    which names nothing. Measured on pynixd's suite, twice.
+
+    The kernel cannot answer no: `config IO_URING` is `bool if EXPERT`,
+    and a kernel built with EXPERT under allnoconfig never reaches init.
+    pkgs/uml-kernel/default.nix has the whole of it.
+
+    libuv reads this and uses epoll instead, so uvloop -- and therefore
+    most async Python -- keeps working. Both places, because they reach
+    different processes: `variables` is /etc/profile, which a login shell
+    reads, and `globalEnvironment` is systemd's `DefaultEnvironment`,
+    which every unit gets -- including `uml-agent`, so every command a
+    test runs inherits it.
+
+    Not under QEMU, where io_uring works.
+  */
+  environment.variables.UV_USE_IO_URING = lib.mkIf (cfg.backend == "uml") "0";
+  systemd.globalEnvironment.UV_USE_IO_URING = lib.mkIf (cfg.backend == "uml") "0";
+
   users.mutableUsers = false;
   users.users.root.initialPassword = cfg.rootPassword;
 
