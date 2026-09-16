@@ -290,6 +290,65 @@ in
       with one until something runs Nix, and fails then as a network
       timeout that names nothing.
     */
+    /*
+      pyright over the test's script, as an input of the test itself.
+
+      A script is Python that nothing imports and no test runs until the
+      guests have booted, so a typo in it costs a boot to find. This makes
+      the check a dependency of the run: the derivation cannot start until
+      the script type checks, and the check itself takes seconds.
+
+      On by default. A script that does not type check is a script whose
+      author has no type checker, and the cost of being wrong about that
+      is measured in guest boots.
+
+      `mkTest` reads this off the first guest, the way it reads the kernel
+      and the toolchain. The script belongs to the test rather than to a
+      node, but a node's options are where a test's Nix-side settings
+      already live.
+    */
+    typeCheck = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        example = false;
+        description = ''
+          Run pyright over the test's script, as an input of the test
+          derivation.
+
+          Turn it off for a script that cannot be checked -- one that
+          imports something the check's environment has no way to
+          provide.
+        '';
+      };
+
+      extraPackages = lib.mkOption {
+        type = lib.types.listOf lib.types.package;
+        default = [ ];
+        example = lib.literalExpression "[ pkgs.python3Packages.kubernetes ]";
+        description = ''
+          Python packages the script imports beyond `uml_runner`.
+
+          Without them pyright reports the import as an error, which is
+          the right answer: an import it cannot resolve is a name it
+          cannot check.
+        '';
+      };
+
+      strict = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        example = true;
+        description = ''
+          Use pyright's `strict` mode rather than `standard`.
+
+          `reportMissingParameterType` is on either way, because without
+          it an unannotated parameter is Unknown and nothing done to it is
+          checked at all.
+        '';
+      };
+    };
+
     nixDatabase = {
       enable = lib.mkOption {
         type = lib.types.bool;

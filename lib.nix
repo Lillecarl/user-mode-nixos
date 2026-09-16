@@ -46,16 +46,20 @@ rec {
     `extraPackages` is whatever else the script imports.  The scripts are
     copied in rather than checked in place, because pyright follows a
     path and a store path is read-only.
+
+    `mkTest` calls this itself, as an input of the test -- see
+    `boot.uml.typeCheck`.  Calling it directly is for scripts that are not
+    a test's, the way `check-scripts` checks the ones in `tests/`.
   */
   typeCheck =
     {
       name ? "uml-test-scripts",
       scripts,
-      extraPackages ? (_: [ ]),
+      extraPackages ? [ ],
       strict ? false,
     }:
     let
-      python = pkgs.python3.withPackages (ps: [ runner ] ++ extraPackages ps);
+      python = pkgs.python3.withPackages (_: [ runner ] ++ extraPackages);
     in
     pkgs.runCommand "typecheck-${name}"
       {
@@ -231,6 +235,27 @@ rec {
       first = lib.head machines;
 
       /*
+        pyright over the script, as an input of the run below.
+
+        Named in the builder rather than added to it: naming a store path
+        is what makes Nix build it, so the check runs before the guests
+        do, and a script that does not type check stops the test at a
+        derivation that takes seconds.
+
+        `boot.uml.typeCheck` turns it off, for a script the check's
+        environment cannot resolve the imports of.
+      */
+      checked =
+        let
+          cfg = first.boot.uml.typeCheck;
+        in
+        lib.optionalString cfg.enable "${typeCheck {
+          name = "${name}${suffix}-script";
+          scripts = [ script ];
+          inherit (cfg) extraPackages strict;
+        }}";
+
+      /*
         Only the backend this run uses, and nothing of the other.
 
         Naming a store path is what builds it. A QEMU run that mentioned
@@ -337,6 +362,10 @@ rec {
         ''
           export HOME="$TMPDIR"
           mkdir -p "$out/artifacts"
+          # The script type checked, or this line names a path that could
+          # not be built and the run never starts. Empty when
+          # `boot.uml.typeCheck.enable` is off.
+          echo "script checked: ${checked}" > "$out/typecheck"
           export UML_TEST_REPORT=$out/report.json
           export UML_TEST_ARTIFACTS=$out/artifacts
 
