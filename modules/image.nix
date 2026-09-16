@@ -73,8 +73,29 @@ in
 # nor the runner below has anything to do there, and `umlKernel`, which
 # the runner names, is not even built.
 lib.mkIf (cfg.backend == "uml") {
+  /*
+    The image is root's, and `fakeroot` is how a build that is not root
+    says so.
+
+    `mkfs.ext4 -d` copies each file's ownership from the build directory,
+    and a build directory belongs to the build user -- uid 1000 on a
+    machine whose Nix runs builds as the calling user. So every directory
+    in the guest belonged to uid 1000, and a guest with an ordinary user
+    at uid 1000 handed that user `/nix/var`, `/nix-state` and the root of
+    its own filesystem.
+
+    What that costs is not a permission error. Nix's `auto` store reads
+    `/nix/var/nix` and opens a *local* store when it can write there, so
+    such a user gets no daemon at all -- and then fails on the store it
+    cannot write, as `creating directory "/nix/store/.links": Permission
+    denied`. Measured on pynixd's suite: 21 errors naming a directory,
+    with a working daemon socket one bind away.
+
+    `fakeroot` answers `stat` with what `chown` was told, which is all
+    `mkfs.ext4 -d` reads.
+  */
   system.build.umlRootImage = pkgs.runCommand "uml-root-image" {
-    nativeBuildInputs = [ pkgs.e2fsprogs ];
+    nativeBuildInputs = [ pkgs.e2fsprogs pkgs.fakeroot ];
   } ''
     mkdir -p root/{dev,proc,sys,tmp,run,var,root,home,bin,sbin,artifacts}
     mkdir -p root/nix root/.nix-upper/store root/.nix-work root/host/nix root/nix-state
@@ -105,7 +126,7 @@ lib.mkIf (cfg.backend == "uml") {
     ln -s ${build.toplevel}/init root/sbin/init
 
     truncate -s ${toString cfg.diskSize}M disk.img
-    mkfs.ext4 -q -L nixos -d root disk.img
+    fakeroot -- sh -c 'chown -R 0:0 root && mkfs.ext4 -q -L nixos -d root disk.img'
     mv disk.img $out
   '';
 

@@ -68,8 +68,11 @@ lib.mkIf (cfg.backend == "qemu") {
     The image is read-only in the store and the runner puts a per-run
     qcow2 over it, which is what UML's `ubd0=<cow>,<image>` does.
   */
+  # `fakeroot` for the ownership, and modules/image.nix says why: without
+  # it every directory in the guest belongs to the build user, and a guest
+  # user at that uid quietly owns `/nix/var`.
   system.build.umlRootImage = pkgs.runCommand "qemu-root-image" {
-    nativeBuildInputs = [ pkgs.e2fsprogs ];
+    nativeBuildInputs = [ pkgs.e2fsprogs pkgs.fakeroot ];
   } ''
     mkdir -p root/{dev,proc,sys,tmp,run,var,root,home,artifacts}
     mkdir -p root/nix root/.nix-upper/store root/.nix-work root/host/nix root/nix-state
@@ -84,7 +87,7 @@ lib.mkIf (cfg.backend == "qemu") {
       test -s root/nix-state/nix/db/db.sqlite
       test -s root/nix-state/nix/db/schema''}
     truncate -s ${toString cfg.diskSize}M disk.img
-    mkfs.ext4 -q -L nixos -d root disk.img
+    fakeroot -- sh -c 'chown -R 0:0 root && mkfs.ext4 -q -L nixos -d root disk.img'
     mv disk.img $out
   '';
 
