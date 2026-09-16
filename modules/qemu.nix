@@ -73,6 +73,9 @@ lib.mkIf (cfg.backend == "qemu") {
   } ''
     mkdir -p root/{dev,proc,sys,tmp,run,var,root,home,artifacts}
     mkdir -p root/nix root/.nix-upper/store root/.nix-work root/host/nix root/nix-state
+    # See modules/image.nix: without this the guest's nix-daemon.socket
+    # is skipped on an unmet condition and nothing says so.
+    mkdir -p root/nix-state/nix/daemon-socket
     ${lib.optionalString cfg.nixDatabase.enable ''
       mkdir -p root/nix-state/nix/db
       install -m 0644 ${config.system.build.umlNixDatabase}/db.sqlite root/nix-state/nix/db/

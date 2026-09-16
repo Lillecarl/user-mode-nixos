@@ -78,6 +78,15 @@ lib.mkIf (cfg.backend == "uml") {
   } ''
     mkdir -p root/{dev,proc,sys,tmp,run,var,root,home,bin,sbin,artifacts}
     mkdir -p root/nix root/.nix-upper/store root/.nix-work root/host/nix root/nix-state
+    # `nix-daemon.socket` carries
+    # `ConditionPathIsReadWrite=/nix/var/nix/daemon-socket`, and a
+    # condition that fails skips a unit rather than failing it -- so
+    # without this directory the guest has no daemon, says nothing about
+    # it, and every `nix` call by a user who does not own the store fails
+    # as `creating directory "/nix/store/.links": Permission denied`.
+    # Here rather than in tmpfiles, for the reason the database is here:
+    # it is then in place before pid 1.
+    mkdir -p root/nix-state/nix/daemon-socket
 
     install -m 0555 ${init} root/init
     ${lib.optionalString cfg.nixDatabase.enable ''
