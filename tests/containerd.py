@@ -24,7 +24,7 @@ import asyncio
 import json
 import re
 
-from uml_runner import MachineError, run_test
+from uml_runner import Machine, MachineError, Machines, run_test
 
 # Host network, so a sandbox needs no CNI: NamespaceMode.NODE is 2 in the
 # CRI API.  This test is not about networking.
@@ -60,7 +60,7 @@ POD = {
 }
 
 
-def container(image):
+def container(image: str) -> dict:
     return {
         "metadata": {"name": "probe"},
         "image": {"image": image},
@@ -83,11 +83,11 @@ def container(image):
     }
 
 
-async def write_json(vm, path, data):
+async def write_json(vm: Machine, path: str, data: dict) -> None:
     await vm.succeed(f"cat <<'EOF' > {path}\n{json.dumps(data, indent=2)}\nEOF")
 
 
-async def test(vms):
+async def test(vms: Machines) -> None:
     node = vms.node
     version = vms.settings["kubernetesVersion"]
 

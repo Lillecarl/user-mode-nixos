@@ -22,7 +22,7 @@ import asyncio
 import urllib.error
 import urllib.request
 
-from uml_runner import run_test
+from uml_runner import Machine, Machines, run_test
 from uml_runner.forward import ephemeral_range
 
 PAGE = "hello-from-inside-the-guest"
@@ -36,7 +36,7 @@ PRIVILEGED = 80
 runner is expected to have moved it up by `privilegedOffset`."""
 
 
-async def serve(vm, port: int) -> None:
+async def serve(vm: Machine, port: int) -> None:
     """Start a web server in the guest on *port* and leave it running."""
     await vm.succeed(
         f"mkdir -p {DOC_ROOT} && echo {PAGE} > {DOC_ROOT}/probe"
@@ -67,11 +67,14 @@ async def fetch(where: str, timeout: float = 30) -> str:
             await asyncio.sleep(0.5)
 
 
-async def test(vms):
+async def test(vms: Machines) -> None:
     vm = vms.node
 
+    # `resolve_forward` has run by now, and it is what fills this in; the
+    # rule carries None until then, which is why the check is here.
     address = vm.forward[0].address
     print(f"[test] guest was given {address}")
+    assert address is not None, "the guest booted with an unresolved forward"
     assert address.startswith("127.0.0."), f"expected a loopback address, got {address}"
 
     await vm.wait_for_unit("sshd.service")

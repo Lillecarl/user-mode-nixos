@@ -18,7 +18,7 @@ has no network, so there is nothing to pull from:
     nix run --file . k8s-pull.run        # and k8s-pull.uml.run
 """
 
-from uml_runner import run_test
+from uml_runner import Machines, run_test
 from uml_runner.cluster import KUBE_DNS, KUBE_PROXY, bring_up, kubectl, until
 
 # Nothing built it, nothing imported it, and it is not in the guest's Nix
@@ -39,7 +39,7 @@ spec:
 """ % WORKLOAD
 
 
-async def test(vms):
+async def test(vms: Machines) -> None:
     cp = await bring_up(vms, nix_images=False, addons=(KUBE_PROXY, KUBE_DNS))
 
     # The node is stock. Under `images = "nix"` every one of these would

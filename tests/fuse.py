@@ -14,10 +14,10 @@ smallest real one to hand.  What is being asked is whether the kernel
 answers at all.
 """
 
-from uml_runner import run_test
+from uml_runner import Machines, run_test
 
 
-async def test(vms):
+async def test(vms: Machines) -> None:
     vm = vms.node
 
     await vm.succeed("test -c /dev/fuse")

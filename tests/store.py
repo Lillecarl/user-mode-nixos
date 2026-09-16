@@ -19,7 +19,7 @@ import json
 import os
 import subprocess
 
-from uml_runner import run_test
+from uml_runner import Machines, run_test
 
 # The same view of the host's store that the guest gets, used here to pick
 # a path that view actually has.
@@ -89,7 +89,7 @@ def _nix(*args: str) -> str:
     return seen.stdout
 
 
-async def test(vms):
+async def test(vms: Machines) -> None:
     node = vms.node
     await node.wait_for_unit("uml-host-store.service")
 

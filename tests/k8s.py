@@ -19,7 +19,7 @@ Then storage, which is the other thing a chart assumes a cluster has: a
 claim with no class named, bound to a node's own directory.
 """
 
-from uml_runner import run_test
+from uml_runner import Machine, Machines, run_test
 from uml_runner.cluster import (
     READY_TIMEOUT,
     bring_up,
@@ -140,11 +140,11 @@ spec:
 """
 
 
-async def check_storage(cp, image):
+async def check_storage(cp: Machine, image: str) -> None:
     """A PersistentVolumeClaim that binds, and keeps what a pod wrote."""
     token = "kept-across-pods"
 
-    async def ran(pod):
+    async def ran(pod: str) -> None:
         async def check():
             out = await kubectl(
                 cp, f"get pod {pod} --output jsonpath='{{.status.phase}}'"
@@ -173,7 +173,7 @@ async def check_storage(cp, image):
     print("[k8s] a claim bound, and a second pod read what the first wrote", flush=True)
 
 
-async def check_cluster_networking(cp, vms, image):
+async def check_cluster_networking(cp: Machine, vms: Machines, image: str) -> None:
     """A pod on one worker, reached through a Service from the other.
 
     Deliberately the long way round: name resolution through CoreDNS, a
@@ -217,7 +217,7 @@ async def check_cluster_networking(cp, vms, image):
     )
 
 
-async def test(vms):
+async def test(vms: Machines) -> None:
     image = vms.settings["workloadImage"]
     print(
         f"[k8s] kubernetes {vms.settings['kubernetesVersion']}, "

@@ -7,12 +7,12 @@ already running, and prints the summary lines.
 
 import json
 
-from uml_runner import run_test
+from uml_runner import Machine, Machines, run_test
 
 DURATION = 5
 
 
-async def measure(source, target):
+async def measure(source: Machine, target: Machine) -> float:
     """Run iperf3 from *source* to *target*; returns bits/second."""
     report = json.loads(
         await source.succeed(
@@ -23,7 +23,7 @@ async def measure(source, target):
     return report["end"]["sum_received"]["bits_per_second"]
 
 
-async def test(vms):
+async def test(vms: Machines) -> None:
     server, client = vms.server, vms.client
 
     for vm in (server, client):

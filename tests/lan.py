@@ -6,10 +6,10 @@ host can talk to each of them over the serial line, and that frames get
 between them on vec1.
 """
 
-from uml_runner import run_test
+from uml_runner import Machines, run_test
 
 
-async def test(vms):
+async def test(vms: Machines) -> None:
     server, client = vms.server, vms.client
 
     for vm in (server, client):
