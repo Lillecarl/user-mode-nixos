@@ -70,8 +70,7 @@ async def fetch(where: str, timeout: float = 30) -> str:
 async def test(vms: Machines) -> None:
     vm = vms.node
 
-    # `resolve_forward` has run by now, and it is what fills this in; the
-    # rule carries None until then, which is why the check is here.
+    # `Rule.address` is None until `resolve_forward` fills it in.
     address = vm.forward[0].address
     print(f"[test] guest was given {address}")
     assert address is not None, "the guest booted with an unresolved forward"
