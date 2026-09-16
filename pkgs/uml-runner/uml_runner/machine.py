@@ -88,6 +88,7 @@ class MachineSpec:
     index: int = 0
     image: Path | None = None
     memory: str = "128M"
+    seccomp: str = "auto"
     cpus: int = 1
     ssh_port: int = 4325
     mtu: int = 65000
@@ -112,6 +113,7 @@ class MachineSpec:
             index=data.get("index", 0),
             image=Path(image) if image else None,
             memory=data.get("memory", "128M"),
+            seccomp=data.get("seccomp", "auto"),
             cpus=data.get("cpus", 1),
             ssh_port=data.get("sshPort", 4325),
             mtu=data.get("mtu", 65000),

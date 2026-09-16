@@ -177,6 +177,32 @@ in
       '';
     };
 
+    seccomp = lib.mkOption {
+      type = lib.types.enum [
+        "auto"
+        "on"
+        "off"
+      ];
+      default = "auto";
+      example = "off";
+      description = ''
+        How UML catches a guest process's syscalls. Ignored by QEMU.
+
+        `on` installs a seccomp filter and lets the guest's own signal
+        handler do the memory management, which costs fewer context
+        switches per minor fault -- a few percent of throughput and about
+        five seconds of boot. `auto` uses it where the host allows the
+        filter and falls back to ptrace where it does not. `off` is the
+        ptrace userspace, which is a decade older and much better tested.
+
+        `off` is the lever to reach for when a guest panics inside the
+        memory manager. UML's own `--help` says the filter "is not (yet)
+        restrictive enough to prevent userspace from reading and writing
+        all physical memory", so a guest process can corrupt the guest
+        kernel's own structures. See issue #8.
+      '';
+    };
+
     cpus = lib.mkOption {
       type = lib.types.ints.positive;
       default = 1;

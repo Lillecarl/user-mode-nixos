@@ -112,8 +112,9 @@ class Uml:
             # which measures a few percent on throughput and about five
             # seconds off a boot.  "auto" falls back to ptrace where the
             # host will not let us install a filter, rather than
-            # refusing to boot the way "on" does.
-            "seccomp=auto",
+            # refusing to boot the way "on" does.  `boot.uml.seccomp` sets
+            # it; "off" is the ptrace userspace -- see issue #8.
+            f"seccomp={spec.seccomp}",
         ]
         if machine.artifacts is not None:
             # The kernel does not know this one, so it hands it to /init

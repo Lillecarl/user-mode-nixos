@@ -260,6 +260,7 @@ rec {
         backend = machine.boot.uml.backend;
         index = machine.boot.uml.index;
         memory = machine.boot.uml.memory;
+        seccomp = machine.boot.uml.seccomp;
         cpus = machine.boot.uml.cpus;
         sshPort = machine.boot.uml.sshPort;
         mtu = machine.boot.uml.mtu;
