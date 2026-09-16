@@ -4,48 +4,33 @@ Read README.md first — it explains how the pieces fit together.
 
 ## Where a test script belongs
 
-**The goal: a test script lives in the project it tests, not here.** This
-repository is a library. It supplies `mkTest`, the guest modules, and
-`uml.runner` — the `uml_runner` Python package, which carries `py.typed`
-so the owning project's pyright checks the script. The project imports
-`lib.nix`, writes its own script, and keeps both beside the code under
-test.
+This repository is a library: `mkTest`, the guest modules, and
+`uml.runner` (the `uml_runner` package, `py.typed`). A test script belongs
+in the project it tests.
 
     let uml = import (sources.user-mode-nixos + "/lib.nix") { inherit pkgs; };
     in uml.mkTest { name = "..."; script = ./tests/uml/mine.py; nodes = { ... }; }
 
-`tests/` here does not follow that yet, and most of it never will: those
-scripts test this repository's own facilities — the segment, the
-forwards, the store, `/artifacts` — so this is where they belong. What
-does not belong here is a script about another project. pynixd is the
-first consumer written the new way; do not add a second project's script
-to `tests/`.
+`tests/` here is for this repository's own facilities — segment,
+forwards, store, `/artifacts`. Do not add another project's script to it.
 
-**A helper a second script wants belongs in `uml_runner`, not in a
-script.** Waiting on a unit, reading a journal, asking systemd what
-failed — anything of that kind is the library's job. A consumer copying
-one out of `tests/` is the signal that it should have been a method on
-`Machine`.
-
-`typeCheck` is what makes a script in another repository safe to write:
+A helper a second script wants belongs in `uml_runner` — waiting on a
+unit, reading a journal, asking systemd what failed. A consumer copying
+one out of `tests/` means it should be a method on `Machine`.
 
 ```nix
 uml.typeCheck { name = "mine"; scripts = [ ./tests/uml/run.py ]; }
 ```
 
-It runs pyright against `uml_runner` in a derivation, so a typo costs
-seconds rather than a boot. **Annotate the parameter** — `async def
-test(vms: Machines) -> None`. Without it `vms` is Unknown and pyright
-checks nothing done to it; measured, `await vms.node.succeed(123)` and a
-call to a method that does not exist both passed. The check turns
-`reportMissingParameterType` on for that reason and will not let an
-unannotated script through.
+pyright against `uml_runner` in a derivation. **Annotate the parameter** —
+`async def test(vms: Machines) -> None`. Unannotated, `vms` is Unknown and
+nothing done to it is checked: measured, `await vms.node.succeed(123)` and
+a call to a nonexistent method both passed. `reportMissingParameterType`
+is on, so an unannotated script does not build.
 
-**Not done yet: a pytest plugin.** The goal is that a project writes its
-guest tests as ordinary pytest tests — fixtures for the guests, the
-project's own runner, its own reporting — instead of a script with one
-`test` coroutine in it. `run_test` is the shape to grow out of, not the
-shape to keep.
+Not done yet: a pytest plugin, so a project writes guest tests as ordinary
+pytest tests instead of one `test` coroutine. `run_test` is the shape to
+grow out of.
 
 ## VCS
 
@@ -97,10 +82,9 @@ Every console line is prefixed with the machine it came from, so
 
 ## Getting evidence out of a run
 
-A test derivation never fails. `mkTest` builds two: `<test>.attempt`
-runs the guests and writes its exit code to `status`, and `<test>` reads
-that file and nothing else. So a failed run is a *kept* output, and the
-check's build log says where:
+A test derivation never fails. `<test>.attempt` runs the guests and writes
+its exit code to `status`; `<test>` reads that file and nothing else. So a
+failed run is a kept output:
 
 ```sh
 nix build --file . artifacts          # fails, and prints the path
@@ -110,21 +94,17 @@ ls "$(nix eval --raw --file . artifacts.attempt)"   # status log report.json art
 A passing build symlinks the same four into `result/`.
 
 Each guest sees a host directory at `/artifacts` — hostfs under UML,
-virtiofs under QEMU, and a test never knows which. A guest writes there
-and the file is on the host at that moment, so it survives a guest that
-wedges and can never be asked for anything again. The host side is
-`vms.artifacts / "<node>"`; each guest gets its own, because three nodes
-writing `pytest.log` into one directory is two lost files. Outside the
-sandbox it is a temp directory, named on the first line of the run.
+virtiofs under QEMU, and a test never knows which. The file is on the host
+the moment it is written, so it survives a guest that wedges. Host side:
+`vms.artifacts / "<node>"`, one per guest. Outside the sandbox it is a
+temp directory, named on the first line of the run.
 
-Put a test's real output there — a junit file, a log, a `ps` snapshot —
-rather than through `succeed`, whose output crosses the serial line and
-lands in the console log.
+Put real output there — junit, logs, a `ps` snapshot — not through
+`succeed`, whose output crosses the serial line into the console log.
 
 `await vm.processes()` and `await vm.count_processes("nix-daemon")` read
-`/proc` through the agent, so a node that installs no procps still
-answers. That is how a test proves the thing under test left nothing
-running.
+`/proc` through the agent, so a node with no procps still answers. That is
+how a test proves the thing under test left nothing running.
 
 ## Where the time went
 

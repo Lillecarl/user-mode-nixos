@@ -215,10 +215,8 @@ let
     /*
       Does what a guest writes reach the host, and who is left running?
 
-      Two guests, because the point of the share is that each one has its
-      own directory: what three nodes write must not land in one place.
-      `pkgs.util-linux` for `mountpoint`; everything else the test uses is
-      in a guest already.
+      Two guests, because each one must get its own directory.
+      `pkgs.util-linux` for `mountpoint`.
     */
     artifacts = mkTest {
       name = "artifacts";
@@ -327,13 +325,12 @@ let
 
     check-workflows = ci.check ./.github/workflows;
 
-    # Do the scripts in tests/ type check against the library they drive?
-    # Cheap, and it is also the check that `typeCheck` itself works -- the
-    # facility a consumer's own scripts depend on.
+    # The scripts in tests/, against the library they drive. Also the
+    # check that `typeCheck` itself works.
     check-scripts = uml.typeCheck {
       name = "own-scripts";
-      # `.py` only: `__pycache__` sits beside them after a run outside
-      # the sandbox, and pyright has nothing to say about a `.pyc`.
+      # `.py` only: a run outside the sandbox leaves `__pycache__` beside
+      # them, and pyright has nothing to say about a `.pyc`.
       scripts = lib.filter (p: lib.hasSuffix ".py" (toString p)) (
         lib.filesystem.listFilesRecursive ./tests
       );
