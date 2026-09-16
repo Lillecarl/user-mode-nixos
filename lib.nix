@@ -305,35 +305,95 @@ rec {
           exec python3 ${script} --spec ${spec} "$@"
         '';
       };
-    in
-    pkgs.runCommand "uml-test-${name}${suffix}"
-      {
-        nativeBuildInputs = [ python ];
-        # A QEMU guest is only worth booting with KVM, and the daemon
-        # only hands /dev/kvm to a derivation that asks for it. UML asks
-        # for nothing, which is the whole point of UML.
-        requiredSystemFeatures = lib.optional (chosen == "qemu") "kvm";
-        passthru = { inherit spec python run; };
-      }
       /*
-        The output is a directory, and what is in it is where the run
-        spent its time.
+        The run itself, which never fails.
 
-        A check used to be an empty file, because a derivation that passes
-        or fails needs no content. But a test here is minutes of waiting,
-        which minutes is not guessable, and a run in the sandbox is the
-        one nobody can watch -- so the timings have to come back with it or
-        they are gone. See pkgs/uml-runner/uml_runner/report.py for what is
-        in the file.
+        Nix deletes the output of a derivation that fails, so a test that
+        reports failure by failing throws away the evidence of the one run
+        anybody wanted to read.  This one always succeeds and writes what
+        happened to `status`; the derivation below is what fails, and it
+        reads nothing but that file.
 
-        Always, and not behind a flag. A report nobody asked for costs a
-        few hundred kilobytes; a run whose timings were not kept costs
+        So the output is a directory:
+
+            status       the run's exit code, as text
+            log          everything the run printed
+            report.json  where the time went, see report.py
+            artifacts/   what the guests wrote to /artifacts
+
+        Always, and not behind a flag.  A report nobody asked for costs a
+        few hundred kilobytes; a run whose evidence was not kept costs
         another run.
       */
+      attempt = pkgs.runCommand "uml-test-${name}${suffix}-attempt"
+        {
+          nativeBuildInputs = [ python ];
+          # A QEMU guest is only worth booting with KVM, and the daemon
+          # only hands /dev/kvm to a derivation that asks for it. UML asks
+          # for nothing, which is the whole point of UML.
+          requiredSystemFeatures = lib.optional (chosen == "qemu") "kvm";
+          passthru = { inherit spec python run; };
+        }
+        ''
+          export HOME="$TMPDIR"
+          mkdir -p "$out/artifacts"
+          export UML_TEST_REPORT=$out/report.json
+          export UML_TEST_ARTIFACTS=$out/artifacts
+
+          # The shell writes the marker, not the runner: the runner can
+          # die before any Python of ours runs, and a missing marker would
+          # then be read as a pass.
+          #
+          # `tee`, so `--print-build-logs` still streams the run while it
+          # happens; PIPESTATUS, because the exit code wanted is the
+          # runner's and not tee's.
+          set +e
+          python3 ${script} --spec ${spec} 2>&1 | tee "$out/log"
+          status=''${PIPESTATUS[0]}
+          set -e
+          echo "$status" > "$out/status"
+        '';
+    in
+    /*
+      The check, which is the marker and nothing else.
+
+      It fails when the run did, and it says where the run's own output
+      is -- in the build log, which is the one thing a failed build leaves
+      behind.
+
+      What this costs: a failed run is a *successful* build of `attempt`,
+      so Nix caches it.  Building the test again re-reads the marker and
+      fails again in a second, without booting anything, until an input
+      changes.  That is the pattern working, not a bug: the second run of
+      a failed test tells you nothing the first did not.
+    */
+    pkgs.runCommand "uml-test-${name}${suffix}"
+      {
+        passthru = passthru // {
+          inherit attempt spec python run;
+        };
+      }
       ''
-        export HOME="$TMPDIR"
+        echo "the run is at ${attempt}"
+        echo "  log:       ${attempt}/log"
+        echo "  timings:   ${attempt}/report.json"
+        echo "  artifacts: ${attempt}/artifacts"
+
+        status=$(cat ${attempt}/status)
+        if [ "$status" != 0 ]; then
+          echo
+          echo "--- the last 50 lines of ${attempt}/log ---"
+          tail -n 50 ${attempt}/log
+          echo "--- end ---"
+          echo
+          echo "the test failed (exit $status); the paths above hold what it left" >&2
+          exit 1
+        fi
+
         mkdir -p $out
-        export UML_TEST_REPORT=$out/report.json
-        python3 ${script} --spec ${spec}
+        ln -s ${attempt} $out/attempt
+        ln -s ${attempt}/log $out/log
+        ln -s ${attempt}/report.json $out/report.json
+        ln -s ${attempt}/artifacts $out/artifacts
       '';
 }

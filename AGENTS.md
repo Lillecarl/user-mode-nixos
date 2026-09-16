@@ -95,6 +95,37 @@ grep '\[test\]' /tmp/umlbuild.log
 Every console line is prefixed with the machine it came from, so
 `grep '\[server\]'` narrows to one guest.
 
+## Getting evidence out of a run
+
+A test derivation never fails. `mkTest` builds two: `<test>.attempt`
+runs the guests and writes its exit code to `status`, and `<test>` reads
+that file and nothing else. So a failed run is a *kept* output, and the
+check's build log says where:
+
+```sh
+nix build --file . artifacts          # fails, and prints the path
+ls "$(nix eval --raw --file . artifacts.attempt)"   # status log report.json artifacts/
+```
+
+A passing build symlinks the same four into `result/`.
+
+Each guest sees a host directory at `/artifacts` — hostfs under UML,
+virtiofs under QEMU, and a test never knows which. A guest writes there
+and the file is on the host at that moment, so it survives a guest that
+wedges and can never be asked for anything again. The host side is
+`vms.artifacts / "<node>"`; each guest gets its own, because three nodes
+writing `pytest.log` into one directory is two lost files. Outside the
+sandbox it is a temp directory, named on the first line of the run.
+
+Put a test's real output there — a junit file, a log, a `ps` snapshot —
+rather than through `succeed`, whose output crosses the serial line and
+lands in the console log.
+
+`await vm.processes()` and `await vm.count_processes("nix-daemon")` read
+`/proc` through the agent, so a node that installs no procps still
+answers. That is how a test proves the thing under test left nothing
+running.
+
 ## Where the time went
 
 Do not guess at what makes a test slow, and do not add timing prints.

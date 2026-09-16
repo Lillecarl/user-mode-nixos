@@ -49,6 +49,15 @@ def _tail(path: Path, lines: int = 20) -> str:
         return f"({path} unreadable: {error})"
     return "\n".join(text.splitlines()[-lines:]) or f"({path} is empty)"
 
+ARTIFACTS_ENV = "UML_ARTIFACTS"
+"""What the UML guest's /init reads the host directory from.  Not the
+host-side ``UML_TEST_ARTIFACTS``: that one names the root of a run, and
+this one names one guest's own subdirectory of it."""
+
+ARTIFACTS_TAG = "artifacts"
+"""The virtiofs tag QEMU serves the same directory under.  ``modules/
+qemu.nix`` mounts it by this name."""
+
 _VECTOR_DEPTH = 64
 """Frames per ``sendmmsg``/``recvmmsg``, and NAPI's poll weight, for UML.
 
@@ -105,6 +114,18 @@ class Uml:
             # refusing to boot the way "on" does.
             "seccomp=auto",
         ]
+        if machine.artifacts is not None:
+            # The kernel does not know this one, so it hands it to /init
+            # as an environment variable -- "will be passed to user
+            # space" in the boot log. modules/image.nix reads it there
+            # and mounts hostfs on /artifacts.
+            #
+            # busybox mount, in /init, and not a systemd mount unit:
+            # util-linux mounts through fsconfig(2), and hostfs has no
+            # parameter for the host directory, so the new API can only
+            # ever give the guest the host's whole root. Measured:
+            # "hostfs: Unknown parameter '/some/dir'".
+            argv.append(f"{ARTIFACTS_ENV}={machine.artifacts}")
         if lan_fd is not None:
             argv.append(self._vec(1, lan_fd, spec.mtu))
 
@@ -170,9 +191,17 @@ class Qemu:
     ) -> Launch:
         spec, tools = machine.spec, machine.tools
 
-        vfs_fd, vfsd = self._virtiofsd(tools, rundir, spec.store)
+        vfs_fd, vfsd = self._virtiofsd(tools, rundir, "vfs", spec.store)
         helpers.append(vfsd)
         opened.append(vfs_fd)
+
+        art_fd: int | None = None
+        if machine.artifacts is not None:
+            art_fd, artd = self._virtiofsd(
+                tools, rundir, "art", str(machine.artifacts)
+            )
+            helpers.append(artd)
+            opened.append(art_fd)
 
         disk_fds = self._scratch_disk(tools, rundir, spec.image)
         opened.extend(disk_fds)
@@ -215,6 +244,12 @@ class Qemu:
             "-netdev", f"stream,id=vec0,addr.type=fd,addr.str={passt_fd}",
             "-device", f"virtio-net-pci,netdev=vec0,mac={spec.mac(0)}",
         ]
+        if art_fd is not None:
+            argv += [
+                "-chardev", f"socket,id=artifacts,fd={art_fd}",
+                "-device",
+                f"vhost-user-fs-pci,chardev=artifacts,tag={ARTIFACTS_TAG}",
+            ]
         if lan_fd is not None:
             argv += [
                 "-netdev", f"dgram,id=vec1,local.type=fd,local.str={lan_fd}",
@@ -224,7 +259,7 @@ class Qemu:
 
         pass_fds = tuple(
             fd
-            for fd in (agent_fd, passt_fd, lan_fd, vfs_fd, *disk_fds)
+            for fd in (agent_fd, passt_fd, lan_fd, vfs_fd, art_fd, *disk_fds)
             if fd is not None
         )
         return Launch(argv=argv, pass_fds=pass_fds, helpers=helpers)
@@ -274,8 +309,13 @@ class Qemu:
         return fds
 
     @staticmethod
-    def _virtiofsd(tools, rundir: Path, store: str) -> tuple[int, subprocess.Popen]:
-        """Serve the host's store, and leave no socket behind.
+    def _virtiofsd(
+        tools, rundir: Path, socket_name: str, shared: str
+    ) -> tuple[int, subprocess.Popen]:
+        """Serve a host directory, and leave no socket behind.
+
+        Called twice: once for the store, once for the guest's artifacts
+        directory.  *socket_name* keeps the two apart under *rundir*.
 
         virtiofsd takes a *listening* socket on ``--fd``, so the path it
         was bound to is only needed for long enough to connect to it once.
@@ -301,7 +341,7 @@ class Qemu:
         """
         # Short, because an AF_UNIX path is about 107 bytes and a run
         # directory under a long TMPDIR eats most of that.
-        socket_path = rundir / "vfs"
+        socket_path = rundir / socket_name
         listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
@@ -319,7 +359,7 @@ class Qemu:
             [
                 str(tools.virtiofsd),
                 f"--fd={listener.fileno()}",
-                f"--shared-dir={store}",
+                f"--shared-dir={shared}",
                 # Nothing left to drop: this is already unprivileged, and
                 # namespace sandboxing needs privileges a build does not
                 # have.
@@ -342,7 +382,7 @@ class Qemu:
         if proc.poll() is not None:
             client.close()
             raise BackendError(
-                f"virtiofsd exited ({proc.returncode}) instead of serving {store}"
+                f"virtiofsd exited ({proc.returncode}) instead of serving {shared}"
             )
 
         return client.detach(), proc

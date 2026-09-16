@@ -146,6 +146,13 @@ let
       io_uring.  Fixing this properly is UML mm work upstream, and the
       note is here so the next person reaches that conclusion in a
       minute rather than in an afternoon.
+
+      **What a guest can do instead: stop its own userspace asking.**
+      libuv reads `UV_USE_IO_URING=0` and uses epoll, so anything built
+      on it -- uvloop, and therefore most async Python -- keeps working.
+      Measured on pynixd's suite: without it the guest printed the BUG
+      above once per ring page and then died mid-run, taking the agent
+      with it, and the host saw a command that never returned.
     */
   };
 

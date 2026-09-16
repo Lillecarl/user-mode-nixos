@@ -52,6 +52,12 @@ let
       description = "a userspace filesystem, as root and as a user";
       timeoutMinutes = 15;
     };
+    artifacts = {
+      # Two guests, no network, and nothing on top of the base system.
+      # The same cost as `fuse`, and for the same reasons.
+      description = "what a guest writes reaches the host, per guest";
+      timeoutMinutes = 15;
+    };
     containerd = {
       description = "a container runs, out of the host's store";
       timeoutMinutes = 45;

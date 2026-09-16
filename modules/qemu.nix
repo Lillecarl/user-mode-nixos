@@ -71,7 +71,7 @@ lib.mkIf (cfg.backend == "qemu") {
   system.build.umlRootImage = pkgs.runCommand "qemu-root-image" {
     nativeBuildInputs = [ pkgs.e2fsprogs ];
   } ''
-    mkdir -p root/{dev,proc,sys,tmp,run,var,root,home}
+    mkdir -p root/{dev,proc,sys,tmp,run,var,root,home,artifacts}
     mkdir -p root/nix root/.nix-upper/store root/.nix-work root/host/nix root/nix-state
     ${lib.optionalString cfg.nixDatabase.enable ''
       mkdir -p root/nix-state/nix/db
@@ -106,6 +106,23 @@ lib.mkIf (cfg.backend == "qemu") {
       upperdir = "/.nix-upper";
       workdir = "/.nix-work";
     };
+  };
+
+  /*
+    Where the guest puts what the run is meant to keep.
+
+    The same directory a UML guest gets over hostfs -- see
+    modules/image.nix -- so a test writes to `/artifacts` and never asks
+    which backend it got.  The runner serves it from a second virtiofsd
+    under the tag named here.
+
+    `nofail`, because the runner only serves it when it has a directory
+    to serve, and a guest booted without one must still come up.
+  */
+  fileSystems."/artifacts" = {
+    device = "artifacts";
+    fsType = "virtiofs";
+    options = [ "nofail" ];
   };
 
   /*

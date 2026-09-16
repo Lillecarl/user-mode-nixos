@@ -213,6 +213,22 @@ let
     };
 
     /*
+      Does what a guest writes reach the host, and who is left running?
+
+      Two guests, because the point of the share is that each one has its
+      own directory: what three nodes write must not land in one place.
+      `pkgs.util-linux` for `mountpoint`; everything else the test uses is
+      in a guest already.
+    */
+    artifacts = mkTest {
+      name = "artifacts";
+      script = ./tests/artifacts.py;
+      nodes = lib.genAttrs [ "one" "two" ] (_: {
+        environment.systemPackages = [ pkgs.util-linux ];
+      });
+    };
+
+    /*
       Can a guest host a userspace filesystem?
 
       The question a build sandbox cannot answer for itself: its /dev has

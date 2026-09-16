@@ -148,6 +148,7 @@ class Machine:
         tools: Toolchain,
         *,
         lan_fd: int | None = None,
+        artifacts: Path | None = None,
         boot_timeout: float = 180,
         # Generous, because several guests on a loaded builder are slow
         # in a way that looks exactly like a hang.
@@ -157,6 +158,10 @@ class Machine:
         self.tools = tools
         self.backend = backends.get(spec.backend)
         self.lan_fd = lan_fd
+        self.artifacts = artifacts
+        """A host directory this guest sees at ``/artifacts``, or None.
+        What the guest writes there is on the host the moment it is
+        written, so it survives a guest that never answers again."""
         self.boot_timeout = boot_timeout
         self.command_timeout = command_timeout
         self.forward: list[forward.Rule] = list(spec.forward)
@@ -502,6 +507,29 @@ class Machine:
         """
         return forward.reachable(
             self.forward, guest_port, forward.unprivileged_start()
+        )
+
+    async def processes(self) -> list[dict]:
+        """Every process in the guest: pid, ppid, name and cmdline.
+
+        What it is for: proving that the thing under test left nothing
+        running.  A guest is thrown away at poweroff, so a leak inside
+        one costs nothing -- which is exactly why the guest is where a
+        leak can be counted without a machine to clean up afterwards.
+        """
+        return await self._ask("processes", self._agent.processes(), _SYSTEMD_TIMEOUT)
+
+    async def count_processes(self, pattern: str) -> int:
+        """How many processes have *pattern* in their name or command.
+
+        A plain substring, and both fields, because `/proc/<pid>/stat`
+        truncates a name at 15 characters -- `nix-daemon` survives that
+        and a longer one does not.
+        """
+        return sum(
+            1
+            for p in await self.processes()
+            if pattern in p["name"] or pattern in p["cmdline"]
         )
 
     async def journal(self, unit: str | None = None, lines: int = 50) -> str:

@@ -108,6 +108,46 @@ class Agent(Service):
                     ports.add(int(fields[1].rsplit(":", 1)[1], 16))
         return sorted(ports)
 
+    def exposed_processes(self) -> list[dict]:
+        """Every process in this guest: pid, ppid, name and command line.
+
+        Read out of ``/proc`` and not asked of ``ps``, for the same
+        reason :meth:`exposed_listening` reads ``/proc/net/tcp``: a guest
+        that installs no procps still answers, and what a test wants to
+        know -- did the thing under test leave anything running -- must
+        not depend on what else the node happens to carry.
+
+        ``name`` is ``/proc/<pid>/stat``'s comm, so it is the first 15
+        characters of the executable's name and nothing longer.  Match on
+        ``cmdline`` when the name is a program whose name is long, such
+        as ``nix-daemon``.
+        """
+        found = []
+        for entry in os.scandir("/proc"):
+            if not entry.name.isdigit():
+                continue
+            try:
+                stat = open(f"/proc/{entry.name}/stat").read()
+                raw = open(f"/proc/{entry.name}/cmdline", "rb").read()
+            except OSError:
+                # It exited between the listing and the read. Not an
+                # error: that is the answer, it is not running.
+                continue
+            # comm is in brackets and may hold spaces and brackets of its
+            # own, so split on the last one rather than on whitespace.
+            head, _, rest = stat.rpartition(")")
+            name = head.partition("(")[2]
+            fields = rest.split()
+            found.append(
+                {
+                    "pid": int(entry.name),
+                    "ppid": int(fields[1]) if len(fields) > 1 else 0,
+                    "name": name,
+                    "cmdline": raw.replace(b"\0", b" ").decode(errors="replace").strip(),
+                }
+            )
+        return sorted(found, key=lambda p: p["pid"])
+
     def exposed_journal(self, unit: str | None = None, lines: int = 50) -> str:
         """Tail of the journal, optionally restricted to one unit."""
         scope = f"-u {unit!r}" if unit else ""

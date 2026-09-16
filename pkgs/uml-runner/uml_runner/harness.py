@@ -19,7 +19,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
+import tempfile
 from collections import defaultdict
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -31,13 +33,33 @@ from .net import build_lans
 from . import report
 
 
-class Machines(dict):
-    """The run's machines by name, also reachable as attributes."""
+ARTIFACTS_ENV = "UML_TEST_ARTIFACTS"
+"""Names the directory a run puts its evidence in.  ``mkTest`` sets it to
+a directory inside the attempt derivation's output, which is why that
+derivation must not fail -- see lib.nix."""
+
+
+class Machines(dict[str, Machine]):
+    """The run's machines by name, also reachable as attributes.
+
+    Parameterised, so a script in another project type checks: an
+    unparameterised `dict` makes every `vms.values()` and `vms.items()`
+    Unknown, and a caller's pyright then has nothing to check.
+    """
 
     settings: dict
     """Whatever the spec's ``settings`` held -- values a test needs that
     only Nix knows, such as a package version or an image tag.  Empty
     unless ``mkTest`` was given some."""
+
+    artifacts: Path
+    """Where this run's evidence goes.  Each guest sees its own
+    subdirectory of this as ``/artifacts``, so a test collects a file by
+    writing it in the guest and nothing has to be copied afterwards.
+
+    The host side is what makes it worth having: a guest that wedges or
+    is killed cannot be asked for anything, and everything it wrote is
+    already here."""
 
     def __getattr__(self, name: str) -> Machine:
         try:
@@ -61,10 +83,21 @@ async def machines(spec: dict):
     lans = build_lans(segments)
     lan_fd = {name: fd for lan in lans for name, fd in lan.fds.items()}
 
+    artifacts = _artifacts_dir()
     vms = Machines(
-        (s.name, Machine(s, tools, lan_fd=lan_fd.get(s.name))) for s in specs
+        (
+            s.name,
+            Machine(
+                s,
+                tools,
+                lan_fd=lan_fd.get(s.name),
+                artifacts=_guest_artifacts(artifacts, s.name),
+            ),
+        )
+        for s in specs
     )
     vms.settings = spec.get("settings", {})
+    vms.artifacts = artifacts
     # Serially, and before anything spawns: picking a free host address
     # means binding a port and letting go of it again, so two guests
     # doing it at once would both be told the same address is free.
@@ -93,6 +126,38 @@ async def machines(spec: dict):
         )
         for lan in lans:
             lan.close()
+
+
+def _artifacts_dir() -> Path:
+    """Where this run writes what it wants to keep.
+
+    Named by ``$UML_TEST_ARTIFACTS`` or, when nothing names one, a fresh
+    temporary directory.  Always somewhere, never nowhere: a guest mounts
+    it unconditionally, so a run with no directory would be a boot that
+    differs between a check and a run by hand.
+
+    It is not cleaned up.  A directory of evidence deleted at the end of
+    the run is a directory nobody read.
+    """
+    where = os.environ.get(ARTIFACTS_ENV)
+    path = Path(where) if where else Path(tempfile.mkdtemp(prefix="uml-artifacts-"))
+    path.mkdir(parents=True, exist_ok=True)
+    # At the start, not at the end: a run that is killed never reaches an
+    # end, and this is where its evidence is either way.
+    print(f"[test] artifacts in {path}", flush=True)
+    return path
+
+
+def _guest_artifacts(root: Path, name: str) -> Path:
+    """One guest's own subdirectory, made before it boots.
+
+    Per guest, because three nodes writing `pytest.log` into one
+    directory is two lost files.  Made here and not in the guest: hostfs
+    and virtiofs both serve a directory that exists.
+    """
+    path = root / name
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def load_spec(argv: list[str] | None = None) -> dict:

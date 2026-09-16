@@ -49,6 +49,20 @@ let
       -o lowerdir=/host/nix,upperdir=/.nix-upper,workdir=/.nix-work \
       /nix
 
+    # A host directory the guest writes its evidence into, named by the
+    # runner on the kernel command line.  The kernel does not know the
+    # parameter, so it arrives here as an environment variable.
+    #
+    # Here, with busybox, rather than as a systemd mount unit: util-linux
+    # mounts through fsconfig(2), and hostfs takes no parameter naming the
+    # host directory, so the new API can only give the guest the host's
+    # whole root.  Measured -- "hostfs: Unknown parameter '/some/dir'".
+    if [ -n "$UML_ARTIFACTS" ]; then
+      echo "uml-init: mounting $UML_ARTIFACTS on /artifacts ..."
+      mkdir -p /artifacts
+      mount -t hostfs none /artifacts -o "$UML_ARTIFACTS"
+    fi
+
     echo "uml-init: starting systemd ..."
     exec /sbin/init
   '';
@@ -62,7 +76,7 @@ lib.mkIf (cfg.backend == "uml") {
   system.build.umlRootImage = pkgs.runCommand "uml-root-image" {
     nativeBuildInputs = [ pkgs.e2fsprogs ];
   } ''
-    mkdir -p root/{dev,proc,sys,tmp,run,var,root,home,bin,sbin}
+    mkdir -p root/{dev,proc,sys,tmp,run,var,root,home,bin,sbin,artifacts}
     mkdir -p root/nix root/.nix-upper/store root/.nix-work root/host/nix root/nix-state
 
     install -m 0555 ${init} root/init
