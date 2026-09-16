@@ -111,16 +111,13 @@ class Agent(Service):
     def exposed_processes(self) -> list[dict]:
         """Every process in this guest: pid, ppid, name and command line.
 
-        Read out of ``/proc`` and not asked of ``ps``, for the same
-        reason :meth:`exposed_listening` reads ``/proc/net/tcp``: a guest
-        that installs no procps still answers, and what a test wants to
-        know -- did the thing under test leave anything running -- must
-        not depend on what else the node happens to carry.
+        Out of ``/proc`` and not asked of ``ps``, for the reason
+        :meth:`exposed_listening` reads ``/proc/net/tcp``: a guest that
+        installs no procps still answers.
 
-        ``name`` is ``/proc/<pid>/stat``'s comm, so it is the first 15
-        characters of the executable's name and nothing longer.  Match on
-        ``cmdline`` when the name is a program whose name is long, such
-        as ``nix-daemon``.
+        ``name`` is ``stat``'s comm, so the first 15 characters of the
+        executable's name and nothing longer.  Match on ``cmdline`` for
+        anything named longer than that.
         """
         found = []
         for entry in os.scandir("/proc"):
@@ -130,8 +127,8 @@ class Agent(Service):
                 stat = open(f"/proc/{entry.name}/stat").read()
                 raw = open(f"/proc/{entry.name}/cmdline", "rb").read()
             except OSError:
-                # It exited between the listing and the read. Not an
-                # error: that is the answer, it is not running.
+                # It exited between the listing and the read, which is
+                # the answer: it is not running.
                 continue
             # comm is in brackets and may hold spaces and brackets of its
             # own, so split on the last one rather than on whitespace.

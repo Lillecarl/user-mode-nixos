@@ -142,6 +142,11 @@ class MachineSpec:
 class Machine:
     """Boots a guest and drives it, in the style of a NixOS test node."""
 
+    artifacts: Path | None
+    """A host directory this guest sees at ``/artifacts``.  What the guest
+    writes there is on the host the moment it is written, so it survives a
+    guest that never answers again."""
+
     def __init__(
         self,
         spec: MachineSpec,
@@ -159,9 +164,6 @@ class Machine:
         self.backend = backends.get(spec.backend)
         self.lan_fd = lan_fd
         self.artifacts = artifacts
-        """A host directory this guest sees at ``/artifacts``, or None.
-        What the guest writes there is on the host the moment it is
-        written, so it survives a guest that never answers again."""
         self.boot_timeout = boot_timeout
         self.command_timeout = command_timeout
         self.forward: list[forward.Rule] = list(spec.forward)
@@ -512,19 +514,18 @@ class Machine:
     async def processes(self) -> list[dict]:
         """Every process in the guest: pid, ppid, name and cmdline.
 
-        What it is for: proving that the thing under test left nothing
-        running.  A guest is thrown away at poweroff, so a leak inside
-        one costs nothing -- which is exactly why the guest is where a
-        leak can be counted without a machine to clean up afterwards.
+        For proving that the thing under test left nothing running.  A
+        guest is thrown away at poweroff, so it is where a leak can be
+        counted with no machine to clean up afterwards.
         """
         return await self._ask("processes", self._agent.processes(), _SYSTEMD_TIMEOUT)
 
     async def count_processes(self, pattern: str) -> int:
         """How many processes have *pattern* in their name or command.
 
-        A plain substring, and both fields, because `/proc/<pid>/stat`
-        truncates a name at 15 characters -- `nix-daemon` survives that
-        and a longer one does not.
+        Both fields, because ``/proc/<pid>/stat`` truncates a name at 15
+        characters -- ``nix-daemon`` survives that and a longer name does
+        not.
         """
         return sum(
             1
@@ -570,11 +571,9 @@ class Machine:
                     f"{await self.journal(unit)}"
                 )
             if asyncio.get_running_loop().time() > deadline:
-                # With the journal, the way a `failed` unit reports one.
-                # A unit that never starts is the harder case of the two
-                # -- `inactive` says only that nothing happened, and what
-                # did not happen is in the log of whatever was supposed
-                # to pull it in.
+                # With the journal, like the `failed` branch above: an
+                # `inactive` unit says only that nothing happened, and why
+                # is in the log of whatever was to pull it in.
                 raise MachineError(
                     f"[{self.name}] timed out waiting for unit {unit} "
                     f"(state: {state})\n{await self.journal(unit)}"

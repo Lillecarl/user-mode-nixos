@@ -49,14 +49,15 @@ def _tail(path: Path, lines: int = 20) -> str:
         return f"({path} unreadable: {error})"
     return "\n".join(text.splitlines()[-lines:]) or f"({path} is empty)"
 
+
 ARTIFACTS_ENV = "UML_ARTIFACTS"
 """What the UML guest's /init reads the host directory from.  Not the
-host-side ``UML_TEST_ARTIFACTS``: that one names the root of a run, and
-this one names one guest's own subdirectory of it."""
+host-side ``UML_TEST_ARTIFACTS``: that one names the root of a run, this
+one names one guest's subdirectory of it."""
 
 ARTIFACTS_TAG = "artifacts"
-"""The virtiofs tag QEMU serves the same directory under.  ``modules/
-qemu.nix`` mounts it by this name."""
+"""The virtiofs tag QEMU serves the same directory under.
+``modules/qemu.nix`` mounts it by this name."""
 
 _VECTOR_DEPTH = 64
 """Frames per ``sendmmsg``/``recvmmsg``, and NAPI's poll weight, for UML.
@@ -116,15 +117,9 @@ class Uml:
         ]
         if machine.artifacts is not None:
             # The kernel does not know this one, so it hands it to /init
-            # as an environment variable -- "will be passed to user
-            # space" in the boot log. modules/image.nix reads it there
-            # and mounts hostfs on /artifacts.
-            #
-            # busybox mount, in /init, and not a systemd mount unit:
-            # util-linux mounts through fsconfig(2), and hostfs has no
-            # parameter for the host directory, so the new API can only
-            # ever give the guest the host's whole root. Measured:
-            # "hostfs: Unknown parameter '/some/dir'".
+            # as an environment variable -- "will be passed to user space"
+            # in the boot log. modules/image.nix mounts it there, with
+            # busybox, and says why it cannot be a mount unit.
             argv.append(f"{ARTIFACTS_ENV}={machine.artifacts}")
         if lan_fd is not None:
             argv.append(self._vec(1, lan_fd, spec.mtu))
@@ -314,8 +309,8 @@ class Qemu:
     ) -> tuple[int, subprocess.Popen]:
         """Serve a host directory, and leave no socket behind.
 
-        Called twice: once for the store, once for the guest's artifacts
-        directory.  *socket_name* keeps the two apart under *rundir*.
+        *socket_name* keeps the store's and the artifacts' sockets apart
+        under *rundir*.
 
         virtiofsd takes a *listening* socket on ``--fd``, so the path it
         was bound to is only needed for long enough to connect to it once.
