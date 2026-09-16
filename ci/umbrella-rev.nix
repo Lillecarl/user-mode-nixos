@@ -10,9 +10,15 @@
 # starting and the lock commit, two different `cacheEnv` store paths, and a
 # later job asking for one that nothing had built. nanopynix issue #301.
 #
-# So one job resolves the head, over the git protocol rather than through
-# api.github.com, and every other job takes the answer through `needs`. It
-# costs three seconds.
+# So one job resolves it and every other job takes the answer through `needs`.
+#
+# **It resolves the umbrella that locks this commit, not the head of the
+# umbrella default branch.** The head is a moving answer: it is whatever
+# landed most recently, which for a branch nobody landed is not related to
+# this commit at all. `ci/walkback.sh` reads
+# `refs/umbrella/<name>/<revision>` from the umbrella remote instead, walking
+# HEAD backwards to the nearest revision the umbrella has locked. One
+# `git ls-remote` and one `git rev-list`.
 #
 # It wraps `evalWorkflow` rather than being written into each workflow, so a
 # workflow or a job added later cannot be the one that forgets it.
@@ -26,9 +32,19 @@ let
     outputs.rev = "\${{ steps.resolve.outputs.rev }}";
     steps = [
       {
+        uses = "actions/checkout@v4";
+        # walkback walks HEAD backwards until it reaches a commit the
+        # umbrella has locked. A branch nobody landed needs its branch
+        # point, so the checkout has to reach that far back.
+        "with".fetch-depth = 100;
+      }
+      {
         id = "resolve";
         name = "Resolve the umbrella revision";
-        run = "git ls-remote https://github.com/nixidae/nixidae main | cut -f1 | sed 's/^/rev=/' >> \"$GITHUB_OUTPUT\"";
+        run = ''
+          rev=$(ci/walkback.sh https://github.com/nixidae/nixidae user-mode-nixos)
+          echo "rev=$rev" >> "$GITHUB_OUTPUT"
+        '';
       }
     ];
   };
