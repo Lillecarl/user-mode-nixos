@@ -347,6 +347,21 @@ in
           checked at all.
         '';
       };
+
+      ignore = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        example = lib.literalExpression ''[ "reportMissingImports" ]'';
+        description = ''
+          pyright rules to turn off for the whole script, the way
+          `pkgs.writers.writePython3Bin` takes `flakeIgnore`.
+
+          Each name becomes `"<rule>": "none"` in the generated
+          `pyrightconfig.json`. For a check that is right about something
+          the author cannot fix -- an import that only exists inside a
+          guest, say -- rather than for one that is inconvenient.
+        '';
+      };
     };
 
     nixDatabase = {

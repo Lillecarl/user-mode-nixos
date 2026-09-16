@@ -57,9 +57,31 @@ rec {
       scripts,
       extraPackages ? [ ],
       strict ? false,
+      ignore ? [ ],
     }:
     let
       python = pkgs.python3.withPackages (_: [ runner ] ++ extraPackages);
+
+      # `ignore` is pyright's rule names, the way `writePython3Bin`'s
+      # `flakeIgnore` is flake8's codes: each one turned off for every
+      # script, for a check that is otherwise right about a thing the
+      # author cannot fix.
+      rules = lib.listToAttrs (
+        map (rule: lib.nameValuePair rule "none") ignore
+      );
+
+      settings = {
+        typeCheckingMode = if strict then "strict" else "standard";
+        pythonVersion = lib.versions.majorMinor python.python.version;
+        reportMissingImports = "error";
+        # Neither standard nor strict turns this on, and it is what makes
+        # the rest worth running: an unannotated parameter is Unknown, and
+        # nothing done to an Unknown is checked at all. Measured --
+        # `await vms.node.succeed(123)` and a call to a method that does
+        # not exist both passed without it.
+        reportMissingParameterType = "error";
+      }
+      // rules;
     in
     pkgs.runCommand "typecheck-${name}"
       {
@@ -73,20 +95,8 @@ rec {
         ${lib.concatMapStringsSep "\n" (
           script: "cp ${script} scripts/${baseNameOf script}"
         ) scripts}
-        # `reportMissingParameterType`, which neither standard nor strict
-        # turns on by itself, is what makes the rest of this worth
-        # running. A script written `async def test(vms)` has an Unknown
-        # parameter, and pyright checks nothing done to an Unknown --
-        # measured: `await vms.node.succeed(123)` and a call to a method
-        # that does not exist both passed. Annotate it `vms: Machines`.
-        cat > pyrightconfig.json <<EOF
-        {
-          "typeCheckingMode": "${if strict then "strict" else "standard"}",
-          "pythonVersion": "${lib.versions.majorMinor python.python.version}",
-          "reportMissingImports": "error",
-          "reportMissingParameterType": "error"
-        }
-        EOF
+        cp ${pkgs.writeText "pyrightconfig.json" (builtins.toJSON settings)} \
+          pyrightconfig.json
         # Offline: pyright downloads a node runtime unless it is told
         # which one to use, and a build sandbox has no network.
         export HOME=$TMPDIR
@@ -155,7 +165,12 @@ rec {
         nix run --file . iperf.qemu.run
 
     `passthru` is for whatever else a caller wants to reach off its test,
-    such as `typeCheck` over the script.
+    such as a second derivation that reads its artifacts.
+
+    pyright runs over `script` as an input of the test, so a typo in it
+    stops a derivation that takes seconds rather than one that boots
+    guests.  `boot.uml.typeCheck` on any guest is the switch, and carries
+    the packages the script imports and the rules to ignore.
 
     **A test derivation never fails.** `.attempt` is the run, and it
     always succeeds; the test itself reads the exit code `.attempt` wrote
@@ -252,7 +267,7 @@ rec {
         lib.optionalString cfg.enable "${typeCheck {
           name = "${name}${suffix}-script";
           scripts = [ script ];
-          inherit (cfg) extraPackages strict;
+          inherit (cfg) extraPackages strict ignore;
         }}";
 
       /*
