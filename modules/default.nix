@@ -290,22 +290,42 @@ in
       with one until something runs Nix, and fails then as a network
       timeout that names nothing.
     */
+    nixDatabase = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        example = false;
+        description = ''
+          Build a Nix database for the store the guest sees, and put it on
+          the root image.
+
+          Turning this off leaves a guest whose `/nix/store` is full of
+          paths that Nix in there calls invalid.
+        '';
+      };
+
+      extraRoots = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        example = lib.literalExpression ''[ "''${pkgs.hello}" ]'';
+        description = ''
+          Store paths to register beyond the guest's own system closure.
+
+          `mkTest` already adds everything in its `settings` to this, so a
+          test that hands its guests a store path that way needs nothing
+          here.  This is for a path that reaches a guest by some other
+          route.
+
+          Each one becomes a dependency of the guest, which is also what
+          puts it in the build sandbox in the first place.
+        '';
+      };
+    };
+
     /*
-      pyright over the test's script, as an input of the test itself.
-
-      A script is Python that nothing imports and no test runs until the
-      guests have booted, so a typo in it costs a boot to find. This makes
-      the check a dependency of the run: the derivation cannot start until
-      the script type checks, and the check itself takes seconds.
-
-      On by default. A script that does not type check is a script whose
-      author has no type checker, and the cost of being wrong about that
-      is measured in guest boots.
-
       `mkTest` reads this off the first guest, the way it reads the kernel
-      and the toolchain. The script belongs to the test rather than to a
-      node, but a node's options are where a test's Nix-side settings
-      already live.
+      and the toolchain. The script belongs to the test and not to a node,
+      but a node's options are where a test's Nix-side settings live.
     */
     typeCheck = {
       enable = lib.mkOption {
@@ -316,9 +336,12 @@ in
           Run pyright over the test's script, as an input of the test
           derivation.
 
-          Turn it off for a script that cannot be checked -- one that
-          imports something the check's environment has no way to
-          provide.
+          A script is Python that nothing imports until the guests have
+          booted, so a typo in it otherwise costs a boot to find.  The
+          check takes seconds.
+
+          Turn it off for a script whose imports the check's environment
+          cannot provide.
         '';
       };
 
@@ -357,41 +380,9 @@ in
           `pkgs.writers.writePython3Bin` takes `flakeIgnore`.
 
           Each name becomes `"<rule>": "none"` in the generated
-          `pyrightconfig.json`. For a check that is right about something
+          `pyrightconfig.json`.  For a check that is right about something
           the author cannot fix -- an import that only exists inside a
           guest, say -- rather than for one that is inconvenient.
-        '';
-      };
-    };
-
-    nixDatabase = {
-      enable = lib.mkOption {
-        type = lib.types.bool;
-        default = true;
-        example = false;
-        description = ''
-          Build a Nix database for the store the guest sees, and put it on
-          the root image.
-
-          Turning this off leaves a guest whose `/nix/store` is full of
-          paths that Nix in there calls invalid.
-        '';
-      };
-
-      extraRoots = lib.mkOption {
-        type = lib.types.listOf lib.types.str;
-        default = [ ];
-        example = lib.literalExpression ''[ "''${pkgs.hello}" ]'';
-        description = ''
-          Store paths to register beyond the guest's own system closure.
-
-          `mkTest` already adds everything in its `settings` to this, so a
-          test that hands its guests a store path that way needs nothing
-          here.  This is for a path that reaches a guest by some other
-          route.
-
-          Each one becomes a dependency of the guest, which is also what
-          puts it in the build sandbox in the first place.
         '';
       };
     };
