@@ -67,7 +67,6 @@ let
     k8s = {
       description = "a three-node kubeadm cluster";
       timeoutMinutes = 120;
-      heavy = true;
       # Everything the cluster is built on, asked in a couple of minutes
       # rather than found out from a control plane that never becomes
       # healthy.  Nothing here is worth two hours if a container cannot
@@ -109,7 +108,6 @@ let
     {
       description,
       timeoutMinutes,
-      heavy ? false,
       after ? [ ],
       backend ? "qemu",
     }:
@@ -118,10 +116,7 @@ let
       needs = (lib.optional (backend == "uml") "kernel") ++ after;
       inherit timeoutMinutes;
       cond = selectable "test-${name}";
-      ghanix = lib.mkMerge [
-        (if backend == "qemu" then guestBootstrap else sandboxBootstrap)
-        { freeDiskSpace.enable = heavy; }
-      ];
+      ghanix = if backend == "qemu" then guestBootstrap else sandboxBootstrap;
       steps = [
         (steps.build {
           name = "Run ${name} on ${backend}: ${description}";
