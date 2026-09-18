@@ -427,8 +427,15 @@ let
     mapping and `kubectl apply` reads a List as the resources in it.
 
     The capacity is a label and not a limit: nothing enforces a hostPath
-    volume's size, so this only has to be larger than any claim.  The node's
-    own disk is the real bound -- `boot.uml.diskSize`.
+    volume's size.  It is `boot.uml.diskSize` because that *is* the bound --
+    the volumes are directories on the guest's root image, which also holds
+    everything else the guest writes.  A fixed number here would be a claim
+    the disk cannot honour, and the only thing that goes wrong is silence:
+    a claim binds, the writes fail later with ENOSPC, and the PV still says
+    it had room.
+
+    The number is the whole disk, so it is still generous rather than
+    honest -- it simply cannot be exceeded.
 
     `WaitForFirstConsumer` with `nodeAffinity`, the way a `local` volume is
     written.  The directory is on one node, so the scheduler has to place the
@@ -460,7 +467,7 @@ let
       kind = "PersistentVolume";
       metadata.name = "${config.networking.hostName}-${toString index}";
       spec = {
-        capacity.storage = "100Gi";
+        capacity.storage = "${toString config.boot.uml.diskSize}Mi";
         accessModes = [ "ReadWriteOnce" ];
         persistentVolumeReclaimPolicy = "Retain";
         storageClassName = "standard";
