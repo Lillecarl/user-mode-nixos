@@ -29,6 +29,11 @@ let
   resolver = {
     runs-on = "ubuntu-24.04";
     timeout-minutes = 5;
+    # One `git ls-remote` and one `git rev-list`, so there is nothing to make
+    # room for, and the step is not free: it deletes tens of gigabytes and
+    # prunes every Docker image, which is minutes. The cap above is five, and
+    # it was set for a job that takes seconds.
+    ghanix.freeDiskSpace.enable = false;
     outputs.rev = "\${{ steps.resolve.outputs.rev }}";
     steps = [
       {
