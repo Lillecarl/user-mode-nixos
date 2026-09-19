@@ -172,6 +172,40 @@ async def _until(what, check, timeout, machine):
         ) from None
 
 
+async def unscheduled(vm):
+    """The events, and a describe of every pod that is not Running.
+
+    **A pod that never leaves Pending leaves no other trace.** It starts no
+    container, so `crictl ps -a` does not list it; it writes no pod log, so
+    the log dump below is empty for it; and the kubelet never sees it, so
+    its journal says nothing either. The reason is the scheduler's, and the
+    scheduler writes it to an Event and to `describe`.
+
+    Measured on nixkube's `test-qemu-ci-cache`: two runs reported
+    `pynixd-0: Pending` for 300s each, and everything this function did not
+    yet collect said nothing at all about it.
+
+    `execute` and not `succeed`: this runs on a machine that is already in
+    trouble, and a diagnostic must never be the thing that fails.
+    """
+    # `--output name` gives `pod/<name>` and no namespace, so the namespace
+    # comes from custom columns instead.
+    columns = "NS:.metadata.namespace,NAME:.metadata.name"
+    return (
+        await vm.execute(
+            "kubectl get events --all-namespaces"
+            " --sort-by=.lastTimestamp 2>&1 | tail -n 60;"
+            " echo;"
+            " kubectl get pods --all-namespaces --no-headers"
+            " --field-selector=status.phase!=Running,status.phase!=Succeeded"
+            f" --output custom-columns={columns} 2>/dev/null"
+            " | while read -r ns name; do"
+            "     kubectl describe pod -n $ns $name 2>&1 | tail -n 30;"
+            "   done"
+        )
+    )[1]
+
+
 async def diagnose(vm):
     """Everything worth knowing about a node that would not come up.
 
@@ -207,6 +241,8 @@ async def diagnose(vm):
     return (
         f"--- [{vm.name}] addresses and routes ---\n"
         f"{(await vm.execute('ip -brief addr; ip route; ip -6 route'))[1]}\n"
+        f"--- [{vm.name}] events, and the pods that are not running ---\n"
+        f"{await unscheduled(vm)}\n"
         f"--- [{vm.name}] crictl ps -a ---\n{(await vm.execute('crictl ps -a'))[1]}\n"
         f"--- [{vm.name}] kubelet ---\n{await vm.journal('kubelet.service', lines=80)}\n"
         f"--- [{vm.name}] containerd ---\n{await vm.journal('containerd.service', lines=40)}\n"
