@@ -40,6 +40,16 @@ let
       # has to fail here rather than somewhere else.
       backend = "uml";
     };
+    memory = {
+      # One guest, one closure read, and four numbers. Its own job
+      # because it is the only check that measures the host rather than
+      # the guest, so a regression in it says something no other job can.
+      description = "a guest gives its memory back";
+      timeoutMinutes = 20;
+      # UML only. The mechanism is UML's management console, and a QEMU
+      # guest raises rather than pretending -- see issues #12 and #4.
+      backend = "uml";
+    };
     iperf = {
       description = "what a segment between two guests carries";
       timeoutMinutes = 45;
