@@ -56,15 +56,6 @@ def socket_path(uml_dir: Path) -> Path:
     return uml_dir / UMID / "mconsole"
 
 
-def fits(uml_dir: Path) -> bool:
-    """Would the socket for *uml_dir* fit in a ``sockaddr_un``?
-
-    A caller with a long ``TMPDIR`` -- an agent's scratch directory is
-    often 90 characters on its own -- otherwise loses the console with no
-    error it would connect to the cause."""
-    return len(str(socket_path(uml_dir)).encode()) < UNIX_PATH_MAX
-
-
 class Mconsole:
     """One guest's console.  Not connected until :meth:`request` is called.
 
@@ -151,4 +142,4 @@ class Mconsole:
         await self.request(f"config mem={sign}{abs(delta) // 1024}K")
 
 
-__all__ = ["UMID", "Mconsole", "MconsoleError", "fits", "socket_path"]
+__all__ = ["UMID", "UNIX_PATH_MAX", "Mconsole", "MconsoleError", "socket_path"]
