@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
-"""A guest gives its memory back.
+"""A guest gives its memory back, by itself and on demand.
 
-The three facts this pins, in the order they happen:
+Two mechanisms, and this checks each where it is visible:
 
-1. A guest that reads the store fills its page cache with a second copy of
-   pages the host already holds, and the host pays for both.
-2. Dropping that cache frees the pages inside the guest and changes
-   nothing on the host: the file UML uses as the guest's RAM keeps every
-   block it has ever allocated.
-3. `shrink` is what makes the host stop paying, and `grow` gives the room
-   back to the guest.
-
-Step 2 is the one worth a test of its own. Without it, step 3 would pass
-against a guest that never needed shrinking.
+- Free page reporting punches holes in the file UML maps as the guest's
+  memory, so what the host pays falls on its own within seconds of the
+  guest freeing anything. Measured from the host, because no number
+  inside the guest can see it.
+- The management console's balloon takes pages out of the guest on
+  demand. Measured inside the guest, because after reporting has run
+  there is little left for it to return to the host -- what it still
+  does is take memory away from the guest and give it back.
 """
 
-from uml_runner import Machines, run_test
+import asyncio
+
+from uml_runner import Machine, Machines, run_test
 
 #: What the guest reads: every distinct file of its own system closure.
 #: Measured at 362 MiB over 16002 files, and 17 seconds for the run.
@@ -24,65 +24,94 @@ from uml_runner import Machines, run_test
 #: entries resolving to a few dozen store paths -- so reading it by name
 #: reads the same inodes over and over and caches almost nothing. An
 #: earlier version of this test did that and read 424 MiB to cache 52 MB.
+#:
+#: `|| true` because `xargs` exits 123 when any `cat` did, and one of
+#: 16002 paths being unreadable says nothing about the memory this is
+#: measuring. What the read achieved is asserted, not assumed.
 READ = (
     "find -L /run/current-system -type f 2>/dev/null "
     "| xargs -r readlink -f 2>/dev/null | sort -u "
     "| xargs -r cat 2>/dev/null > /dev/null || true"
 )
-#: `|| true` because `xargs` exits 123 when any `cat` did, and one of
-#: 16002 paths being unreadable says nothing about the memory this is
-#: measuring. What the read achieved is asserted below, not here.
 
 #: How much page cache the read has to produce for the rest to mean
-#: anything, in kibibytes. Measured: 79 MB before, 451 MB after.
-CACHED_KIB = 200 * 1024
+#: anything, in kibibytes. Measured: 79 MB before, 441 MB after.
+GREW_KIB = 200 * 1024
 
-#: Give back this much. Smaller than what the cache held, because the
-#: balloon allocates GFP_ATOMIC and takes only pages that are already free
-#: -- asking for everything would make a partial result look like a bug.
+#: How close to where it started the host has to come back, in
+#: kibibytes. Measured: 149M at boot, 553M after the read, 148M three
+#: seconds after `drop_caches`. The margin is for a loaded host, not for
+#: a partial result.
+SETTLED_KIB = 64 * 1024
+
+#: Long enough to be a failure rather than a slow host. The framework
+#: waits two seconds before it starts a cycle and reports an idle guest
+#: in about thirty; this took three.
+REPORT_TIMEOUT = 60
+
+#: What the balloon takes. Smaller than what the cache held, because it
+#: allocates GFP_ATOMIC and takes only pages that are already free.
 SHRINK = "256M"
+
+
+async def settle(vm: Machine, target: int) -> int:
+    """Wait for what the host pays to fall to *target* kibibytes."""
+    paying = vm.host_memory_kib()
+    with vm.waiting("the host to stop paying for freed pages"):
+        for _ in range(REPORT_TIMEOUT):
+            paying = vm.host_memory_kib()
+            if paying <= target:
+                return paying
+            await asyncio.sleep(1)
+    raise AssertionError(
+        f"the host still pays {paying // 1024}M after {REPORT_TIMEOUT}s, "
+        f"wanted {target // 1024}M: free page reporting is not running, or "
+        "the host does not support MADV_REMOVE where the guest's memory is"
+    )
 
 
 async def test(vms: Machines) -> None:
     vm = vms.node
 
-    await vm.succeed(READ, timeout=300)
+    booted = vm.host_memory_kib()
+    print(f"[test] at boot: host {booted // 1024}M")
 
+    await vm.succeed(READ, timeout=300)
     cached = (await vm.meminfo())["Cached"]
     filled = vm.host_memory_kib()
     print(f"[test] after reading: guest cached {cached // 1024}M, host {filled // 1024}M")
-    assert cached > CACHED_KIB, (
+    assert cached > GREW_KIB, (
         f"the guest cached {cached}kB, so the read did not land in its page "
         "cache and nothing after this measures anything"
+    )
+    assert filled - booted > GREW_KIB, (
+        "the host did not start paying for that cache, so there is nothing "
+        "for the rest of this test to give back"
     )
 
     await vm.drop_caches()
     dropped = (await vm.meminfo())["Cached"]
-    still = vm.host_memory_kib()
-    print(f"[test] after drop_caches: guest cached {dropped // 1024}M, host {still // 1024}M")
     assert dropped < cached // 2, "drop_caches freed nothing in the guest"
-    assert still >= filled * 9 // 10, (
-        "the host gave memory back without being asked, which means this "
-        "test is no longer measuring what it says: freeing a page inside "
-        "the guest does not punch a hole in the file UML maps as its RAM"
-    )
 
-    await vm.shrink(SHRINK)
-    after = vm.host_memory_kib()
-    print(f"[test] after shrink {SHRINK}: host {after // 1024}M")
-    # Most of what was asked for, not all: the balloon holds its own
-    # bookkeeping pages, and it stops at the first allocation it cannot
-    # make rather than reclaiming.
-    assert still - after > 128 * 1024, (
-        f"asked for {SHRINK} back and the host only stopped paying for "
-        f"{(still - after) // 1024}MiB"
-    )
+    settled = await settle(vm, booted + SETTLED_KIB)
+    print(f"[test] the host stopped paying by itself: {filled // 1024}M -> {settled // 1024}M")
 
+    # The console, measured in the guest. Nothing is asked of the host
+    # here: reporting has already taken those pages, and asking again
+    # would be a race with it rather than a check of anything.
     free_before = (await vm.meminfo())["MemFree"]
+    await vm.shrink(SHRINK)
+    ballooned = (await vm.meminfo())["MemFree"]
+    print(f"[test] after shrink {SHRINK}: guest free {free_before // 1024}M -> {ballooned // 1024}M")
+    assert free_before - ballooned > GREW_KIB, (
+        f"asked the balloon for {SHRINK} and the guest only gave up "
+        f"{(free_before - ballooned) // 1024}M"
+    )
+
     await vm.grow(SHRINK)
-    free_after = (await vm.meminfo())["MemFree"]
-    print(f"[test] after grow {SHRINK}: guest free {free_after // 1024}M")
-    assert free_after > free_before, "grow returned nothing to the guest"
+    returned = (await vm.meminfo())["MemFree"]
+    print(f"[test] after grow {SHRINK}: guest free {returned // 1024}M")
+    assert returned - ballooned > GREW_KIB, "grow returned nothing to the guest"
 
 
 run_test(test)

@@ -165,11 +165,11 @@ in
       description = ''
         Guest RAM, as UML's `mem=` and QEMU's `-m` both take it.
 
-        A ceiling rather than a cost. A UML guest's memory is a sparse
-        file, so the host pays for the pages the guest has touched --
-        but page cache fills the rest and nothing gives a page back on
-        its own. A test that wants the memory back calls
-        `vm.drop_caches()` and then `vm.shrink(...)`; see the README.
+        A ceiling rather than a cost, under UML. The guest's memory is
+        a sparse file and the guest punches holes in it as it frees
+        pages, so the host pays for what a guest is using rather than
+        for what it has ever used. `vm.host_memory_kib()` is that
+        number; see the README.
 
         Under UML, below about 192M the kernel starts OOM-killing the
         agent while systemd and Python are both resident.

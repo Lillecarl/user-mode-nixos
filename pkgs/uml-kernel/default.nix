@@ -72,6 +72,14 @@ let
     # y`, which is why it is named here.
     MCONSOLE = yes;
 
+    # And the same thing without being asked: the guest punches a hole in
+    # its own memory file whenever it has a free block to report, so the
+    # host pays for what a guest is using rather than for what it has ever
+    # used. `select`s PAGE_REPORTING, which allnoconfig would otherwise
+    # leave off. Carried as a patch here; see the file for why upstream's
+    # virtio-balloon cannot do this job under UML.
+    UML_FREE_PAGE_REPORTING = yes;
+
     MULTIUSER = yes;
     ADVISE_SYSCALLS = yes;
     MEMBARRIER = yes;
@@ -284,6 +292,12 @@ in
 (linuxKernel.buildLinux {
   inherit version src modDirVersion;
   pname = "linux-uml";
+  kernelPatches = [
+    {
+      name = "um-return-free-pages-to-the-host";
+      patch = ./0001-um-return-free-pages-to-the-host.patch;
+    }
+  ];
   kernelArch = "um";
   target = "linux";
   defconfig = "allnoconfig";

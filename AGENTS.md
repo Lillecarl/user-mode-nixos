@@ -235,12 +235,15 @@ grep -E '^CONFIG_(NF_|IP_NF_|VETH|BRIDGE)' \
   journal — `await vm.journal("uml-agent")`.
 - `boot.uml.memory` below ~192M gets the agent OOM-killed partway
   through a test, which looks like a hang.
-- `boot.uml.memory` is a ceiling a guest drifts to, not a cost: guest RAM
-  is a sparse file, and page cache fills it. `await vm.drop_caches()` then
-  `await vm.shrink("256M")`, in that order -- `shrink` allocates
-  `GFP_ATOMIC` and takes only pages already free, so alone it takes almost
-  nothing and still reports success. `vm.host_memory_kib()` is what the
-  host pays. UML only; QEMU raises. README has the numbers.
+- `boot.uml.memory` is a ceiling, not a cost: guest RAM is a sparse file,
+  and the guest punches holes in it as it frees pages. `vm.host_memory_kib()`
+  is what the host pays; no number inside the guest can see it. Measured,
+  `mem=1024M`: 149M at boot, 553M after reading its closure, 148M three
+  seconds after `drop_caches`, with nothing asked of it.
+- `vm.shrink("256M")` / `vm.grow(...)` squeeze the guest rather than the
+  host, now that reporting takes the host side. `shrink` allocates
+  `GFP_ATOMIC` and takes only pages already free, so `drop_caches` first
+  and read `vm.meminfo()` to see what moved. UML only; QEMU raises.
 - The whole store is shared into the guest over hostfs, so anything the
   guest writes to `/nix/store` lands in a tmpfs overlay and is lost on
   poweroff. That is intentional.

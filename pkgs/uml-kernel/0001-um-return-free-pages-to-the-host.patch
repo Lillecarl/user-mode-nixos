@@ -1,0 +1,161 @@
+From: user-mode-nixos <https://github.com/Lillecarl/user-mode-nixos>
+Subject: [PATCH] um: return free pages to the host
+
+A UML guest's "physical" memory is a sparse file it maps MAP_SHARED, so
+the host pays for every page the guest has ever touched and keeps paying
+after the guest frees it. A long-running guest therefore drifts towards
+its whole mem= however little it is using, because Linux fills the rest
+of its memory with page cache and never gives a page back on its own.
+
+madvise(MADV_REMOVE) on that mapping is what makes the host stop paying,
+and os_drop_memory() already wraps it -- mconsole's "mem" device uses it
+to unplug memory on request. This does the same thing without the
+request: the generic free page reporting framework says which blocks are
+free and holds them isolated while the hole is punched. Exactly what
+virtio-balloon's free page reporting does, with madvise in place of a
+virtqueue.
+
+virtio-balloon is not an option here. arch/um's virtio support is a
+vhost-user transport, and there is no balloon backend to speak to.
+
+Measured on a guest at mem=1024M that read 362 MiB of its store and then
+dropped its page cache: the host was paying 553 MiB before and 300 MiB
+after, with nothing asked of the guest.
+
+Not for a kernel with page poisoning, and the Kconfig says so. A reported
+page comes back zeroed, because that is what punching the hole does, and
+the check at allocation would then call it a bad page. virtio-balloon's
+reporting has the same property.
+
+--- a/arch/um/Kconfig
++++ b/arch/um/Kconfig
+@@ -229,6 +229,32 @@
+ 	  The keys are documented in <file:Documentation/admin-guide/sysrq.rst>. Don't say Y
+ 	  unless you really know what this hack does.
+ 
++config UML_FREE_PAGE_REPORTING
++	bool "Return free pages to the host"
++	select PAGE_REPORTING
++	depends on !PAGE_POISONING
++	default y
++	help
++	  A UML guest's memory is a sparse file the host pays for page by
++	  page as the guest touches them, and a guest that frees a page does
++	  not make the host stop paying for it. Over a long run a guest
++	  costs its whole mem= whatever it is using, because the page cache
++	  fills the rest.
++
++	  Say Y and the guest punches a hole in that file whenever it has a
++	  free block of memory to report, so the host pays for what the
++	  guest is using rather than for what it has ever used. The same
++	  mechanism virtio-balloon's free page reporting uses, with
++	  madvise(MADV_REMOVE) in place of a virtqueue -- there is no
++	  balloon device under UML to speak to.
++
++	  A reported page comes back zeroed, which is why this cannot be
++	  combined with page poisoning: the check at allocation would call
++	  such a page a bad one. init_on_free is defeated the same way.
++
++	  The host must support MADV_REMOVE on the directory UML puts its
++	  memory file in. Where it does not, this does nothing and says so.
++
+ config KERNEL_STACK_ORDER
+ 	int "Kernel stack size order"
+ 	default 2 if 64BIT
+--- /dev/null
++++ b/arch/um/kernel/free_pages.c
+@@ -0,0 +1,84 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Give the host back the memory this guest is not using.
++ *
++ * The guest's memory is a sparse file mapped MAP_SHARED, so a hole in
++ * that file is memory the host stops paying for. The generic free page
++ * reporting framework says which blocks are free and holds them isolated
++ * while the hole is punched.
++ */
++
++#include <linux/init.h>
++#include <linux/mm.h>
++#include <linux/page_reporting.h>
++#include <linux/printk.h>
++#include <linux/scatterlist.h>
++
++#include <os.h>
++
++/*
++ * 128 KiB with a 4 KiB page, and one madvise() per block of that size.
++ *
++ * Not the framework's default. That is pageblock_order, which is
++ * MAX_PAGE_ORDER here because UML has no huge pages -- 4 MiB, and a guest
++ * that has just dropped its page cache rarely holds much memory free in
++ * pieces that large. A smaller order reports more and costs syscalls,
++ * which are cheap next to memory the host cannot reuse.
++ */
++#define UML_PAGE_REPORTING_ORDER 5
++
++static int uml_report_free_pages(struct page_reporting_dev_info *prdev,
++				 struct scatterlist *sgl, unsigned int nents)
++{
++	struct scatterlist *sg;
++	unsigned int i;
++
++	for_each_sg(sgl, sg, nents, i) {
++		int err = os_drop_memory(page_address(sg_page(sg)),
++					 sg->length);
++
++		if (err) {
++			/*
++			 * Not fatal. The framework puts the pages back on
++			 * the free lists unreported, and the guest carries on
++			 * having failed only to save memory.
++			 */
++			pr_warn_once("um: cannot return free pages to the host, err = %d\n",
++				     err);
++			return err;
++		}
++	}
++
++	return 0;
++}
++
++static struct page_reporting_dev_info uml_page_reporting = {
++	.report	= uml_report_free_pages,
++	.order	= UML_PAGE_REPORTING_ORDER,
++};
++
++static int __init uml_page_reporting_init(void)
++{
++	int err;
++
++	/*
++	 * The same check mconsole's "mem" device makes, and for the same
++	 * reason: a memory file on a filesystem without MADV_REMOVE fails
++	 * every hole punch, one warning at a time.
++	 */
++	if (!can_drop_memory()) {
++		pr_info("um: the host cannot release memory from this guest's memory file, so free pages stay allocated\n");
++		return 0;
++	}
++
++	err = page_reporting_register(&uml_page_reporting);
++	if (err) {
++		pr_err("um: free page reporting did not start, err = %d\n", err);
++		return err;
++	}
++
++	pr_info("um: returning free pages to the host at order %u\n",
++		uml_page_reporting.order);
++	return 0;
++}
++late_initcall(uml_page_reporting_init);
+--- a/arch/um/kernel/Makefile
++++ b/arch/um/kernel/Makefile
+@@ -23,6 +23,7 @@
+ obj-$(CONFIG_BLK_DEV_INITRD) += initrd.o
+ obj-$(CONFIG_GPROF)	+= gprof_syms.o
+ obj-$(CONFIG_OF) += dtb.o
++obj-$(CONFIG_UML_FREE_PAGE_REPORTING) += free_pages.o
+ obj-$(CONFIG_EARLY_PRINTK) += early_printk.o
+ obj-$(CONFIG_STACKTRACE) += stacktrace.o
+ obj-$(CONFIG_SMP) += smp.o

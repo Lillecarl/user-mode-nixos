@@ -375,31 +375,34 @@ So `boot.uml.memory` is not what the guest costs: the host pays for the
 blocks that file has allocated, which start near zero and grow towards
 `memory` as the guest touches pages.
 
-They grow and do not come down, because a Linux guest fills the rest of
-its RAM with page cache and never gives a page back on its own. The
-runner has the levers:
-
-```python
-await vm.drop_caches()          # free it inside the guest
-await vm.shrink("256M")         # and make the host stop paying for it
-await vm.grow("256M")           # up to the mem= it booted with, never past
-print(vm.host_memory_kib())     # what the host is paying, right now
-```
-
-Both steps, and in that order. `shrink` takes pages that are already
-free: it allocates `GFP_ATOMIC`, which cannot reclaim, and it stops at the
-first page it cannot get while still reporting success. `memory.py` is the
-test, and its numbers are the shape of the thing — one guest at
-`mem=1024M` reading its own 362 MiB closure:
+**They come back down on their own.** The guest reports its free blocks
+and punches holes in that file, so what the host pays follows what the
+guest is using rather than what it has ever used. Measured by
+`memory.py`, one guest at `mem=1024M` reading its own 362 MiB closure:
 
 | | guest `Cached` | host pays |
 | --- | --- | --- |
+| at boot | 79M | 149M |
 | after the read | 441M | 553M |
-| after `drop_caches` | 40M | 553M |
-| after `shrink("256M")` | 40M | 300M |
+| three seconds after `drop_caches` | 40M | 148M |
 
-The middle row is the point: freeing 400 MB inside the guest gave the host
-nothing at all.
+Nothing was asked of the guest for that last row. `vm.host_memory_kib()`
+is the number, and it is the only way to see it: no figure inside the
+guest can tell you what the host is still paying for.
+
+What a test still has a lever for is the guest's own memory:
+
+```python
+await vm.drop_caches()          # free the page cache, which is most of it
+await vm.shrink("256M")         # take memory away from the guest, now
+await vm.grow("256M")           # and give it back, never past its mem=
+```
+
+`shrink` takes pages that are already free: it allocates `GFP_ATOMIC`,
+which cannot reclaim, and it stops at the first page it cannot get while
+still reporting success. After reporting has run there is little left for
+it to return to the host — what it still does is squeeze the guest, which
+is how a test makes one run short of memory on purpose.
 
 **The cache the guest drops is worth less here than on a real machine.** A
 miss on a store file is a host `read()` that hits the host's own page
@@ -407,10 +410,12 @@ cache — a memcpy, not disk I/O. Measured on one guest, host cache hot:
 1.3-1.5 GB/s for a miss against 5.1-6.5 GB/s for a hit. A smaller
 `memory` therefore costs memcpys, not seeks.
 
-Under UML only. The mechanism is UML's management console
-(`CONFIG_MCONSOLE`, `uml_dir=`, `umid=`), because virtio-balloon has no
-backend to speak to there — `virtio_uml` is a vhost-user transport. A
-QEMU guest raises rather than pretending; issue #4 is its side of this.
+Under UML only, and both halves are UML's own: free page reporting
+through `madvise(MADV_REMOVE)` (a patch in `pkgs/uml-kernel`), and the
+management console for the balloon (`CONFIG_MCONSOLE`, `uml_dir=`,
+`umid=`). virtio-balloon has no backend to speak to here — `virtio_uml`
+is a vhost-user transport. A QEMU guest raises rather than pretending;
+issue #4 is its side of this.
 
 ## Containers, and the Kubernetes test
 
