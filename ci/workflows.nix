@@ -46,8 +46,9 @@ let
       # the guest, so a regression in it says something no other job can.
       description = "a guest gives its memory back";
       timeoutMinutes = 20;
-      # UML only. The mechanism is UML's management console, and a QEMU
-      # guest raises rather than pretending -- see issues #12 and #4.
+      # UML, although the test passes on both: this is the job that would
+      # catch a regression in the kernel patch, and only a UML guest has
+      # that patch in it.
       backend = "uml";
     };
     iperf = {

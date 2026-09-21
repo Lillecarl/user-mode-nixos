@@ -12,7 +12,13 @@ python3Packages.buildPythonPackage {
   pyproject = true;
 
   build-system = [ python3Packages.hatchling ];
-  dependencies = [ python3Packages.rpyc ];
+  dependencies = [
+    python3Packages.rpyc
+    # QEMU's own monitor client, rather than a second implementation of
+    # the greeting, the capabilities handshake and the difference between
+    # an event and a reply. Only the QEMU backend imports it.
+    python3Packages.qemu-qmp
+  ];
 
   pythonImportsCheck = [ "uml_runner" ];
 

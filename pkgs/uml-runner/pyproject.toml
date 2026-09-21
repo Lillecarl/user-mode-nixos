@@ -7,7 +7,7 @@ name = "uml-runner"
 version = "0.2.0"
 description = "Run NixOS systems under User-Mode Linux and drive them from Python"
 requires-python = ">=3.10"
-dependencies = ["rpyc"]
+dependencies = ["rpyc", "qemu.qmp"]
 
 [project.scripts]
 run-uml = "uml_runner.cli:main"

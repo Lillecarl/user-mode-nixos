@@ -33,7 +33,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import forward, mconsole
+from . import forward, mconsole, qmp
 
 
 class BackendError(Exception):
@@ -198,6 +198,23 @@ def physmem_dir(memory: str) -> str | None:
     return None
 
 
+def socket_dir(rundir: Path, name: str, fallback: str | None) -> tuple[Path, list[Path]]:
+    """A directory to put *name* in where the kernel will accept the path.
+
+    *rundir* where it fits, and a directory of its own where it does not:
+    a unix socket's path goes in a ``sockaddr_un``, which holds 108 bytes,
+    and a caller whose TMPDIR is long -- an agent's scratch directory is
+    often 90 characters on its own -- would otherwise lose the control
+    channel with nothing but a log line about it.
+
+    Returns the directory and whatever has to be removed afterwards.
+    """
+    if len(str(rundir / name).encode()) < mconsole.UNIX_PATH_MAX:
+        return rundir, []
+    made = Path(tempfile.mkdtemp(prefix="uml-", dir=fallback or "/tmp"))
+    return made, [made]
+
+
 @dataclass
 class Launch:
     """One guest's process, and whatever has to outlive its start."""
@@ -209,10 +226,15 @@ class Launch:
     """Side processes the guest needs -- virtiofsd, passt -- for the
     backends that do not hide them behind something else.  Killed when the
     guest is torn down, in this order."""
-    mconsole: Path | None = None
-    """Where this guest answers management commands, for the backends that
-    have such a thing.  UML does; QEMU's equivalent is its monitor, which
-    nothing here needs yet."""
+    memory: Path | None = None
+    """Where this guest answers a request to change its memory: UML's
+    management console, QEMU's monitor. Which of the two it is follows
+    from the backend, and :class:`Machine` asks the backend rather than
+    the path."""
+    pid_file: Path | None = None
+    """Where the guest wrote its own pid, for a backend whose process is
+    not the one the runner spawned. UML forks the kernel from the passt
+    bridge, so the runner's own pid is the bridge's."""
     cleanup: list[Path] = field(default_factory=list)
     """Directories the backend made outside the run directory, removed when
     the guest is torn down."""
@@ -230,15 +252,7 @@ class Uml:
     def launch(self, machine, rundir: Path, agent_fd: int, lan_fd: int | None) -> Launch:
         spec, tools = machine.spec, machine.tools
         ram = physmem_dir(spec.memory)
-        # The management console lives in the run directory where it fits,
-        # and in a directory of its own where it does not: the socket goes
-        # in a `sockaddr_un`, and a caller whose TMPDIR is long would
-        # otherwise lose the console with nothing but a boot-log line.
-        cleanup: list[Path] = []
-        uml_dir = rundir
-        if not mconsole.fits(uml_dir):
-            uml_dir = Path(tempfile.mkdtemp(prefix="uml-", dir=ram or "/tmp"))
-            cleanup.append(uml_dir)
+        uml_dir, cleanup = socket_dir(rundir, f"{mconsole.UMID}/mconsole", ram)
         argv = [
             str(tools.bridge),
             "--vec",
@@ -291,9 +305,21 @@ class Uml:
             argv=argv,
             pass_fds=pass_fds,
             env=env,
-            mconsole=mconsole.socket_path(uml_dir),
+            memory=mconsole.socket_path(uml_dir),
+            pid_file=uml_dir / mconsole.UMID / "pid",
             cleanup=cleanup,
         )
+
+    @staticmethod
+    def memory_control(path: Path) -> mconsole.Mconsole:
+        """The client for `Launch.memory` under this backend.
+
+        The reply comes back with `sendto` to the address the request came
+        from, so the client needs a bound path of its own -- beside the
+        guest's socket, which is the one directory already known to fit in
+        a `sockaddr_un`.
+        """
+        return mconsole.Mconsole(path, path.with_name("client"))
 
     @staticmethod
     def _vec(unit: int, fd: int, mtu: int) -> str:
@@ -352,14 +378,20 @@ class Qemu:
     ) -> Launch:
         spec, tools = machine.spec, machine.tools
 
-        vfs_fd, vfsd = self._virtiofsd(tools, rundir, "vfs", spec.store)
+        # Every unix socket this guest needs, in one directory short
+        # enough to name them: virtiofsd's, the artifacts one, and the
+        # monitor. `vfs` and `art` are no longer than `qmp`, so one check
+        # covers all three.
+        sockets, cleanup = socket_dir(rundir, "qmp", None)
+
+        vfs_fd, vfsd = self._virtiofsd(tools, sockets, "vfs", spec.store)
         helpers.append(vfsd)
         opened.append(vfs_fd)
 
         art_fd: int | None = None
         if machine.artifacts is not None:
             art_fd, artd = self._virtiofsd(
-                tools, rundir, "art", str(machine.artifacts)
+                tools, sockets, "art", str(machine.artifacts)
             )
             helpers.append(artd)
             opened.append(art_fd)
@@ -404,6 +436,14 @@ class Qemu:
             "-device", "virtconsole,chardev=agent",
             "-netdev", f"stream,id=vec0,addr.type=fd,addr.str={passt_fd}",
             "-device", f"virtio-net-pci,netdev=vec0,mac={spec.mac(0)}",
+            # The guest tells QEMU which pages it has freed and QEMU
+            # madvises them out of the memfd above, so the host stops
+            # paying for a page cache the guest has dropped. Without it a
+            # guest drifts towards its whole `-m` and stays there.
+            "-device", "virtio-balloon-pci,free-page-reporting=on",
+            # And the monitor, which is how the host asks for a size
+            # rather than waiting for the guest to volunteer one.
+            "-qmp", f"unix:{sockets}/qmp,server=on,wait=off",
         ]
         if art_fd is not None:
             argv += [
@@ -423,7 +463,18 @@ class Qemu:
             for fd in (agent_fd, passt_fd, lan_fd, vfs_fd, art_fd, *disk_fds)
             if fd is not None
         )
-        return Launch(argv=argv, pass_fds=pass_fds, helpers=helpers)
+        return Launch(
+            argv=argv,
+            pass_fds=pass_fds,
+            helpers=helpers,
+            memory=sockets / "qmp",
+            cleanup=cleanup,
+        )
+
+    @staticmethod
+    def memory_control(path: Path) -> qmp.Qmp:
+        """The client for `Launch.memory` under this backend."""
+        return qmp.Qmp(path)
 
     @staticmethod
     def _scratch_disk(tools, rundir: Path, image: Path | None) -> tuple[int, int]:

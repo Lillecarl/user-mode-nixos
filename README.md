@@ -370,21 +370,23 @@ Two measured limits worth knowing before they surprise you:
 
 ### What a guest's memory costs the host
 
-A UML guest's "physical" memory is one sparse file it mmaps `MAP_SHARED`.
-So `boot.uml.memory` is not what the guest costs: the host pays for the
+A guest's memory is one sparse file on either backend — UML maps an
+unlinked temporary file, QEMU a `memory-backend-memfd`. So
+`boot.uml.memory` is not what the guest costs: the host pays for the
 blocks that file has allocated, which start near zero and grow towards
 `memory` as the guest touches pages.
 
-**They come back down on their own.** The guest reports its free blocks
-and punches holes in that file, so what the host pays follows what the
-guest is using rather than what it has ever used. Measured by
-`memory.py`, one guest at `mem=1024M` reading its own 362 MiB closure:
+**They come back down on their own.** The guest reports the blocks it has
+freed and the host punches holes in that file, so what the host pays
+follows what the guest is using rather than what it has ever used.
+Measured by `memory.py`, one guest at `memory = "1024M"` reading its own
+closure and then dropping its page cache:
 
-| | guest `Cached` | host pays |
+| | UML | QEMU |
 | --- | --- | --- |
-| at boot | 79M | 149M |
-| after the read | 441M | 553M |
-| three seconds after `drop_caches` | 40M | 148M |
+| at boot | 149M | 349M |
+| after the read | 553M | 782M |
+| after `drop_caches`, within seconds | 148M | 404M |
 
 Nothing was asked of the guest for that last row. `vm.host_memory_kib()`
 is the number, and it is the only way to see it: no figure inside the
@@ -398,11 +400,12 @@ await vm.shrink("256M")         # take memory away from the guest, now
 await vm.grow("256M")           # and give it back, never past its mem=
 ```
 
-`shrink` takes pages that are already free: it allocates `GFP_ATOMIC`,
-which cannot reclaim, and it stops at the first page it cannot get while
-still reporting success. After reporting has run there is little left for
-it to return to the host — what it still does is squeeze the guest, which
-is how a test makes one run short of memory on purpose.
+`shrink` takes pages that are already free, so `drop_caches` comes first
+and `vm.meminfo()` is how you see what moved. After reporting has run
+there is little left for it to return to the host — what it still does is
+squeeze the guest, which is how a test makes one run short of memory on
+purpose. Measured of 256M asked for: UML gave up 256M and returned all of
+it, QEMU gave up 220M and returned 165M.
 
 **The cache the guest drops is worth less here than on a real machine.** A
 miss on a store file is a host `read()` that hits the host's own page
@@ -410,12 +413,18 @@ cache — a memcpy, not disk I/O. Measured on one guest, host cache hot:
 1.3-1.5 GB/s for a miss against 5.1-6.5 GB/s for a hit. A smaller
 `memory` therefore costs memcpys, not seeks.
 
-Under UML only, and both halves are UML's own: free page reporting
-through `madvise(MADV_REMOVE)` (a patch in `pkgs/uml-kernel`), and the
-management console for the balloon (`CONFIG_MCONSOLE`, `uml_dir=`,
-`umid=`). virtio-balloon has no backend to speak to here — `virtio_uml`
-is a vhost-user transport. A QEMU guest raises rather than pretending;
-issue #4 is its side of this.
+Different machinery under each backend, and a test never sees which.
+QEMU gets `virtio-balloon-pci,free-page-reporting=on` and its monitor;
+UML gets neither, because `virtio_uml` is a vhost-user transport with no
+balloon backend to speak to, so it reports through `madvise(MADV_REMOVE)`
+(a patch in `pkgs/uml-kernel`) and balloons through its management
+console (`CONFIG_MCONSOLE`, `uml_dir=`, `umid=`).
+
+Both guests are told to report at order 5, 128 KiB. The default is
+`pageblock_order` — 4 MiB under UML, which has no huge pages, and 2 MiB
+under QEMU — and a guest that has just dropped its page cache holds most
+of its free memory in smaller pieces than that. Measured on QEMU at the
+default: 254M of 552M came back, against 378M at order 5.
 
 ## Containers, and the Kubernetes test
 

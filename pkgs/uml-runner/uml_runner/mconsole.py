@@ -88,7 +88,8 @@ class Mconsole:
             self._socket = sock
         return self._socket
 
-    def close(self) -> None:
+    async def close(self) -> None:
+        """Async to match the QEMU monitor's, which has tasks to stop."""
         if self._socket is not None:
             self._socket.close()
             self._socket = None
@@ -136,5 +137,18 @@ class Mconsole:
             raise MconsoleError(f"{command}: {message}")
         return message
 
+    async def balloon(self, delta: int) -> None:
+        """Move this guest's memory by *delta* bytes.
 
-__all__ = ["UMID", "Mconsole", "MconsoleError", "socket_path"]
+        Negative takes memory away from the guest and gives the host back
+        the pages behind it; positive returns pages an earlier negative
+        took, and cannot go above the `mem=` the guest booted with.
+
+        Bytes, and the console wants a size, so this rounds to whole
+        kibibytes -- `memparse` reads what `mem=` does.
+        """
+        sign = "-" if delta < 0 else "+"
+        await self.request(f"config mem={sign}{abs(delta) // 1024}K")
+
+
+__all__ = ["UMID", "Mconsole", "MconsoleError", "fits", "socket_path"]

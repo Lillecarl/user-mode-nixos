@@ -30,7 +30,18 @@ lib.mkIf (cfg.backend == "qemu") {
   # The agent takes hvc0 instead.
   boot.uml.agentDevice = "/dev/hvc0";
 
-  boot.kernelParams = [ "console=ttyS0,115200" ];
+  boot.kernelParams = [
+    "console=ttyS0,115200"
+    # What the balloon reports as free, in pages: 2^5 is 128 KiB.
+    #
+    # The default is `pageblock_order`, 2 MiB here, and a guest that has
+    # just dropped its page cache holds most of its free memory in
+    # smaller pieces than that -- measured, 254 MB of 552 MB came back at
+    # the default. `mm/page_reporting.c` exposes this as a parameter of
+    # the built-in `page_reporting` "module", and it overrides whatever
+    # virtio-balloon asks for.
+    "page_reporting.page_reporting_order=5"
+  ];
 
   # systemd in the initrd, so the overlay below gets its upperdir and
   # workdir created and its ordering worked out for it.
@@ -50,6 +61,13 @@ lib.mkIf (cfg.backend == "qemu") {
     "virtiofs"
     "overlay"
   ];
+
+  # The balloon, for free page reporting: the guest tells QEMU which
+  # pages it has freed and QEMU madvises them out of the memfd its RAM
+  # lives in.  Named rather than left to udev's PCI autoload, so that a
+  # guest reports from the moment it has a root rather than from whenever
+  # the modalias rule happens to fire.
+  boot.kernelModules = [ "virtio_balloon" ];
 
   /*
     A real disk, the same one UML gets, for the same reason.

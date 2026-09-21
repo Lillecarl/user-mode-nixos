@@ -258,17 +258,17 @@ let
     /*
       Does a guest give its memory back?
 
-      Only under UML: the mechanism is UML's own management console,
-      because virtio-balloon has no backend to speak to there. Issue #12
-      has the measurements and issue #4 has QEMU's side of it.
+      Both backends, and the same script: UML reports free pages through
+      `madvise(MADV_REMOVE)` and QEMU through virtio-balloon, and a test
+      sees one number either way. Issues #12 and #4.
     */
     memory = mkTest {
       name = "memory";
       script = ./tests/memory.py;
       nodes.node = {
-        # Large enough that reading 400 MiB of the store is page cache
-        # and not pressure, which is what the test needs to be able to
-        # attribute what it frees.
+        # Large enough that reading the guest's own closure is page cache
+        # and not pressure, which is what lets the test attribute what it
+        # frees afterwards.
         boot.uml.memory = "1024M";
       };
     };

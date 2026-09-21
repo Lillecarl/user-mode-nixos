@@ -33,6 +33,7 @@ from .arpyc import AsyncConnection, connect
 from . import backend as backends
 from . import forward
 from . import mconsole
+from . import qmp
 from . import report
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
@@ -197,7 +198,8 @@ class Machine:
         self._conn: AsyncConnection | None = None
         self._helpers: list[sync_subprocess.Popen] = []
         self._spare_fds: list[int] = []
-        self._mconsole: mconsole.Mconsole | None = None
+        self._memory: mconsole.Mconsole | qmp.Qmp | None = None
+        self._pid_file: Path | None = None
         self._cleanup: list[Path] = []
 
     @property
@@ -247,14 +249,9 @@ class Machine:
         )
         self._helpers = launch.helpers
         self._cleanup = launch.cleanup
-        if launch.mconsole is not None:
-            # Both paths beside the guest's own socket, never in the run
-            # directory: the umid directory is the one place already known
-            # to fit in a `sockaddr_un`, and it is not the run directory
-            # when the caller's TMPDIR is long.
-            self._mconsole = mconsole.Mconsole(
-                launch.mconsole, launch.mconsole.with_name("client")
-            )
+        self._pid_file = launch.pid_file
+        if launch.memory is not None:
+            self._memory = self.backend.memory_control(launch.memory)
         # Fds the backend opened for the child and no longer needs here.
         self._spare_fds = [
             fd
@@ -349,9 +346,15 @@ class Machine:
                 pass
             self._monitor = None
 
-        if self._mconsole is not None:
-            self._mconsole.close()
-            self._mconsole = None
+        if self._memory is not None:
+            memory, self._memory = self._memory, None
+            try:
+                await memory.close()
+            except (OSError, EOFError, mconsole.MconsoleError, qmp.QmpError):
+                # The guest is already gone by here in the ordinary case,
+                # and a monitor that cannot be said goodbye to must not
+                # stop the rest of the teardown.
+                pass
 
         for directory in self._cleanup:
             shutil.rmtree(directory, ignore_errors=True)
@@ -601,42 +604,51 @@ class Machine:
     def host_memory_kib(self) -> int:
         """Kibibytes of host memory this guest's RAM costs right now.
 
-        UML's "physical" memory is one sparse file it mmaps ``MAP_SHARED``,
-        so the host pays for the blocks that file has allocated and
-        nothing else.  A guest starts near zero however large ``mem=`` is,
-        grows towards it as it touches pages, and comes down only where
-        :meth:`shrink` has punched holes.
+        A guest's memory is one sparse file on both backends -- UML maps
+        an unlinked temporary file, QEMU a ``memory-backend-memfd`` -- so
+        the host pays for the blocks that file has allocated and nothing
+        else. A guest starts near zero however large its memory is, grows
+        towards it as it touches pages, and falls again as it reports the
+        pages it has freed.
 
         The measurement no guest-side number gives: the guest's own
-        ``MemFree`` counts a page it has freed, and the host is still
+        ``MemFree`` counts a page it has freed, and the host may still be
         paying for that page.
         """
-        if self._mconsole is None:
-            raise MachineError(
-                f"[{self.name}] is not a running UML guest, and only one of "
-                "those has a memory file to measure"
-            )
-        # UML writes its own pid beside the console socket.  The runner's
-        # own `_process` is the bridge, which forks the kernel rather than
-        # exec'ing it, so its pid is the wrong one.
-        try:
-            pid = self._mconsole.path.with_name("pid").read_text().strip()
-        except OSError as error:
-            raise MachineError(f"[{self.name}] no pid file: {error}") from error
+        if self._process is None:
+            raise MachineError(f"[{self.name}] is not running")
+        if self._pid_file is None:
+            pid = str(self._process.pid)
+        else:
+            # UML forks the kernel from the passt bridge, so the process
+            # the runner spawned is the bridge and its pid is the wrong
+            # one. The kernel writes its own beside the console socket.
+            try:
+                pid = self._pid_file.read_text().strip()
+            except OSError as error:
+                raise MachineError(f"[{self.name}] no pid file: {error}") from error
         want = backends.memory_bytes(self.spec.memory)
+        # Unlinked and exactly the guest's memory long. QEMU also holds
+        # its scratch disk by fd and unlinked, so a `memfd:` target wins
+        # over a bare size match -- a qcow2 that happened to be exactly
+        # this long would otherwise be read as the guest's memory.
+        found: int | None = None
         for entry in (Path("/proc") / pid / "fd").iterdir():
             try:
-                # Unlinked and exactly `mem=` long is the physmem file and
-                # nothing else: the root image is a store path, and the cow
-                # file is neither deleted nor that size by coincidence.
-                if not os.readlink(entry).endswith("(deleted)"):
+                target = os.readlink(entry)
+                if not target.endswith("(deleted)"):
                     continue
                 stat = os.stat(entry)
             except OSError:
                 continue
-            if stat.st_size == want:
+            if stat.st_size != want:
+                continue
+            if "memfd:" in target:
                 return stat.st_blocks // 2
-        raise MachineError(f"[{self.name}] found no physmem file under /proc/{pid}/fd")
+            found = stat.st_blocks // 2
+        if found is not None:
+            return found
+        raise MachineError(f"[{self.name}] found no memory file under /proc/{pid}/fd")
 
     async def drop_caches(self) -> None:
         """Free the guest's page cache.
@@ -651,38 +663,46 @@ class Machine:
         await self.succeed("sync; echo 3 > /proc/sys/vm/drop_caches", timeout=60)
 
     async def shrink(self, amount: str) -> None:
-        """Give *amount* of this guest's RAM back to the host.
+        """Take *amount* of memory away from this guest.
 
-        ``amount`` is written the way ``mem=`` is: ``"256M"``.
+        ``amount`` is written the way ``boot.uml.memory`` is: ``"256M"``.
 
-        The guest allocates that many pages and hole-punches them out of
-        the file UML uses as its memory, so the host stops paying for
-        them.  **They come from what is already free.** The allocation is
-        ``GFP_ATOMIC``, which cannot reclaim, and the guest stops at the
-        first failure and still reports success -- so a guest holding a
-        page cache gives back almost nothing until :meth:`drop_caches` has
-        run, and :meth:`meminfo` is the only way to see how much moved.
+        A balloon, so **the pages come from what is already free**, and
+        how much it gets is worth measuring rather than assuming --
+        :meth:`meminfo` is where it shows, as ``MemFree`` falling. A guest
+        holding a page cache gives up almost nothing until
+        :meth:`drop_caches` has run.
 
-        :meth:`grow` returns pages this took, and nothing more: a guest
-        can never rise above the ``mem=`` it booted with.
+        Both backends have a limit here and they are not the same one.
+        UML's console allocates ``GFP_ATOMIC``, which cannot reclaim, and
+        stops at the first page it cannot get while still reporting
+        success. QEMU's balloon asks the guest, which will reclaim to
+        answer and takes its time about it.
+
+        Not the way to make the *host* stop paying: free page reporting
+        already does that, on both backends, within seconds and without
+        being asked. This is for squeezing a guest on purpose.
         """
-        await self._balloon(f"mem=-{amount}")
+        await self._balloon(-backends.memory_bytes(amount))
 
     async def grow(self, amount: str) -> None:
-        """Take back up to *amount* of what :meth:`shrink` gave away."""
-        await self._balloon(f"mem=+{amount}")
+        """Give this guest back up to *amount* of what :meth:`shrink` took.
 
-    async def _balloon(self, command: str) -> None:
-        if self._mconsole is None:
+        Never past the memory it booted with. Both backends clamp there
+        rather than failing.
+        """
+        await self._balloon(backends.memory_bytes(amount))
+
+    async def _balloon(self, delta: int) -> None:
+        if self._memory is None:
             raise MachineError(
-                f"[{self.name}] this guest has no management console, so its "
-                f"memory cannot be resized. The {self.spec.backend} backend "
-                "has no equivalent wired up -- see issue #4 for QEMU's."
+                f"[{self.name}] has no control channel for its memory, so it "
+                "cannot be resized"
             )
-        with report.RUN.waiting(self.name, f"balloon {command}"):
+        with report.RUN.waiting(self.name, f"balloon {delta // 1024 // 1024}M"):
             try:
-                await self._mconsole.request(f"config {command}")
-            except mconsole.MconsoleError as error:
+                await self._memory.balloon(delta)
+            except (mconsole.MconsoleError, qmp.QmpError) as error:
                 raise MachineError(f"[{self.name}] {error}") from error
 
     def waiting(self, what: str):
