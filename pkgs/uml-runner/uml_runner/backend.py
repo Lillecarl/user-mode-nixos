@@ -23,10 +23,12 @@ bridge is not in the picture and the runner starts passt directly.
 
 from __future__ import annotations
 
+import mmap
 import os
 import signal
 import socket
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -98,6 +100,103 @@ each one MTU-sized -- so at a jumbo MTU this is megabytes of the guest's
 RAM.  There is no point going deep: AF_UNIX lets about ten frames sit in
 a socketpair, so nothing beyond that is ever in flight."""
 
+PHYSMEM_DIRS = ("/dev/shm", "/tmp")
+"""Where a UML guest's RAM may live, best first.
+
+UML's "physical" memory is an unlinked file it mmaps ``MAP_SHARED``, put
+in ``TMPDIR`` when that is set and in ``/dev/shm`` or ``/tmp`` when it is
+not.  Nix sets ``TMPDIR`` to the build directory in every sandbox, and
+UML takes it even though it is on the builder's disk -- it only warns,
+``Warning: tempdir /build is not on tmpfs``.  Every page the guest
+dirties is then a dirty page of a disk file, so the host writes the
+guest's RAM out under ``vm.dirty_ratio``.  Measured on a guest that
+dirtied 468 MiB of its own RAM and exited: 84-90 MiB reached the disk
+with ``TMPDIR`` on btrfs, 12-13 MiB with it on tmpfs."""
+
+
+def _memory_bytes(memory: str) -> int:
+    """``mem=`` as a number, the way UML's ``memparse`` reads it."""
+    scale = {"k": 1024, "m": 1024**2, "g": 1024**3}
+    if memory[-1:].lower() in scale:
+        return int(memory[:-1]) * scale[memory[-1].lower()]
+    return int(memory)
+
+
+def _fstype(path: str) -> str | None:
+    """What kind of filesystem *path* is on, from ``/proc/self/mountinfo``.
+
+    The longest mount point that is a prefix of *path* wins, and the last
+    such line wins a tie -- a later mount over the same directory hides
+    the earlier one.
+    """
+    found: str | None = None
+    longest = -1
+    try:
+        lines = Path("/proc/self/mountinfo").read_text().splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        before, _, after = line.partition(" - ")
+        fields, rest = before.split(), after.split()
+        if len(fields) < 5 or not rest:
+            continue
+        point = fields[4]
+        if path != point and not path.startswith(point.rstrip("/") + "/"):
+            continue
+        if len(point) >= longest:
+            longest, found = len(point), rest[0]
+    return found
+
+
+def _fits_guest_ram(directory: str, size: int) -> bool:
+    """Can *size* bytes of guest RAM live in *directory*?
+
+    Three questions, each one UML asks itself at boot and two of which it
+    answers by carrying on anyway.  ``statfs`` for the kind, ``statvfs``
+    for the room, and a ``PROT_EXEC`` mapping of a file in it -- that
+    last one is ``check_tmpexec``, and a ``noexec`` tmpfs makes the guest
+    ``exit(1)`` before it prints anything else.
+
+    The room asked for is the whole of ``mem=``, although the file is
+    sparse and a guest rarely touches all of it.  Being wrong in this
+    direction costs the disk-backed behaviour we already have; being
+    wrong the other way costs a guest killed part way through a test.
+    """
+    if _fstype(directory) != "tmpfs":
+        return False
+    try:
+        stat = os.statvfs(directory)
+    except OSError:
+        return False
+    if stat.f_bavail * stat.f_frsize < size:
+        return False
+    try:
+        with tempfile.TemporaryFile(dir=directory) as probe:
+            probe.write(b"\0" * mmap.PAGESIZE)
+            probe.flush()
+            with mmap.mmap(
+                probe.fileno(),
+                mmap.PAGESIZE,
+                flags=mmap.MAP_PRIVATE,
+                prot=mmap.PROT_READ | mmap.PROT_EXEC,
+            ):
+                return True
+    except (OSError, ValueError):
+        return False
+
+
+def physmem_dir(memory: str) -> str | None:
+    """Where this guest's RAM should live, or ``None`` to leave it to UML.
+
+    ``None`` is the honest answer on a host with no usable tmpfs: UML
+    then does what it does today, which is slower but works.
+    """
+    size = _memory_bytes(memory)
+    for directory in PHYSMEM_DIRS:
+        if _fits_guest_ram(directory, size):
+            return directory
+    return None
+
 
 @dataclass
 class Launch:
@@ -159,6 +258,13 @@ class Uml:
         pass_fds = tuple(fd for fd in (agent_fd, lan_fd) if fd is not None)
         # The bridge finds passt on PATH.
         env = dict(os.environ, PATH=f"{tools.passt.parent}:{os.environ['PATH']}")
+        # The guest's RAM, and nothing else: the runner's own temporary
+        # files -- the cow file above among them -- keep the caller's
+        # TMPDIR, because a guest's disk belongs on a disk.  See
+        # PHYSMEM_DIRS.
+        ram = physmem_dir(spec.memory)
+        if ram is not None:
+            env["TMPDIR"] = ram
         return Launch(argv=argv, pass_fds=pass_fds, env=env)
 
     @staticmethod
