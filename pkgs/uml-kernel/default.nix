@@ -62,6 +62,16 @@ let
     PRINTK = yes;
     EARLY_PRINTK = yes;
 
+    # UML's management console, and the only way a guest gives RAM back:
+    # `config mem=-256M` allocates guest pages and MADV_REMOVEs them from
+    # the file UML uses as that guest's memory.  Nothing else in the
+    # kernel can do it -- virtio-balloon has no backend to speak to here,
+    # because `virtio_uml` is a vhost-user transport.  See issue #12.
+    #
+    # allnoconfig answers no to this although its Kconfig says `default
+    # y`, which is why it is named here.
+    MCONSOLE = yes;
+
     MULTIUSER = yes;
     ADVISE_SYSCALLS = yes;
     MEMBARRIER = yes;

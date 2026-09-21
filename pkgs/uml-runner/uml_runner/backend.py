@@ -33,7 +33,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import forward
+from . import forward, mconsole
 
 
 class BackendError(Exception):
@@ -114,7 +114,7 @@ dirtied 468 MiB of its own RAM and exited: 84-90 MiB reached the disk
 with ``TMPDIR`` on btrfs, 12-13 MiB with it on tmpfs."""
 
 
-def _memory_bytes(memory: str) -> int:
+def memory_bytes(memory: str) -> int:
     """``mem=`` as a number, the way UML's ``memparse`` reads it."""
     scale = {"k": 1024, "m": 1024**2, "g": 1024**3}
     if memory[-1:].lower() in scale:
@@ -191,7 +191,7 @@ def physmem_dir(memory: str) -> str | None:
     ``None`` is the honest answer on a host with no usable tmpfs: UML
     then does what it does today, which is slower but works.
     """
-    size = _memory_bytes(memory)
+    size = memory_bytes(memory)
     for directory in PHYSMEM_DIRS:
         if _fits_guest_ram(directory, size):
             return directory
@@ -209,6 +209,13 @@ class Launch:
     """Side processes the guest needs -- virtiofsd, passt -- for the
     backends that do not hide them behind something else.  Killed when the
     guest is torn down, in this order."""
+    mconsole: Path | None = None
+    """Where this guest answers management commands, for the backends that
+    have such a thing.  UML does; QEMU's equivalent is its monitor, which
+    nothing here needs yet."""
+    cleanup: list[Path] = field(default_factory=list)
+    """Directories the backend made outside the run directory, removed when
+    the guest is torn down."""
 
 
 class Uml:
@@ -222,6 +229,16 @@ class Uml:
 
     def launch(self, machine, rundir: Path, agent_fd: int, lan_fd: int | None) -> Launch:
         spec, tools = machine.spec, machine.tools
+        ram = physmem_dir(spec.memory)
+        # The management console lives in the run directory where it fits,
+        # and in a directory of its own where it does not: the socket goes
+        # in a `sockaddr_un`, and a caller whose TMPDIR is long would
+        # otherwise lose the console with nothing but a boot-log line.
+        cleanup: list[Path] = []
+        uml_dir = rundir
+        if not mconsole.fits(uml_dir):
+            uml_dir = Path(tempfile.mkdtemp(prefix="uml-", dir=ram or "/tmp"))
+            cleanup.append(uml_dir)
         argv = [
             str(tools.bridge),
             "--vec",
@@ -245,6 +262,12 @@ class Uml:
             # refusing to boot the way "on" does.  `boot.uml.seccomp` sets
             # it; "off" is the ptrace userspace -- see issue #8.
             f"seccomp={spec.seccomp}",
+            # The management console, which is how the host asks this
+            # guest to give memory back.  `uml_dir` defaults to ~/.uml,
+            # and a build sandbox has no writable HOME; the run directory
+            # is per guest, so one fixed umid in it collides with nothing.
+            f"uml_dir={uml_dir}",
+            f"umid={mconsole.UMID}",
         ]
         if machine.artifacts is not None:
             # The kernel does not know this one, so it hands it to /init
@@ -262,10 +285,15 @@ class Uml:
         # files -- the cow file above among them -- keep the caller's
         # TMPDIR, because a guest's disk belongs on a disk.  See
         # PHYSMEM_DIRS.
-        ram = physmem_dir(spec.memory)
         if ram is not None:
             env["TMPDIR"] = ram
-        return Launch(argv=argv, pass_fds=pass_fds, env=env)
+        return Launch(
+            argv=argv,
+            pass_fds=pass_fds,
+            env=env,
+            mconsole=mconsole.socket_path(uml_dir),
+            cleanup=cleanup,
+        )
 
     @staticmethod
     def _vec(unit: int, fd: int, mtu: int) -> str:

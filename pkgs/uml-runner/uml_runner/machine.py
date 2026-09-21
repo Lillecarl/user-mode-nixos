@@ -32,6 +32,7 @@ from .agent import AGENT_READY
 from .arpyc import AsyncConnection, connect
 from . import backend as backends
 from . import forward
+from . import mconsole
 from . import report
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
@@ -196,6 +197,8 @@ class Machine:
         self._conn: AsyncConnection | None = None
         self._helpers: list[sync_subprocess.Popen] = []
         self._spare_fds: list[int] = []
+        self._mconsole: mconsole.Mconsole | None = None
+        self._cleanup: list[Path] = []
 
     @property
     def name(self) -> str:
@@ -243,6 +246,15 @@ class Machine:
             self, self._rundir, self._guest_sock.fileno(), self.lan_fd
         )
         self._helpers = launch.helpers
+        self._cleanup = launch.cleanup
+        if launch.mconsole is not None:
+            # Both paths beside the guest's own socket, never in the run
+            # directory: the umid directory is the one place already known
+            # to fit in a `sockaddr_un`, and it is not the run directory
+            # when the caller's TMPDIR is long.
+            self._mconsole = mconsole.Mconsole(
+                launch.mconsole, launch.mconsole.with_name("client")
+            )
         # Fds the backend opened for the child and no longer needs here.
         self._spare_fds = [
             fd
@@ -336,6 +348,14 @@ class Machine:
             except asyncio.CancelledError:
                 pass
             self._monitor = None
+
+        if self._mconsole is not None:
+            self._mconsole.close()
+            self._mconsole = None
+
+        for directory in self._cleanup:
+            shutil.rmtree(directory, ignore_errors=True)
+        self._cleanup = []
 
         if self._rundir is not None:
             shutil.rmtree(self._rundir, ignore_errors=True)
@@ -559,6 +579,111 @@ class Machine:
             self._agent.journal(unit, lines),
             _SYSTEMD_TIMEOUT,
         )
+
+    # ── memory ─────────────────────────────────────────────────────
+
+    async def meminfo(self) -> dict[str, int]:
+        """``/proc/meminfo``, in kibibytes.
+
+        The way to see what :meth:`shrink` achieved: the balloon holds its
+        pages as ordinary allocations, so ``MemFree`` falls by what it
+        took and ``MemTotal`` does not move.
+        """
+        text = await self.succeed("cat /proc/meminfo", timeout=30)
+        values: dict[str, int] = {}
+        for line in text.splitlines():
+            name, _, rest = line.partition(":")
+            fields = rest.split()
+            if fields and fields[0].isdigit():
+                values[name] = int(fields[0])
+        return values
+
+    def host_memory_kib(self) -> int:
+        """Kibibytes of host memory this guest's RAM costs right now.
+
+        UML's "physical" memory is one sparse file it mmaps ``MAP_SHARED``,
+        so the host pays for the blocks that file has allocated and
+        nothing else.  A guest starts near zero however large ``mem=`` is,
+        grows towards it as it touches pages, and comes down only where
+        :meth:`shrink` has punched holes.
+
+        The measurement no guest-side number gives: the guest's own
+        ``MemFree`` counts a page it has freed, and the host is still
+        paying for that page.
+        """
+        if self._mconsole is None:
+            raise MachineError(
+                f"[{self.name}] is not a running UML guest, and only one of "
+                "those has a memory file to measure"
+            )
+        # UML writes its own pid beside the console socket.  The runner's
+        # own `_process` is the bridge, which forks the kernel rather than
+        # exec'ing it, so its pid is the wrong one.
+        try:
+            pid = self._mconsole.path.with_name("pid").read_text().strip()
+        except OSError as error:
+            raise MachineError(f"[{self.name}] no pid file: {error}") from error
+        want = backends.memory_bytes(self.spec.memory)
+        for entry in (Path("/proc") / pid / "fd").iterdir():
+            try:
+                # Unlinked and exactly `mem=` long is the physmem file and
+                # nothing else: the root image is a store path, and the cow
+                # file is neither deleted nor that size by coincidence.
+                if not os.readlink(entry).endswith("(deleted)"):
+                    continue
+                stat = os.stat(entry)
+            except OSError:
+                continue
+            if stat.st_size == want:
+                return stat.st_blocks // 2
+        raise MachineError(f"[{self.name}] found no physmem file under /proc/{pid}/fd")
+
+    async def drop_caches(self) -> None:
+        """Free the guest's page cache.
+
+        Worth far more here than on a real machine, and worth it before
+        every :meth:`shrink`.  The guest's cache of the store is a second
+        copy of pages the host already holds, and a miss on it is a host
+        ``read()`` that hits the host's own cache -- measured at 1.3-1.5
+        GB/s against 5.1-6.5 GB/s for a hit, so dropping it costs a memcpy
+        and not a disk read.  See issue #12.
+        """
+        await self.succeed("sync; echo 3 > /proc/sys/vm/drop_caches", timeout=60)
+
+    async def shrink(self, amount: str) -> None:
+        """Give *amount* of this guest's RAM back to the host.
+
+        ``amount`` is written the way ``mem=`` is: ``"256M"``.
+
+        The guest allocates that many pages and hole-punches them out of
+        the file UML uses as its memory, so the host stops paying for
+        them.  **They come from what is already free.** The allocation is
+        ``GFP_ATOMIC``, which cannot reclaim, and the guest stops at the
+        first failure and still reports success -- so a guest holding a
+        page cache gives back almost nothing until :meth:`drop_caches` has
+        run, and :meth:`meminfo` is the only way to see how much moved.
+
+        :meth:`grow` returns pages this took, and nothing more: a guest
+        can never rise above the ``mem=`` it booted with.
+        """
+        await self._balloon(f"mem=-{amount}")
+
+    async def grow(self, amount: str) -> None:
+        """Take back up to *amount* of what :meth:`shrink` gave away."""
+        await self._balloon(f"mem=+{amount}")
+
+    async def _balloon(self, command: str) -> None:
+        if self._mconsole is None:
+            raise MachineError(
+                f"[{self.name}] this guest has no management console, so its "
+                f"memory cannot be resized. The {self.spec.backend} backend "
+                "has no equivalent wired up -- see issue #4 for QEMU's."
+            )
+        with report.RUN.waiting(self.name, f"balloon {command}"):
+            try:
+                await self._mconsole.request(f"config {command}")
+            except mconsole.MconsoleError as error:
+                raise MachineError(f"[{self.name}] {error}") from error
 
     def waiting(self, what: str):
         """Record a wait of the test's own as one step.
