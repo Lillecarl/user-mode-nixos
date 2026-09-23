@@ -270,6 +270,63 @@
 6 sessions in one process have two sets and will pick the same address.
 6 The set has to move up to whatever owns the sessions.
 6
+8 ## Area 7 — a "main" guest
+8
+8 Proposal: a uml module contributes NixOS configuration to the guests, and
+8 that configuration differs depending on whether the guest is "main".
+8
+8 **The pattern already exists and works.** `services.uml-k8s.role` is an
+8 enum of `control-plane` and `worker` (`modules/k8s.nix:497`), and four
+8 places branch on it: the packages, the tmpfs for etcd, `uml-k8s-join`,
+8 and the agent's `KUBECONFIG`. So "a module behaves differently by role"
+8 is proven in this tree, not speculative.
+8
+8 Three things to get right, and one rule it must not break.
+8
+8 **The rule it must not break.** `modules/k8s.nix` opens with a decision:
+8
+8 > Everything a node can know about itself lives here. Everything that
+8 > needs to know about the *other* nodes — the join command, which pod
+8 > subnet each one was given, the routes between them — is left to the
+8 > test, which is the only thing that has the whole cluster in view.
+8
+8 And it names what that buys: "the same three lines describe a one-node
+8 cluster or a five-node one".
+8
+8 A guest knowing **what it is** keeps that. A guest knowing **which other
+8 guest is main** does not. The second is a peer list, and the moment a
+8 module can ask for one, a one-node cluster and a five-node cluster stop
+8 being the same three lines.
+8
+8 **1. Per recipe, not global.** One `main` for the whole run couples
+8 recipes that have nothing to do with each other: a Kubernetes control
+8 plane and a database primary need not be the same guest. `role` is
+8 already per recipe and does not have this problem.
+8
+8 **2. A name, not a boolean.** `main = "cp"` — a reference to a node,
+8 declared once — rather than `main = true` on each node. A boolean set
+8 twice, or never, is a silent misconfiguration that surfaces as a cluster
+8 that will not form. A name is checked while evaluating, and zero or two
+8 is an assertion with a message.
+8
+8 **3. Configuration and orchestration are different needs.** "This guest
+8 runs the API server" is configuration and belongs in Nix. "Run kubectl
+8 here" is orchestration and only needs `vms.main` in Python. Both are
+8 wanted; they are not the same mechanism, and conflating them is how the
+8 peer list gets in.
+8
+8 **The alternative worth weighing.** A phase script runs on the host and
+8 talks to every guest, so it *already* has the whole-cluster view the
+8 module deliberately lacks. Coordination there needs nothing new: read the
+8 token from the control plane, hand it to the workers.
+8
+8 The in-guest alternative would need something built. There is no shared
+8 filesystem between guests today — each gets its own `/artifacts`
+8 subdirectory, and `tests/artifacts.py` asserts that they do not share
+8 one. A `/shared` mount across guests is cheap on the same mechanism, but
+8 it is a new thing, and it is the thing that makes peer lists easy to
+8 write by accident.
+8
 7 ## Prior art: nixpkgs' own test driver
 7
 7 `nixos/lib/test-driver` answers most of these questions already. Read it
@@ -696,6 +753,10 @@
 3    also wants to say what the guest must be. If a phase can contribute
 3    NixOS configuration as well as a script, a recipe becomes one thing
 3    instead of two that must be used together.
+8    Answered: yes, configuration and a script. Roles follow in area 7 —
+8    per recipe, as a node name, and self-knowledge only.
+8 13. **Is there a shared filesystem between guests?** No, and adding one
+8    is what makes a peer list easy to write by accident. See area 7.
 7 3. **What happens after a phase fails?** Recommended: skip its
 7    dependents, run everything else. Possible only because `after` gives
 7    the graph. nixpkgs stops the whole run; pytest runs it all; phases are
