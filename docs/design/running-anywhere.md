@@ -67,6 +67,12 @@
 3   (`harness.py:load_spec`). Checked: no `nix` subprocess anywhere in
 3   `uml_runner`. So evaluating Nix would be a new power, not a replacement
 3   for a shell-out.
+4 - **What is built depends on the spec, and it must not.** Measured: adding
+4   one plain string to `settings` moves seven derivations, including
+4   `uml-root-image`. The cause is `lib.nix:241` — the settings file is
+4   registered in the guest's Nix database, so the image's content follows
+4   the file's hash. Nothing about a guest's image is different; only the
+4   data handed to the run.
 1
 2 ## Decided
 2
@@ -104,7 +110,46 @@
 3   both cases fall through to the declared default.
 3 - **nanopynix is the candidate evaluator**, so the runner can ask an
 3   evaluation questions at will instead of being handed one JSON file.
+4
+4 From the third round:
+4
+4 - **Nothing that is built may depend on the spec.** The runner is a tool,
+4   the way `pynix` is a tool: it reads a spec and acts on it. The recipe
+4   scripts are the same. Neither is rebuilt because a knob moved.
 1
+4 ## Area 0a — the spec is input, not an ingredient
+4
+4 The rule: **the runner and the recipes are built once and do not move
+4 when the spec does.** The runner is a tool, the way `pynix` is a tool. A
+4 tool reads its input; it is not rebuilt by it.
+4
+4 Today that is false, and the number says how false. Adding one plain
+4 string to a test's `settings` rebuilds seven derivations, and one of them
+4 is `uml-root-image` — the guest's disk. Nothing inside the guest is
+4 different. The cause is one line:
+4
+4 ```nix
+4 boot.uml.nixDatabase.extraRoots =
+4   lib.optional (settings != { }) "${settingsFile}";   # lib.nix:241
+4 ```
+4
+4 The settings file is registered in the guest's Nix database, so the image
+4 follows the file's hash. The registration exists for a good reason:
+4 `settings` may carry store paths, and Nix inside the guest must know
+4 them, or it calls the path invalid and goes looking for a substituter.
+4
+4 So the fix is to separate the two things `settings` does today:
+4
+4 - **Paths** a guest must be able to resolve. These belong to what is
+4   built, and registering their closure is right.
+4 - **Values** a run is given — a knob, a selection, a tag. These are data.
+4   They must reach the runner without touching an image, a database or a
+4   derivation the guests depend on.
+4
+4 Get that right and the cost of an evaluation-time knob collapses to an
+4 evaluation and a small JSON file. That is most of what makes question 6
+4 a question, so it is worth doing first.
+4
 2 ## Area 0 — the CLI, and what a script is
 2
 2 This is the change that cements the rest, so it comes first.
@@ -229,8 +274,10 @@
 3
 3 Two consequences to hold on to:
 3
-3 - A set knob is a cache miss. CI never built that derivation, so the
-3   value is paid for in full on the machine that sets it.
+4 - A set knob is a cache miss, and how much that costs depends entirely on
+4   area 0a. Today it rebuilds the guest's disk image, measured. Once the
+4   spec stops reaching what is built, it costs an evaluation and a small
+4   JSON file, which is the right price.
 3 - A variable left in a shell silently builds something that is not the
 3   check. The run must print every knob, its value and where the value
 3   came from — the environment or the default — before it boots anything.
@@ -239,10 +286,10 @@
 3 returns `""` there, which is the same as unset, so a flake consumer and a
 3 CI check both get the declared default with no special case.
 3
-3 Open, and the first thing to settle here: a knob that only changes what
-3 the script *does* — one case out of a suite — costs a full rebuild under
-3 this shape for no reason. Whether there are two kinds of knob, one
-3 resolved at evaluation and one at run time, is question 6 below.
+4 Open, and it turns on area 0a: a knob that only changes what the script
+4 *does* — one case out of a suite — costs a guest image today. Once the
+4 spec stops reaching what is built, it costs an evaluation, and one kind
+4 of knob is probably enough. See question 6.
 1
 1 ## Area 2 — output
 1
@@ -367,16 +414,21 @@
 1    is nixkube's `NIXKUBE_UML_SCENARIOS`.
 3    Answered in part: with `envOrDefault`, `nix build` *does* take a
 3    steer, and pays for it with a rebuild.
-3 6. **One kind of knob, or two?** `envOrDefault` resolves at evaluation, so
-3    every knob costs a rebuild. A knob that only selects which cases a
-3    script runs does not need to. Two kinds is more to explain; one kind
-3    is slower in the case people will use most.
+4 6. **One kind of knob, or two?** Mostly dissolved by area 0a. Once
+4    nothing built depends on the spec, an evaluation-time knob costs an
+4    evaluation, not a rebuild, and one kind is enough. Re-open only if an
+4    evaluation turns out to be slow enough to notice.
 2 7. **How does a stream leave a guest?** See area 5. The `/artifacts`
 2    answer needs no protocol change; the other two do.
 2 8. **What does "no internet" turn off?** See area 6.
 3 9. **Does the sandboxed path keep the spec file?** Assumed yes — the
 3    sandbox must not evaluate. Worth confirming, because it means two
 3    doors into the same run for good.
+4 10. **How does a guest learn about a store path in the spec?** Area 0a
+4    splits paths from values, so the database needs the closure of the
+4    paths without the file that lists them. Registering each path's
+4    closure directly is the obvious answer; whether that is as cheap as
+4    the one `closure-info` call today is not checked.
 1
 1 ## Issues
 1
