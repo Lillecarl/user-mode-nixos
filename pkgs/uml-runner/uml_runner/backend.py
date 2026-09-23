@@ -259,7 +259,11 @@ class Uml:
             self._vec(0, 3, spec.mtu),
             # The bridge forks passt, so the uplink's addressing reaches
             # it one argument at a time rather than directly.
-            *(arg for value in forward.uplink_args() for arg in ("--passt", value)),
+            *(
+                arg
+                for value in forward.uplink_args(machine.offline)
+                for arg in ("--passt", value)
+            ),
             *forward.to_args(machine.forward),
             str(tools.kernel),
             f"ubd0={rundir}/cow,{spec.image}",
@@ -399,7 +403,9 @@ class Qemu:
         disk_fds = self._scratch_disk(tools, rundir, spec.image)
         opened.extend(disk_fds)
 
-        passt_fd, passt_proc = self._passt(tools, rundir, machine.forward)
+        passt_fd, passt_proc = self._passt(
+            tools, rundir, machine.forward, machine.offline
+        )
         helpers.append(passt_proc)
         opened.append(passt_fd)
 
@@ -602,7 +608,9 @@ class Qemu:
         return client.detach(), proc
 
     @staticmethod
-    def _passt(tools, rundir: Path, rules) -> tuple[int, subprocess.Popen]:
+    def _passt(
+        tools, rundir: Path, rules, offline: bool = False
+    ) -> tuple[int, subprocess.Popen]:
         """Start passt on one end of a socketpair; return QEMU's end.
 
         No bridge: passt frames with a 4-byte big-endian length prefix,
@@ -628,7 +636,7 @@ class Qemu:
                 str(tools.passt),
                 "--foreground",
                 "--fd", str(passt_end.fileno()),
-                *forward.uplink_args(),
+                *forward.uplink_args(offline),
                 *forward.to_args(rules),
             ],
             pass_fds=(passt_end.fileno(),),

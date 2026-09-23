@@ -177,6 +177,7 @@ class Machine:
         # in a way that looks exactly like a hang.
         command_timeout: float = 120,
         recorder: report.Report | None = None,
+        offline: bool = False,
     ) -> None:
         self.spec = spec
         self.tools = tools
@@ -190,6 +191,10 @@ class Machine:
         self.recorder = recorder if recorder is not None else report.RUN
         self.boot_timeout = boot_timeout
         self.command_timeout = command_timeout
+        # A run-time choice, not a property of the built guest: the same
+        # image runs either way. A sandboxed run is offline whatever this
+        # says, because the sandbox has no network for passt to use.
+        self.offline = offline
         self.forward: list[forward.Rule] = list(spec.forward)
 
         self._rundir: Path | None = None

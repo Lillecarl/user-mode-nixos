@@ -186,6 +186,40 @@ let
     };
   };
 
+  /*
+    Does `--offline` give a guest the network a sandbox gives it?
+
+    Deliberately not in `tests`, and it cannot be: a sandboxed run has no
+    network whatever the flag says, so the check would pass without the
+    flag doing anything. The only honest proof is by hand, on a connected
+    host, comparing the two:
+
+        nix run --file . uplink.run -- --out ./out
+        nix run --file . uplink.run -- --out ./out --offline
+
+    Measured on 2026-09-23, this host, UML backend:
+
+        plain      tcp reachable, dns answered
+        --offline  tcp no route,  dns no answer
+
+    `--offline` binds passt's outbound sockets to loopback rather than
+    leaving passt out. The guest keeps its address, its DHCP lease and
+    the host's way in; only the way out goes. Leaving passt out would
+    take vec0 with it, so a test reaching an API server through a forward
+    would fail for a reason that is not the one being reproduced.
+  */
+  uplink = mkSession {
+    name = "uplink";
+    nodes.one = { };
+    phases = {
+      boot.script = ./tests/phases/boot.py;
+      uplink = {
+        script = ./tests/phases/uplink.py;
+        after = [ "boot" ];
+      };
+    };
+  };
+
   tests = {
     # Do the guests boot, see each other on vec1, and answer the host?
     lan = mkTest {
@@ -562,10 +596,10 @@ in
 tests
 // {
   # The library, for a caller that writes its own test.
-  inherit mkNode mkTest runner session typeCheck;
-  lib = { inherit mkNode mkTest runner session typeCheck; };
+  inherit mkNode mkSession mkTest runner session typeCheck;
+  lib = { inherit mkNode mkSession mkTest runner session typeCheck; };
 
-  inherit demo store k8s-pull;
+  inherit demo store k8s-pull uplink;
   inherit (demo.config.system.build) umlRunner umlRootImage toplevel;
 
   # The slowest thing in the repository and the same for every guest, so

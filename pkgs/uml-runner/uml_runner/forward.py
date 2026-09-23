@@ -397,7 +397,24 @@ UPLINK_UPSTREAM_DNS = "1.1.1.1"
 ENV_DNS = "UML_DNS_HOST"
 
 
-def uplink_args() -> list[str]:
+OFFLINE_OUTBOUND = "127.0.0.1"
+"""What passt binds its outbound sockets to when a run asks for no
+internet.
+
+Loopback, so a connection the guest makes to anything off the host has no
+route and fails at once.  Everything else about the uplink is unchanged
+-- the guest still gets its address by DHCP, still hears about a gateway
+and a resolver, and the host's way *in* still works -- because the guest
+must look the same as it does in a sandbox, where passt runs and finds no
+usable route either.
+
+Not simply leaving passt out: that takes vec0 away, so the guest has no
+uplink interface at all and no inbound forwards.  A test that reaches an
+API server through a forward would then fail for a reason that is not the
+one being reproduced."""
+
+
+def uplink_args(offline: bool = False) -> list[str]:
     """passt arguments giving the guest an address of its own, and DNS.
 
     Both backends pass these -- QEMU straight to passt, UML through
@@ -416,10 +433,17 @@ def uplink_args() -> list[str]:
     # output and a guest that cannot resolve gives no clue which of the
     # two addresses is the wrong one.
     print(f"[uplink] DNS on {UPLINK_DNS}, forwarded to {upstream}", flush=True)
+    if offline:
+        print(
+            "[uplink] offline: outbound bound to"
+            f" {OFFLINE_OUTBOUND}, so the guest reaches nothing off this host",
+            flush=True,
+        )
     return [
         "--address", UPLINK_ADDRESS,
         "--netmask", str(UPLINK_PREFIX),
         "--gateway", UPLINK_GATEWAY,
         "--dns-forward", UPLINK_DNS,
         "--dns-host", upstream,
+        *(["--outbound", OFFLINE_OUTBOUND] if offline else []),
     ]

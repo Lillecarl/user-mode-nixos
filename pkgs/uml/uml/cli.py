@@ -97,6 +97,14 @@ def parse(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="on failure, leave the guests up instead of tearing them down",
     )
+    run.add_argument(
+        "--offline",
+        action="store_true",
+        help=(
+            "give the guests no way off this host, the way a sandboxed"
+            " check has none"
+        ),
+    )
 
     phases = sub.add_parser("phases", help="list the phases and exit")
     phases.add_argument("--spec", type=Path, required=True)
@@ -115,7 +123,7 @@ def announce(session: Session) -> None:
 
 
 async def run(args: argparse.Namespace) -> int:
-    session = Session(Spec.read(args.spec), args.out)
+    session = Session(Spec.read(args.spec), args.out, offline=args.offline)
     announce(session)
     print(f"[uml] output in {args.out}", flush=True)
 

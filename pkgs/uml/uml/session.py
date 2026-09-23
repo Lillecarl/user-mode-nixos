@@ -76,9 +76,10 @@ def load_phase(script: Path) -> Callable[[Machines], Awaitable[None]]:
 class Session:
     """One run, from evaluation to teardown, driven a step at a time."""
 
-    def __init__(self, spec: Spec, out: Path) -> None:
+    def __init__(self, spec: Spec, out: Path, *, offline: bool = False) -> None:
         self.spec = spec
         self.out = out
+        self.offline = offline
         self.artifacts = out / "artifacts"
         self.state: dict[str, PhaseState] = {
             phase.name: PhaseState.PENDING for phase in spec.phases
@@ -119,6 +120,7 @@ class Session:
                     lan_fd=lan_fd.get(one.name),
                     artifacts=self._guest_artifacts(one.name),
                     recorder=self.report,
+                    offline=self.offline,
                 ),
             )
             for one in specs
