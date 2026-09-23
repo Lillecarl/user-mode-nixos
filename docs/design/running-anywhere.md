@@ -62,6 +62,11 @@
 2   of a guest today, and a long command blocks every other question.
 2 - A guest reaches the internet through passt, which the runner always
 2   starts (`backend.py`). There is no switch that turns it off.
+3 - **The runner never invokes Nix.** Not the CLI, not a library. Nix writes
+3   a JSON spec and builds the images; the runner reads the file
+3   (`harness.py:load_spec`). Checked: no `nix` subprocess anywhere in
+3   `uml_runner`. So evaluating Nix would be a new power, not a replacement
+3   for a shell-out.
 1
 2 ## Decided
 2
@@ -82,6 +87,23 @@
 2 - **A sandboxed run is worth keeping.** Nix distributes it to a build
 2   machine, so it does not have to run locally. Its one cost is that the
 2   guests have no internet.
+3
+3 From the second round:
+3
+3 - **Python contributes one coroutine per script.** No phase names, no
+3   decorators, no registry in Python.
+3 - **Phases are declared in the NixOS module system**, and Nix orders
+3   them. The module system already has the merging and ordering machinery,
+3   and a consumer can reorder or drop a phase the way they override any
+3   other option.
+3 - **Recipes are scripts in this repository**, each with a submodule that
+3   declares it. `recipes/kubernetes.py` beside the option that names it.
+3 - **Knobs are module options**, resolved by a helper:
+3   `envOrDefault = envvar: default:`. An environment variable that is unset
+3   reads `""`, and so does `builtins.getEnv` under a pure evaluation, so
+3   both cases fall through to the declared default.
+3 - **nanopynix is the candidate evaluator**, so the runner can ask an
+3   evaluation questions at will instead of being handed one JSON file.
 1
 2 ## Area 0 — the CLI, and what a script is
 2
@@ -101,34 +123,88 @@
 2
 2 The CLI owns the spec, the guests, the output directory, the steer and
 2 the teardown. A script contributes work and nothing else.
-2
-2 What a script exports is the first open question below. The smallest form
-2 that supports a standard library is a module with one or more named
-2 coroutines that take the machines:
-2
-2 ```python
-2 async def cluster(vms: Machines) -> None: ...
-2 async def test(vms: Machines) -> None: ...
-2 ```
-2
-2 Several scripts then run in order against one set of guests, which is how
-2 `recipes/kubernetes.py` becomes a thing anybody can put in front of their
-2 own test.
+3
+3 **The Python side is as small as it can be.** One coroutine per script:
+3
+3 ```python
+3 async def test(vms: Machines) -> None: ...
+3 ```
+3
+3 Nothing else is exported and nothing runs on import. The module is data
+3 until the runner calls it.
+3
+3 **The ordering lives in Nix.** A phase is an option, not a Python name:
+3
+3 ```nix
+3 uml.phases.cluster = {
+3   script = ./recipes/kubernetes.py;
+3   after = [ "boot" ];
+3 };
+3 uml.phases.check = {
+3   script = ./mytest.py;
+3   after = [ "cluster" ];
+3 };
+3 ```
+3
+3 That buys what a Python registry cannot. A consumer reorders a phase,
+3 replaces one, or drops it with `lib.mkForce`, the same way they override
+3 any NixOS option. A recipe can require another by name. And the order is
+3 visible without running anything.
+3
+3 Open: whether `after` is the right spelling, or whether the list merging
+3 the module system already has (`mkBefore`, `mkAfter`, `mkOrder`) is
+3 enough. The second is less to invent and less to explain.
 2
 2 **A script as an argument is also how iteration gets fast.** Today the
 2 script is baked into the `run` wrapper, so editing one line of Python
 2 re-evaluates Nix. A path on the command line does not. The sandboxed
 2 build still names the script as an input, because the check has to be
 2 reproducible — so both doors exist, and only one of them is fast.
+3
+3 Phases in Nix put that in tension: if the phase list names the scripts,
+3 then changing a script means re-evaluating after all. The likely answer
+3 is that the CLI can override one phase's script with a path, so the fast
+3 door stays open for the file being worked on.
 2
 2 The type check has to follow. `typeCheck` runs over the script because
 2 `mkTest` names it (`lib.nix:252`). A script that arrives on a command
 2 line needs its own door into the same check.
+3
+3 ## Area 0b — Nix as a library, not a file
+3
+3 The runner is handed one JSON file today. Everything it can ever know was
+3 decided when that file was written.
+3
+3 With nanopynix the runner evaluates instead. It opens a session, asks for
+3 the attribute the caller named, and reads the phases, the knobs, the
+3 guests and the paths out of the evaluation as it needs them.
+3
+3 What that buys:
+3
+3 - One command. `uml run mytest` evaluates, builds what it needs and
+3   boots, with no `nix build` first and no store path to paste.
+3 - Questions asked late. A breakpoint that wants to know which phase comes
+3   next, or an MCP tool that lists what can be run, asks the evaluation
+3   rather than a file that was written before either existed.
+3 - Knobs resolve where they are declared, so an environment variable can
+3   change what is *built*, not only what the script does at run time.
+3
+3 What it costs:
+3
+3 - The runner gains a large dependency. Today `uml_runner` needs rpyc and
+3   qemu-qmp and nothing else.
+3 - **The sandboxed path must not evaluate.** Inside `nix build` everything
+3   is already decided, the sandbox has no network, and a second evaluation
+3   would be a different answer from the one the derivation was built from.
+3   So the spec file stays, and the two doors differ: the CLI evaluates,
+3   the check reads. That is a seam to keep honest.
+3 - Bounds "any machine" further. See below.
 1
 1 ## Area 1 — steering a run
 1
-1 Landed as `d36934d1` and **provisional**: it may be replaced by the knobs
-1 in the open questions below.
+3 Landed as `d36934d1`. **This is now superseded** by knobs as module
+3 options; the commit stays until the replacement exists, so that nothing
+3 regresses in between.
 1
 1 `mkTest` takes `impurities`, a list of environment variable *names*. The
 1 spec carries the list. It never carries a value, so no store path moves
@@ -144,16 +220,29 @@
 1
 1 The command line reaches a script as `vms.argv`. It did not before: the
 1 parser was strict and exited 2.
-1
-1 **The cost of this shape.** A steer only works outside the sandbox. So
-1 `NIXKUBE_UML_SCENARIOS=x nix build --file . umlTest` stops working when
-1 nixkube drops its `builtins.getEnv`, and `nix run --file . umlTest.run`
-1 replaces it. See the open questions.
-1
-2 **A CLI changes where this lives.** Parsing the command line moves out of
-2 `load_spec` and into the CLI, and `vms.argv` may stop being the right
-2 name for it once a run takes several scripts. The property to keep is the
-2 one above: Nix declares names, never values.
+3
+3 **The knob shape makes the opposite trade, on purpose.** `envOrDefault`
+3 reads the environment during evaluation, so a set variable changes the
+3 derivation. That is the price of the thing it buys: a knob can choose a
+3 phase order, a guest's memory or a different image, which no amount of
+3 run-time reading can do.
+3
+3 Two consequences to hold on to:
+3
+3 - A set knob is a cache miss. CI never built that derivation, so the
+3   value is paid for in full on the machine that sets it.
+3 - A variable left in a shell silently builds something that is not the
+3   check. The run must print every knob, its value and where the value
+3   came from — the environment or the default — before it boots anything.
+3
+3 Pure evaluation is what makes the default reliable: `builtins.getEnv`
+3 returns `""` there, which is the same as unset, so a flake consumer and a
+3 CI check both get the declared default with no special case.
+3
+3 Open, and the first thing to settle here: a knob that only changes what
+3 the script *does* — one case out of a suite — costs a full rebuild under
+3 this shape for no reason. Whether there are two kinds of knob, one
+3 resolved at evaluation and one at run time, is question 6 below.
 1
 1 ## Area 2 — output
 1
@@ -188,7 +277,10 @@
 1
 1 That last point is why this belongs with item 4 and not on its own. An
 1 agent that greps a log is an agent that breaks when a message changes.
-1
+3
+3 With phases in Nix, a phase is also the natural unit here: each one gets
+3 its own section in the report and its own span in the event stream.
+2
 2 ## Area 5 — copying and streaming out of a guest
 2
 2 Copying is nearly free already: `/artifacts` is a host directory, so a
@@ -225,7 +317,11 @@
 1 A hold-on-failure mode is the first step, and it is useful with no MCP
 1 server at all. Reboots (#11) want the same ownership: a machine that comes
 1 back is a machine something outside it drives.
-1
+3
+3 Phases give a breakpoint a name. "Stop before `check`" is a thing a
+3 caller can say without reading any Python, and an agent can list the
+3 phases from the evaluation.
+2
 2 ## Area 6 — an unsandboxed run with the internet off
 2
 2 A sandboxed run has no network, and that is the environment most of these
@@ -249,40 +345,38 @@
 1 promise. The doc needs one line that says where the claim stops, or
 1 "any machine" means "any of Carl's machines" and nobody finds out until
 1 they try.
+3
+3 The evaluator narrows it again: a CLI that evaluates needs nanopynix
+3 built for the machine it runs on. The check still runs anywhere Nix runs,
+3 because the check reads a file.
 1
 1 ## Open questions
 1
-2 1. **What does a script export?** One coroutine, or several named ones
-2    the CLI can pick from and order? Named phases make a standard library
-2    composable and make a breakpoint something you can name. One coroutine
-2    is what exists.
-2 2. **Do several scripts share one set of guests?** Assumed yes. Then:
-2    does a failure in the first stop the rest, and does each get its own
-2    section in the report?
-2 3. **Where does the standard library live?** Inside `uml_runner` as
-2    importable recipes, or as scripts in this repository that a caller
-2    names on the command line? The first is versioned with the runner. The
-2    second is copy-able and easier to fork.
-2 4. **Does the spec name the scripts, or does the command line?** Both, in
-2    the end — the sandboxed build must name them to stay reproducible, and
-2    the fast door must not. The question is which one is the primary.
+3 1. **How is a phase ordered?** An explicit `after` list, or the module
+3    system's own list merging (`mkBefore`, `mkAfter`, `mkOrder`)? The
+3    second invents nothing.
+3 2. **Does a phase pick its guests?** A recipe that brings up a cluster
+3    also wants to say what the guest must be. If a phase can contribute
+3    NixOS configuration as well as a script, a recipe becomes one thing
+3    instead of two that must be used together.
+3 3. **What happens after a phase fails?** Stop, or run the rest anyway?
+3    Stop is right for a dependency and wrong for two independent checks.
+3 4. **Does the CLI let a phase's script be overridden with a path?** It is
+3    what keeps iteration fast once the phase list lives in Nix.
 1 5. **Does `nix build` ever take a steer?** Today: no, by design. The cost
 1    is nixkube's `NIXKUBE_UML_SCENARIOS`.
-1 6. **Environment variable names, or declared knobs?** `impurities = [ "X" ]`
-1    is stringly, and it is a separate mechanism from `argv`. A declared knob
-1    is one mechanism for both:
-1
-1    ```nix
-1    knobs.scenarios = { type = "string"; default = ""; };
-1    ```
-1
-1    It reaches the script as `vms.knobs.scenarios`. A caller sets it with
-1    `--scenarios=csi` or with an environment variable. It has a default the
-1    run prints, and the sandbox uses that default rather than an empty
-1    string that means two things.
+3    Answered in part: with `envOrDefault`, `nix build` *does* take a
+3    steer, and pays for it with a rebuild.
+3 6. **One kind of knob, or two?** `envOrDefault` resolves at evaluation, so
+3    every knob costs a rebuild. A knob that only selects which cases a
+3    script runs does not need to. Two kinds is more to explain; one kind
+3    is slower in the case people will use most.
 2 7. **How does a stream leave a guest?** See area 5. The `/artifacts`
 2    answer needs no protocol change; the other two do.
 2 8. **What does "no internet" turn off?** See area 6.
+3 9. **Does the sandboxed path keep the spec file?** Assumed yes — the
+3    sandbox must not evaluate. Worth confirming, because it means two
+3    doors into the same run for good.
 1
 1 ## Issues
 1
