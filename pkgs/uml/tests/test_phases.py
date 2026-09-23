@@ -117,6 +117,22 @@ class TestPassed:
     def test_a_pending_phase_is_not_a_pass(self):
         assert not passed({"a": PhaseState.PENDING})
 
+    def test_a_deselected_phase_is_a_pass(self):
+        """`--only mine` must exit 0 when `mine` passed.
+
+        The opposite of the case above, and the reason the two states are
+        not one. A developer who asked for one phase knows the rest did
+        not run. Nothing in a sandbox can deselect, so this cannot make a
+        check green.
+        """
+        assert passed({"a": PhaseState.PASSED, "b": PhaseState.DESELECTED})
+
+    def test_deselecting_does_not_excuse_a_failure(self):
+        assert not passed({"a": PhaseState.FAILED, "b": PhaseState.DESELECTED})
+
+    def test_deselecting_everything_is_not_a_failure(self):
+        assert passed({"a": PhaseState.DESELECTED})
+
 
 class TestSummarise:
     def test_it_counts_each_outcome(self):

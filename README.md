@@ -26,6 +26,105 @@ Every test answers to `.uml` and `.qemu`, so picking one needs no Nix
 edit. Nothing is duplicated to make that work: one script, one set of node
 configurations, and neither knows which machine it got.
 
+## Writing a run
+
+A run is guests plus phases. Each phase is a Python module exporting one
+coroutine, and Nix says what order they go in.
+
+```nix
+mkSession {
+  name = "mine";
+  nodes.one = { };
+  phases = {
+    boot.script = ./boot.py;
+    check = {
+      script = ./check.py;
+      after = [ "boot" ];
+    };
+  };
+}
+```
+
+```python
+from uml_runner import Machines
+
+async def test(vms: Machines) -> None:
+    await vms.one.succeed("systemctl is-system-running --wait")
+```
+
+Three things come out, and they are one program run three ways:
+
+```console
+$ nix build --file . mine              # the sandboxed check, what CI builds
+$ nix run --file . mine.run -- --out ./out
+$ nix run --file . mine.phases         # what would run, without booting
+```
+
+The run writes the same five things whichever door you came through:
+`status`, `log`, `phases.json`, `report.json` and `artifacts/`.
+
+### `after` is a dependency, not a hint
+
+A phase whose `after` failed is **skipped**, and a phase that depends on
+nothing still runs. So one run tells you about every independent failure
+rather than the first one, and it never reports a second failure about a
+world that was never built.
+
+A run holding a skip is not a pass: nobody knows what that phase would
+have done.
+
+An `after` naming a phase that does not exist is an evaluation error. A
+typo there would not stop anything — the phase would simply have no
+dependency, so an upstream failure would never skip it.
+
+### Running one phase
+
+```console
+$ nix run --file . mine.run -- --out ./out --only check
+```
+
+The rest are **deselected**, which is a different thing from skipped:
+nobody wanted their answers, so the run still exits 0. Only a caller can
+deselect. The sandboxed check passes no `--only`, so CI cannot go green
+by running a subset.
+
+### Telling a run what to do
+
+```nix
+knobs.selection = {
+  env = "UML_SELECTION";
+  default = "every-case";
+};
+```
+
+```console
+$ UML_SELECTION=just-mounts nix run --file . mine.run -- --out ./out
+```
+
+A phase reads `vms.knobs["selection"]` and passes it where it wants —
+`succeed(cmd, env = {...})` for a guest. A knob is not ambient: nothing
+in a guest's environment carries it unless a phase hands it over.
+
+Nix resolves a knob while evaluating, so it can change what is **built**
+— a phase order, a guest's memory, an image — which nothing read at run
+time can do. The price is that setting one moves the derivation. Inside a
+sandbox `builtins.getEnv` answers `""`, which is also what an unset
+variable answers, so the check always takes the declared default and an
+exported variable cannot make CI run something other than the check.
+
+Every knob, its value and where the value came from is printed before
+anything boots. A misspelled variable is invisible otherwise.
+
+### Holding a failed run open
+
+```console
+$ nix run --file . mine.run -- --out ./out --hold
+```
+
+The guests stay up with the state the failure left. The evidence is
+written first, so the directory is complete even though the run has not
+ended.
+
 ## Writing a test
 
 A test is a set of NixOS modules and a Python coroutine over the machines

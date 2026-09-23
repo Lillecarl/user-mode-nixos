@@ -2,6 +2,29 @@
 
 Read README.md first — it explains how the pieces fit together.
 
+## Two doors, and one of them is being replaced
+
+`mkSession` is the new one: guests plus named phases, ordered in Nix. It
+is where work goes. `docs/design/running-anywhere.md` is the design and
+records what is decided and what is not.
+
+`mkTest` is the old one: one script, `run_test(test)` at the bottom of
+it. Still used by every test in `tests/*.py` and by consumers, so it
+keeps working. Do not add features to it.
+
+The split underneath is the point. `pkgs/uml-runner` is the **mechanism**
+— guests, backends, the agent channel — and it has no opinion about
+sequence. `pkgs/uml` owns the **sequence**: a `Session` something drives
+a step at a time, and `uml run` is one linear drive of it. An MCP server
+will be the same object driven slowly, which is why teardown is never
+automatic and why nothing per-run may be a module global.
+
+Logic goes in `pkgs/uml/uml/phases.py` as pure functions and is tested
+without a guest. Effects go in `session.py`. A guest test is for what a
+pure test cannot see — and it has already earned that: the phase-skip
+rule was correct in `phases.py` while the driver ignored its answer, and
+only `nix build --file . phase-rules` caught it.
+
 ## Where a test script belongs
 
 This repository is a library: `mkTest`, the guest modules, and

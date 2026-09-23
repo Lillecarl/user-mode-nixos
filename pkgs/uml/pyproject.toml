@@ -13,3 +13,8 @@ uml = "uml.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["uml"]
+
+[tool.pytest.ini_options]
+# `anyio_mode` does not exist; the marker plus the `anyio_backend` fixture
+# in conftest.py is how anyio's own plugin is driven.
+markers = ["anyio"]

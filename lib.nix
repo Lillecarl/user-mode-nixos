@@ -550,6 +550,13 @@ rec {
       runner = pkgs.writeShellApplication {
         name = "uml-run-${name}";
         text = ''
+          # checked: ${checked}
+          #
+          # Named in a comment, which is enough: Nix scans the text for
+          # store paths, so the type check is a dependency of this script
+          # and runs before it can. The by-hand door is where a type
+          # error gets written, so it is the door that must not skip the
+          # check.
           exec ${uml} run --spec ${spec} "$@"
         '';
       };

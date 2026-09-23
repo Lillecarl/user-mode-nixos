@@ -32,7 +32,20 @@ class PhaseState(StrEnum):
     RUNNING = "running"
     PASSED = "passed"
     FAILED = "failed"
+
     SKIPPED = "skipped"
+    """Its dependency failed, so nobody knows what it would have done.
+    A run holding one of these did not pass."""
+
+    DESELECTED = "deselected"
+    """The caller asked for other phases by name.
+
+    Kept apart from `SKIPPED` because the two mean opposite things to a
+    reader and to an exit code. A developer running `--only mine` knows
+    the rest did not run and wants exit 0 when theirs passed; a run whose
+    dependency failed must not report success. Nothing in a sandbox can
+    produce this -- the check passes no `--only` -- so CI cannot go green
+    by running a subset."""
 
 
 def dependents(name: str, phases: Iterable[PhaseSpec]) -> set[str]:
@@ -81,8 +94,15 @@ def passed(state: dict[str, PhaseState]) -> bool:
     A skipped phase is not a pass.  It is a phase whose answer nobody
     has, and a run that reports success while holding none of the
     answers it was asked for is the failure mode this guards.
+
+    A **deselected** phase is different: the caller said not to run it,
+    so its answer was never wanted.  Only a caller can deselect, and a
+    sandboxed check never does, so this cannot make CI green.
     """
-    return all(value is PhaseState.PASSED for value in state.values())
+    return all(
+        value in (PhaseState.PASSED, PhaseState.DESELECTED)
+        for value in state.values()
+    )
 
 
 def summarise(state: dict[str, PhaseState]) -> str:

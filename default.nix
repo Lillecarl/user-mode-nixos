@@ -318,6 +318,119 @@ let
         '';
 
     /*
+      What is a run told from outside, and what is a check told instead?
+
+      A knob is resolved while evaluating, so it can change what is built
+      -- a phase order, a guest's memory, an image -- which nothing read
+      at run time can do. The price is that setting one moves the
+      derivation, and that is the trade this records rather than hides.
+
+      The property under test is the half that keeps CI honest: inside a
+      sandbox a knob always carries its declared default, because
+      `builtins.getEnv` answers "" under a pure evaluation and an unset
+      variable answers "" too. So an exported variable cannot make the
+      check run something other than the check.
+
+      Also asserts a knob is not ambient. Nothing in the guest's
+      environment carries it; a phase hands it over or the guest never
+      sees it, which keeps a guest's behaviour a function of its own
+      configuration.
+    */
+    knobs = mkSession {
+      name = "knobs";
+      nodes.one = { };
+      knobs.selection = {
+        env = "UML_SELECTION";
+        default = "every-case";
+        description = "Which cases to run; the default is all of them.";
+      };
+      phases = {
+        boot.script = ./tests/phases/boot.py;
+        knob = {
+          script = ./tests/phases/knob.py;
+          after = [ "boot" ];
+        };
+      };
+    };
+
+    /*
+      Can a caller run one phase and leave the rest alone?
+
+      `--only` is the fast door: boot once, do the one thing being worked
+      on, and exit 0 when it passed. A developer who asked for one phase
+      knows the rest did not run.
+
+      The safety property is that only a *caller* can do this. The check
+      passes no `--only`, so CI cannot go green by running a subset --
+      and the session below proves it, because one of its phases fails on
+      purpose and building it whole fails.
+
+      `deselected` is therefore a different state from `skipped`. Skipped
+      means nobody knows the answer and the run failed; deselected means
+      nobody wanted it.
+    */
+    only-rules =
+      let
+        run = mkSession {
+          name = "only";
+          nodes.one = { };
+          phases = {
+            boot.script = ./tests/phases/boot.py;
+            only = {
+              script = ./tests/phases/only.py;
+              after = [ "boot" ];
+            };
+            # Fails if it ever runs, which is the point: `--only` must
+            # not reach it, and building this session whole must fail.
+            never = {
+              script = ./tests/phases/check.py;
+              after = [ "boot" ];
+            };
+          };
+        };
+      in
+      pkgs.runCommand "uml-check-only"
+        {
+          nativeBuildInputs = [ pkgs.jq ];
+          passthru = { inherit run; };
+        }
+        ''
+          export HOME="$TMPDIR"
+          out_dir="$TMPDIR/run"
+          ${lib.getExe run.run} --out "$out_dir" --only only
+          echo "--- phases.json ---"
+          cat "$out_dir/phases.json"
+
+          want() {
+            got=$(jq -r --arg n "$1" '.phases[] | select(.name == $n) | .state' \
+              "$out_dir/phases.json")
+            if [ "$got" != "$2" ]; then
+              echo "phase $1 is '$got', expected '$2'" >&2
+              exit 1
+            fi
+            echo "ok: $1 is $2"
+          }
+
+          want only passed
+          want boot deselected
+          want never deselected
+
+          if [ "$(jq -r '.passed' "$out_dir/phases.json")" != "true" ]; then
+            echo "asking for one phase by name reported failure" >&2
+            exit 1
+          fi
+          echo "ok: a deselected phase does not fail the run"
+
+          # And the guest really did the work, rather than the phase
+          # being counted without running.
+          test -f "$out_dir/artifacts/only-ran" \
+            || { echo "the phase was counted but never ran" >&2; exit 1; }
+          echo "ok: and it left its evidence in the artifacts"
+
+          touch $out
+        '';
+
+    /*
       Can a guest host a userspace filesystem?
 
       The question a build sandbox cannot answer for itself: its /dev has

@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import anyio
+from uml_runner import MachineError
 
 from .phases import PhaseState, summarise
 from .session import Session, SessionError
@@ -125,15 +126,33 @@ async def run(args: argparse.Namespace) -> int:
                 f"no such phase: {', '.join(sorted(missing))};"
                 f" have {', '.join(p.name for p in session.spec.phases)}"
             )
-        # Anything not asked for is skipped rather than pending, so the
-        # run does not report itself as having answers it never sought.
+        # Deselected, not skipped. The two read the same in a list and
+        # mean opposite things: one says nobody knows the answer, the
+        # other says nobody wanted it.
         for phase in session.spec.phases:
             if phase.name not in args.only:
-                session.state[phase.name] = PhaseState.SKIPPED
+                session.state[phase.name] = PhaseState.DESELECTED
 
-    await session.boot()
+    await drive(session, hold=args.hold)
+
+    print(session.report.summary(), flush=True)
+    print(f"[uml] {summarise(session.state)}", flush=True)
+    return 0 if session.passed else 1
+
+
+async def drive(session: Session, *, hold: bool = False) -> None:
+    """Boot, run what is pending, write the evidence, put the guests down.
+
+    Separate from `run` so it can be driven with something other than a
+    command line -- which is what an MCP server does, and what the test
+    for the teardown path does.
+    """
     held = False
     try:
+        # Inside the `try`, not before it. `_start_all` lets every guest
+        # settle before reporting, so a failed boot can leave others
+        # running -- and outside this block nothing would ever stop them.
+        await session.boot()
         # Asked again every time, not snapshotted. A phase that failed
         # marks its dependents skipped *while this loop runs*, and a list
         # taken before the loop would still hold them -- which ran
@@ -141,9 +160,14 @@ async def run(args: argparse.Namespace) -> int:
         # the guest test; the pure tests could not see it, because
         # `skipped_by` was right and the driver ignored the answer.
         while todo := session.pending():
-            if await session.run(todo[0]) is PhaseState.FAILED and args.hold:
+            if await session.run(todo[0]) is PhaseState.FAILED and hold:
                 held = True
                 break
+    except MachineError as error:
+        # A guest that would not boot. Every phase stays pending, so the
+        # run fails on its own account below; this only keeps a traceback
+        # about sockets out of the way of the message that matters.
+        print(f"[uml] no guests: {error}", flush=True)
     finally:
         # Written before the hold, not after: a held session is stopped
         # with a signal, and nothing after `sleep_forever` runs.
@@ -157,10 +181,6 @@ async def run(args: argparse.Namespace) -> int:
             await anyio.sleep_forever()
         else:
             await session.teardown()
-
-    print(session.report.summary(), flush=True)
-    print(f"[uml] {summarise(session.state)}", flush=True)
-    return 0 if session.passed else 1
 
 
 async def phases(args: argparse.Namespace) -> int:

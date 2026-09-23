@@ -65,6 +65,15 @@ class Machines(dict[str, Machine]):
     which has no environment to read; that is what makes the test's
     default the thing CI runs."""
 
+    knobs: dict[str, str]
+    """What this run was told from outside, by name.
+
+    Declared in Nix and resolved there, so a knob can change what is
+    *built* as well as what a phase does. Every declared name is present;
+    one whose variable is unset carries its declared default, which is
+    what a sandboxed check always gets. Set by ``mkSession``; empty under
+    ``mkTest``, which has ``env`` instead."""
+
     argv: list[str]
     """What was left on the command line after ``--spec``.
 
