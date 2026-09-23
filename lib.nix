@@ -621,8 +621,11 @@ rec {
       }
       ''
         echo "the run is at ${attempt}"
-        echo "  log:       ${attempt}/log"
-        echo "  phases:    ${attempt}/phases.json"
+        echo "  log:       ${attempt}/log            everything, readable"
+        echo "  events:    ${attempt}/events.jsonl   everything, for a machine"
+        echo "  console:   ${attempt}/console/       one file per guest"
+        echo "  phases:    ${attempt}/phases.json    what each phase did"
+        echo "  junit:     ${attempt}/junit.xml"
         echo "  timings:   ${attempt}/report.json"
         echo "  artifacts: ${attempt}/artifacts"
 
@@ -639,9 +642,11 @@ rec {
 
         mkdir -p $out
         ln -s ${attempt} $out/attempt
-        ln -s ${attempt}/log $out/log
-        ln -s ${attempt}/phases.json $out/phases.json
-        ln -s ${attempt}/report.json $out/report.json
-        ln -s ${attempt}/artifacts $out/artifacts
+        # Named in a loop rather than one line each: a sink added to the
+        # runner should not need an edit here to be reachable from
+        # `result/`, and one that was forgotten is invisible.
+        for each in log events.jsonl console phases.json junit.xml report.json artifacts; do
+          ln -s ${attempt}/"$each" "$out/$each"
+        done
       '';
 }

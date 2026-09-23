@@ -25,6 +25,28 @@ pure test cannot see — and it has already earned that: the phase-skip
 rule was correct in `phases.py` while the driver ignored its answer, and
 only `nix build --file . phase-rules` caught it.
 
+## Getting evidence out of a session
+
+`grep '\[test\]'` over a build log still works. Prefer the files:
+
+```sh
+nix build --file . mine            # result/ links all of them
+jq -r 'select(.kind=="phase_finished") | "\(.phase)\t\(.data.state)"' result/events.jsonl
+cat result/console/cp.log          # one guest, no grep
+```
+
+An event carries `machine`, `phase` and `seconds` as fields, so a
+question about timing or about one guest is `jq` and not a regex. The
+`log` file holds the same run unfiltered, for reading.
+
+**Do not add a `print` to the runner.** `Session.emit` is the one way in,
+and everything downstream — terminal, log, JSONL, per-guest files, JUnit
+— follows from it. A phase script may `print` freely; that is captured
+and attributed to the phase.
+
+A guest's console is not on the terminal by default. `-vv` puts it there,
+and a failed phase replays the last 20 lines of every guest by itself.
+
 ## Where a test script belongs
 
 This repository is a library: `mkTest`, the guest modules, and

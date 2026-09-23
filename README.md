@@ -60,8 +60,54 @@ $ nix run --file . mine.run -- --out ./out
 $ nix run --file . mine.phases         # what would run, without booting
 ```
 
-The run writes the same five things whichever door you came through:
-`status`, `log`, `phases.json`, `report.json` and `artifacts/`.
+### What a run leaves behind
+
+The same directory whichever door you came through — `$out` for the
+check, `--out` by hand:
+
+```
+status          0 or 1
+log             everything, readable, never filtered
+events.jsonl    everything, one JSON object per line
+console/        one file per guest, its own output
+phases.json     what each phase did, and why it was skipped
+junit.xml       for CI
+report.json     where the time went
+artifacts/      what the guests wrote to /artifacts
+```
+
+`events.jsonl` is the one worth knowing about. An event carries the
+machine, the phase and the seconds as **fields**, so questions are `jq`
+rather than a regex over a log:
+
+```console
+$ jq -r 'select(.kind=="rpc") | "\(.phase)\t\(.seconds)\t\(.text)"' out/events.jsonl
+boot      0.147  systemctl is-system-running --wait
+cluster   0.009  exit 1
+```
+
+It is appended as the run goes, so a run you killed still has everything
+up to the moment it died.
+
+### What reaches the terminal
+
+**A guest's console does not, by default.** A failing run prints about 50
+lines instead of 350, and the ones left are what the phases did.
+
+Nothing is lost by that. Every console line is always in
+`console/<guest>.log`, and **when a phase fails the last 20 lines from
+every guest are printed automatically** — the context you would have gone
+looking for, without going to look.
+
+```console
+$ nix run --file . mine.run -- --out ./out        # phases and what they print
+$ nix run --file . mine.run -- --out ./out -v     # plus every command sent to a guest
+$ nix run --file . mine.run -- --out ./out -vv    # plus the guests' consoles
+$ nix run --file . mine.run -- --out ./out -q     # failures and the verdict only
+```
+
+The `log` file ignores all of that and keeps everything. `--quiet`
+changes what you watch, never what you can go back to.
 
 ### `after` is a dependency, not a hint
 

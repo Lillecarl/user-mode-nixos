@@ -26,6 +26,8 @@
 9 | `--offline` | `forward.py` | measured by hand, `uplink` |
 9 | Recipes as modules | `modules/recipes` | `recipes` |
 9 | `always`, for a phase that collects evidence | `uml/phases.py` | `recipes` |
+10 | One event stream, five sinks | `uml/events.py`, `uml/sinks.py` | 63 unit tests |
+10 | A terminal worth reading, with replay on failure | `uml/cli.py` | measured: 350 lines → 53 |
 9
 9 Four bugs were found by building it, and three of them only by running
 9 against a real guest:
@@ -40,10 +42,24 @@
 9   door where a type error gets written.
 9 - `typeCheck` copied scripts by basename, so two sharing one collided.
 9
-9 Still open, in the order they look worth doing: streams and the terminal
-9 filter (area 3), streaming out of a guest (area 5), the evaluator (area
-9 0b), and the session API's remaining operations for the MCP server (area
-9 0d).
+10 Area 3 is done, and it went further than the area describes. Events
+10 carry the machine, the phase and the seconds as fields rather than
+10 being formatted lines, so `events.jsonl` answers a timing question with
+10 `jq` and the MCP server becomes another sink rather than a log parser.
+10 nixpkgs' three loggers each carry their own level and their own copy of
+10 the same comparisons; here the filter is one function and a renderer is
+10 pure.
+10
+10 Two things beyond it, both because the console left the terminal: a
+10 failed phase replays the last 20 lines from every guest, which nixpkgs
+10 cannot do (it has the switch and not the replay); and a phase's own
+10 `print` is captured and attributed to that phase rather than merely
+10 kept.
+10
+10 Still open, in the order they look worth doing: streaming *out of* a
+10 guest while it runs (area 5, and it needs the agent's one-command-at-a-
+10 time limit solved), the evaluator (area 0b), and the session API's
+10 remaining operations for the MCP server (area 0d).
 9
 1 ## The goal
 1
