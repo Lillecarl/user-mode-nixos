@@ -27,6 +27,13 @@ class FakeSession:
         self.booted = False
         self.torn_down = False
         self.wrote = False
+        self.said: list[str] = []
+
+    def emit(self, kind, text: str, **_kwargs) -> None:
+        self.said.append(f"{kind}:{text}")
+
+    def _replay(self, lines: int = 20) -> None:
+        self.said.append("replay")
 
     async def boot(self) -> None:
         self.booted = True
@@ -79,6 +86,16 @@ class TestTeardownAlwaysHappens:
         session = FakeSession(boot_error=MachineError("no"))
         await drive(session)
         assert session.wrote
+
+    async def test_a_failed_boot_replays_the_consoles(self):
+        """The only thing that says *why* it would not boot.
+
+        A guest that never answers cannot be asked anything, so its last
+        console lines are the whole of the evidence.
+        """
+        session = FakeSession(boot_error=MachineError("no"))
+        await drive(session)
+        assert "replay" in session.said
 
 
 @pytest.mark.anyio

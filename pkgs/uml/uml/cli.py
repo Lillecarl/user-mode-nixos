@@ -17,60 +17,19 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
+
 
 import anyio
 from uml_runner import MachineError
 
+from .events import Kind, Level
 from .phases import PhaseState, summarise
+from .sinks import Broadcast, ConsoleFiles, JsonLines, Junit, Log, Terminal
 from .session import Session, SessionError
 from .spec import Spec
 
-if TYPE_CHECKING:
-    from types import TracebackType
 
 
-class Tee:
-    """Write to the terminal and to the run's log at once.
-
-    A run that is read later and a run that is watched now want the same
-    bytes. Copying afterwards would miss a run that is killed, and the
-    log of a killed run is the one worth having.
-    """
-
-    def __init__(self, stream, path: Path) -> None:
-        self._stream = stream
-        self._file = path.open("w", buffering=1, encoding="utf-8", errors="replace")
-
-    def write(self, text: str) -> int:
-        self._file.write(text)
-        return self._stream.write(text)
-
-    def flush(self) -> None:
-        self._file.flush()
-        self._stream.flush()
-
-    def isatty(self) -> bool:
-        return self._stream.isatty()
-
-    def fileno(self) -> int:
-        return self._stream.fileno()
-
-    def close(self) -> None:
-        self._file.close()
-
-    def __enter__(self) -> Tee:
-        sys.stdout = self  # ty: ignore[invalid-assignment]
-        return self
-
-    def __exit__(
-        self,
-        kind: type[BaseException] | None,
-        value: BaseException | None,
-        trace: TracebackType | None,
-    ) -> None:
-        sys.stdout = self._stream
-        self.close()
 
 
 def parse(argv: list[str] | None = None) -> argparse.Namespace:
@@ -105,6 +64,22 @@ def parse(argv: list[str] | None = None) -> argparse.Namespace:
             " check has none"
         ),
     )
+    run.add_argument(
+        "--verbose",
+        "-v",
+        action="count",
+        default=0,
+        help=(
+            "-v shows every command sent to a guest, -vv adds the guests'"
+            " consoles. Both are written to the output directory either way"
+        ),
+    )
+    run.add_argument(
+        "--quiet",
+        "-q",
+        action="store_true",
+        help="only failures and the verdict",
+    )
 
     phases = sub.add_parser("phases", help="list the phases and exit")
     phases.add_argument("--spec", type=Path, required=True)
@@ -119,13 +94,60 @@ def announce(session: Session) -> None:
     case that was asked for, and nothing says why.
     """
     for name, knob in sorted(session.spec.knobs.items()):
-        print(f"[uml] knob {name}={knob.value!r} ({knob.source})", flush=True)
+        session.emit(
+            Kind.KNOB,
+            f"knob {name}={knob.value!r} ({knob.source})",
+            knob=name,
+            value=knob.value,
+            source=knob.source,
+            env=knob.env,
+        )
+
+
+def terminal_level(args: argparse.Namespace) -> Level:
+    """What the person watching asked to see.
+
+    The default leaves the guests' consoles out. Every one of them is
+    written to `console/<guest>.log` regardless, and the tail of each is
+    replayed when a phase fails -- so nothing is lost by the quiet
+    default, and the case that matters is louder than it was.
+    """
+    if args.quiet:
+        return Level.ERROR
+    if args.verbose >= 2:
+        return Level.CONSOLE
+    if args.verbose == 1:
+        return Level.DETAIL
+    return Level.INFO
+
+
+def sinks_for(args: argparse.Namespace, name: str) -> Broadcast:
+    """Everything that wants the events.
+
+    One stream, four readers: the person, the machine, the guests' own
+    consoles, and whatever CI reads JUnit with. Adding a fifth -- an MCP
+    server -- is another entry here and nothing else.
+    """
+    return Broadcast(
+        [
+            Terminal(terminal_level(args)),
+            # Unfiltered on purpose. The terminal is a view; this is the
+            # record, and a record that only kept what somebody thought
+            # was interesting at the time is not one.
+            Log(args.out / "log"),
+            JsonLines(args.out / "events.jsonl"),
+            ConsoleFiles(args.out / "console"),
+            Junit(args.out / "junit.xml", name),
+        ]
+    )
 
 
 async def run(args: argparse.Namespace) -> int:
-    session = Session(Spec.read(args.spec), args.out, offline=args.offline)
+    spec = Spec.read(args.spec)
+    sink = sinks_for(args, spec.name)
+    session = Session(spec, args.out, offline=args.offline, sink=sink)
+    session.emit(Kind.RUN_STARTED, f"output in {args.out}")
     announce(session)
-    print(f"[uml] output in {args.out}", flush=True)
 
     if args.only:
         missing = set(args.only) - {phase.name for phase in session.spec.phases}
@@ -140,12 +162,22 @@ async def run(args: argparse.Namespace) -> int:
         for phase in session.spec.phases:
             if phase.name not in args.only:
                 session.state[phase.name] = PhaseState.DESELECTED
+                session.emit(
+                    Kind.PHASE_FINISHED,
+                    f"{phase.name} deselected",
+                    level=Level.DETAIL,
+                    phase=phase.name,
+                    state=str(PhaseState.DESELECTED),
+                )
 
-    await drive(session, hold=args.hold)
-
-    print(session.report.summary(), flush=True)
-    print(f"[uml] {summarise(session.state)}", flush=True)
-    return 0 if session.passed else 1
+    try:
+        await drive(session, hold=args.hold)
+        for line in session.report.summary().splitlines():
+            session.emit(Kind.NOTE, line.removeprefix("[time] "))
+        session.emit(Kind.NOTE, summarise(session.state))
+        return 0 if session.passed else 1
+    finally:
+        sink.close()
 
 
 async def drive(session: Session, *, hold: bool = False) -> None:
@@ -175,16 +207,18 @@ async def drive(session: Session, *, hold: bool = False) -> None:
         # A guest that would not boot. Every phase stays pending, so the
         # run fails on its own account below; this only keeps a traceback
         # about sockets out of the way of the message that matters.
-        print(f"[uml] no guests: {error}", flush=True)
+        session.emit(Kind.ERROR, f"no guests: {error}", level=Level.ERROR)
+        session._replay()
     finally:
         # Written before the hold, not after: a held session is stopped
         # with a signal, and nothing after `sleep_forever` runs.
         session.write_output()
         if held:
-            print(
-                "[uml] held on failure; the guests are up and the state is"
+            session.emit(
+                Kind.NOTE,
+                "held on failure; the guests are up and the state is"
                 " intact. ^C to stop them.",
-                flush=True,
+                level=Level.ERROR,
             )
             await anyio.sleep_forever()
         else:
@@ -206,8 +240,7 @@ def main(argv: list[str] | None = None) -> None:
 
     args.out.mkdir(parents=True, exist_ok=True)
     try:
-        with Tee(sys.stdout, args.out / "log"):
-            raise SystemExit(anyio.run(run, args))
+        raise SystemExit(anyio.run(run, args))
     except KeyboardInterrupt:
         raise SystemExit(130) from None
     except SessionError as error:

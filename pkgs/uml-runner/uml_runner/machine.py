@@ -27,6 +27,7 @@ import time
 from asyncio import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 from .agent import AGENT_READY
 from .arpyc import AsyncConnection, connect
@@ -178,6 +179,8 @@ class Machine:
         command_timeout: float = 120,
         recorder: report.Report | None = None,
         offline: bool = False,
+        on_console: Callable[[str, str], None] | None = None,
+        on_command: Callable[[str, str, float], None] | None = None,
     ) -> None:
         self.spec = spec
         self.tools = tools
@@ -195,6 +198,8 @@ class Machine:
         # image runs either way. A sandboxed run is offline whatever this
         # says, because the sandbox has no network for passt to use.
         self.offline = offline
+        self.on_console = on_console
+        self.on_command = on_command
         self.forward: list[forward.Rule] = list(spec.forward)
 
         self._rundir: Path | None = None
@@ -406,6 +411,15 @@ class Machine:
     # ── console ────────────────────────────────────────────────────
 
     def _log(self, message: str) -> None:
+        """One console line, to whatever is listening.
+
+        `on_console` is how a caller takes this stream somewhere other
+        than stdout -- a file per guest, a filter, an event queue. Left
+        unset it prints, which is what `mkTest` has always done.
+        """
+        if self.on_console is not None:
+            self.on_console(self.name, message)
+            return
         print(f"[{self.name}] {message}", flush=True)
 
     async def _pump_console(self) -> None:
@@ -485,7 +499,12 @@ class Machine:
                 f"{self._console_tail()}"
             ) from None
         finally:
-            self.recorder.step(self.name, "rpc", what, time.monotonic() - started)
+            took = time.monotonic() - started
+            self.recorder.step(self.name, "rpc", what, took)
+            if self.on_command is not None:
+                # The same choke point the timings use, so a new kind of
+                # call is reported without touching this.
+                self.on_command(self.name, what, took)
 
     def _console_tail(self, lines: int = 15) -> str:
         """The last thing the guest said, for an error that has no other

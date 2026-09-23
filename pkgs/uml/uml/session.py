@@ -26,6 +26,7 @@ sequence, not the guests.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import json
 import time
@@ -38,12 +39,14 @@ from uml_runner import Machine, Machines, MachineSpec, Toolchain
 from uml_runner.net import build_lans
 from uml_runner.report import Report
 
+from .events import Event, Kind, Level
 from .phases import PhaseState, passed, runnable, skipped_by
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
     from pathlib import Path
 
+    from .sinks import Sink
     from .spec import PhaseSpec, Spec
 
 
@@ -76,21 +79,138 @@ def load_phase(script: Path) -> Callable[[Machines], Awaitable[None]]:
 class Session:
     """One run, from evaluation to teardown, driven a step at a time."""
 
-    def __init__(self, spec: Spec, out: Path, *, offline: bool = False) -> None:
+    def __init__(
+        self,
+        spec: Spec,
+        out: Path,
+        *,
+        offline: bool = False,
+        sink: Sink | None = None,
+    ) -> None:
         self.spec = spec
         self.out = out
         self.offline = offline
+        self.sink = sink
+        self._started = time.monotonic()
         self.artifacts = out / "artifacts"
         self.state: dict[str, PhaseState] = {
             phase.name: PhaseState.PENDING for phase in spec.phases
         }
         self.errors: dict[str, str] = {}
+        # Which phase is running, so a command carries the phase it
+        # belonged to. "What did `cluster` spend its time on" is then a
+        # question `events.jsonl` answers on its own.
+        self.running: str | None = None
         self.vms: Machines | None = None
         # Its own, not `report.RUN`. A process may hold several sessions
         # and their timings are not one run's.
         self.report = Report()
         self._lans: list[Any] = []
         self._booted = False
+
+    # ── events ─────────────────────────────────────────────────────
+
+    def emit(
+        self,
+        kind: Kind,
+        text: str,
+        *,
+        level: Level = Level.INFO,
+        machine: str | None = None,
+        phase: str | None = None,
+        seconds: float | None = None,
+        **data: object,
+    ) -> None:
+        """Say something, once, to every sink that wants it."""
+        if self.sink is None:
+            return
+        self.sink.emit(
+            Event(
+                at=time.monotonic() - self._started,
+                kind=kind,
+                level=level,
+                text=text,
+                machine=machine,
+                phase=phase,
+                seconds=seconds,
+                data=dict(data),
+            )
+        )
+
+    def _console(self, machine: str, line: str) -> None:
+        self.emit(Kind.CONSOLE, line, level=Level.CONSOLE, machine=machine)
+
+    def _command(self, machine: str, what: str, seconds: float) -> None:
+        self.emit(
+            Kind.RPC,
+            what,
+            level=Level.DETAIL,
+            machine=machine,
+            seconds=seconds,
+            phase=self.running,
+        )
+
+    @contextlib.contextmanager
+    def _capture(self, phase: str | None = None):
+        """Turn what a phase prints into events.
+
+        A phase script says things with `print`, which is right -- asking
+        a test author to learn a logging API to say "the cluster came up"
+        is how a framework stops being used. But a bare print reaches the
+        terminal and nothing else, so the log file and `events.jsonl`
+        would be missing the one thing a reader most wants.
+
+        Captured here instead, so each line becomes a NOTE carrying the
+        phase it came from. That is more than the old `tee` managed: the
+        line is attributed, not just kept.
+
+        **`redirect_stdout` is process-wide.** Fine for a CLI, which
+        holds one session. An MCP server holding several at once needs
+        each in its own process, or something finer than this.
+        """
+        emit = self.emit
+
+        class Lines:
+            def write(self, text: str) -> int:
+                for line in text.splitlines():
+                    if line.strip():
+                        emit(Kind.OUTPUT, line, phase=phase)
+                return len(text)
+
+            def flush(self) -> None:
+                pass
+
+        with contextlib.redirect_stdout(Lines()):  # ty: ignore[invalid-argument-type]
+            yield
+
+    def _replay(self, lines: int = 20) -> None:
+        """The end of each guest's console, at error level.
+
+        This is what makes a quiet default safe. The console is off the
+        terminal while things work, and the moment a phase fails the
+        last lines of every guest arrive without anybody going to look
+        for a file -- which is the context that usually explains it.
+
+        nixpkgs has the switch (`print_serial_logs`) and not this: there
+        the choice is all of it all the time, or none of it including
+        when it would have helped.
+        """
+        if self.vms is None:
+            return
+        for name, vm in self.vms.items():
+            tail = [line for line in list(vm._history)[-lines:] if line]
+            if not tail:
+                continue
+            self.emit(
+                Kind.ERROR,
+                f"the last {len(tail)} console lines from {name}:",
+                level=Level.ERROR,
+                machine=name,
+            )
+            for line in tail:
+                self.emit(
+                    Kind.ERROR, f"  {line}", level=Level.ERROR, machine=name
+                )
 
     # ── the operations ─────────────────────────────────────────────
 
@@ -110,6 +230,7 @@ class Session:
             name: fd for lan in self._lans for name, fd in lan.fds.items()
         }
 
+        self.emit(Kind.BOOT, f"booting {', '.join(one.name for one in specs)}")
         self.artifacts.mkdir(parents=True, exist_ok=True)
         vms = Machines(
             (
@@ -121,6 +242,8 @@ class Session:
                     artifacts=self._guest_artifacts(one.name),
                     recorder=self.report,
                     offline=self.offline,
+                    on_console=self._console,
+                    on_command=self._command,
                 ),
             )
             for one in specs
@@ -145,7 +268,10 @@ class Session:
         for lan in self._lans:
             lan.start()
         self.vms = vms
-        failures = await _start_all(vms)
+        # Captured too: passt and the forward resolver say useful things
+        # on the way up, and they say them with `print`.
+        with self._capture():
+            failures = await _start_all(vms)
         for lan in self._lans:
             lan.detach()
         if failures:
@@ -159,24 +285,56 @@ class Session:
             raise SessionError("run before boot")
         test = load_phase(phase.script)
         self.state[phase.name] = PhaseState.RUNNING
-        print(f"[phase] {phase.name}", flush=True)
+        self.running = phase.name
+        self.emit(Kind.PHASE_STARTED, phase.name, phase=phase.name)
         started = time.monotonic()
         try:
-            await test(self.vms)
+            with self._capture(phase.name):
+                await test(self.vms)
         except Exception as error:
+            took = time.monotonic() - started
             self._record(phase, started)
             self.state[phase.name] = PhaseState.FAILED
             self.errors[phase.name] = f"{type(error).__name__}: {error}"
-            print(f"[phase] {phase.name} FAILED: {error}", flush=True)
-            traceback.print_exc()
+            self.emit(
+                Kind.PHASE_FINISHED,
+                f"{phase.name} FAILED: {error}",
+                level=Level.ERROR,
+                phase=phase.name,
+                seconds=took,
+                state=str(PhaseState.FAILED),
+                error=self.errors[phase.name],
+            )
+            self.emit(
+                Kind.ERROR,
+                traceback.format_exc().rstrip(),
+                level=Level.ERROR,
+                phase=phase.name,
+            )
+            self._replay()
             for name in skipped_by(phase.name, self.spec.phases):
                 if self.state.get(name) is PhaseState.PENDING:
                     self.state[name] = PhaseState.SKIPPED
-                    print(f"[phase] {name} skipped, it needs {phase.name}", flush=True)
+                    self.emit(
+                        Kind.PHASE_FINISHED,
+                        f"{name} skipped, it needs {phase.name}",
+                        phase=name,
+                        state=str(PhaseState.SKIPPED),
+                        reason=f"{phase.name} failed",
+                    )
+            self.running = None
             return PhaseState.FAILED
+        took = time.monotonic() - started
+        self.running = None
         self._record(phase, started)
         self.state[phase.name] = PhaseState.PASSED
-        print(f"[phase] {phase.name} passed", flush=True)
+        self.emit(
+            Kind.PHASE_FINISHED,
+            f"{phase.name} passed in {took:.1f}s",
+            phase=phase.name,
+            seconds=took,
+            state=str(PhaseState.PASSED),
+        )
         return PhaseState.PASSED
 
     def _record(self, phase: PhaseSpec, started: float) -> None:
@@ -220,6 +378,13 @@ class Session:
         )
         first = next(iter(self.errors.values()), None)
         self.report.write(self.out / "report.json", self.passed, first)
+        self.emit(
+            Kind.RUN_FINISHED,
+            "passed" if self.passed else "failed",
+            level=Level.ERROR if not self.passed else Level.INFO,
+            passed=self.passed,
+            states={name: str(state) for name, state in self.state.items()},
+        )
 
     def pending(self) -> list[PhaseSpec]:
         """The phases still worth running, in the order Nix sorted them."""

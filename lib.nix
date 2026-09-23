@@ -540,7 +540,7 @@ rec {
         builtins.toJSON (
           toolchainFor backend first
           // {
-            inherit (checkedConfig) settings;
+            inherit (checkedConfig) name settings;
             knobs = checkedConfig.resolved;
             phases = map (phase: {
               inherit (phase) name after always;

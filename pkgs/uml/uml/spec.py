@@ -65,6 +65,11 @@ class Knob(BaseModel):
 class Spec(BaseModel):
     """A whole run, as evaluating the module system produced it."""
 
+    name: str = "uml"
+    """What the run is called. Nix knows it, so nothing has to guess it
+    from a store path -- a JUnit suite named after a hash is a suite
+    whose name changes every time anything changes."""
+
     machines: list[dict]
     """Passed to `uml_runner.MachineSpec.from_json` untouched.  Modelling
     it twice would be two places to change when a backend gains a flag."""
