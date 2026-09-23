@@ -10,6 +10,41 @@
 2 numbers and sees what is new. The prefixes go away when the design
 2 settles.
 2
+9 ## What has landed
+9
+9 Built and proved. Each claim below has a check that fails when the claim
+9 stops being true, and each was red-proved before being believed.
+9
+9 | | where | proof |
+9 | --- | --- | --- |
+9 | A session drives a run a step at a time | `pkgs/uml` | 35 unit tests |
+9 | Phases declared and ordered in Nix | `modules/run.nix` | `phase-rules` |
+9 | A failure skips its dependents, not the rest | `uml/phases.py` | `phase-rules` |
+9 | Knobs, resolved in Nix, printed with their source | `modules/run.nix` | `knobs` |
+9 | `--only`, with deselected apart from skipped | `uml/cli.py` | `only-rules` |
+9 | One program, sandboxed and by hand | `lib.nix` | both doors write the same five files |
+9 | `--offline` | `forward.py` | measured by hand, `uplink` |
+9 | Recipes as modules | `modules/recipes` | `recipes` |
+9 | `always`, for a phase that collects evidence | `uml/phases.py` | `recipes` |
+9
+9 Four bugs were found by building it, and three of them only by running
+9 against a real guest:
+9
+9 - The CLI took the phase list once before the loop, so a dependent
+9   skipped mid-loop still ran. `skipped_by` was right and the driver
+9   ignored it — no pure test could see that.
+9 - A failed boot tore nothing down. `boot` lets every guest settle before
+9   reporting, so a failure could leave others running with nothing left
+9   to stop them.
+9 - The by-hand door did not type check its phase scripts, which is the
+9   door where a type error gets written.
+9 - `typeCheck` copied scripts by basename, so two sharing one collided.
+9
+9 Still open, in the order they look worth doing: streams and the terminal
+9 filter (area 3), streaming out of a guest (area 5), the evaluator (area
+9 0b), and the session API's remaining operations for the MCP server (area
+9 0d).
+9
 1 ## The goal
 1
 1 > Everything that is not a push to a registry or a cache must run on any

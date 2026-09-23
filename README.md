@@ -115,6 +115,59 @@ exported variable cannot make CI run something other than the check.
 Every knob, its value and where the value came from is printed before
 anything boots. A misspelled variable is invisible otherwise.
 
+### Recipes: work somebody else already wrote
+
+A recipe is a module. It brings a phase, the guest configuration that
+phase needs, and the knobs it reads — so enabling it is one line, and
+overriding any part of it is an option like any other.
+
+```nix
+uml.recipes.journal.enable = true;         # on
+uml.recipes.boot.enable = false;           # off
+phases.boot.script = ./my-own-boot.py;     # replaced
+```
+
+`boot` is on by default: it waits for every guest to reach a running
+system and names the failed units when one does not. Forgetting that
+wait is how a test becomes flaky.
+
+`journal` writes each guest's journal into its `/artifacts` directory,
+after every other phase.
+
+### `always`: a phase that runs whatever failed
+
+`after` normally means two things at once — run me later, and do not
+bother if that failed. A phase that collects evidence wants only the
+first:
+
+```nix
+phases.journal = {
+  script = ./journal.py;
+  after = [ "check" ];
+  always = true;
+};
+```
+
+Without it, a journal ordered after everything is skipped by the very
+failure it exists to explain. A failure is not passed on through such a
+phase either, so a phase after the journal still runs.
+
+### Running with no internet
+
+```console
+$ nix run --file . mine.run -- --out ./out --offline
+```
+
+A sandboxed check has no network, and most tests here are written for
+that. Run one by hand on a connected host and the guest suddenly resolves
+names and reaches a cache, so a test that would fail the check passes.
+
+`--offline` binds passt's outbound sockets to loopback. The guest keeps
+its address, its DHCP lease and the host's way in; only the way out goes.
+Measured on a connected host, same session: plain reaches `1.1.1.1:53`
+and resolves `example.com`, `--offline` does neither, and the forward on
+`127.0.0.2` still works in both.
+
 ### Holding a failed run open
 
 ```console
