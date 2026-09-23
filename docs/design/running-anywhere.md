@@ -213,12 +213,22 @@
 5
 5 **2. Every run pays for an evaluation.** `.run` is a store path today, so
 5 running it costs nothing but the boot. A CLI that evaluates pays the
-5 NixOS module system on every run, for every guest. That is seconds at
-5 best and much worse for a large guest — nixkube's node is not small. It
-5 must be measured before this is committed to, because it lands on exactly
-5 the case the whole design is for: change one line, run again. An
-5 evaluation cache, or reusing one evaluation across several runs, may turn
-5 out to be required rather than an optimisation.
+5 NixOS module system on every run, for every guest, and it lands on the
+5 case the whole design is for: change one line, run again.
+5
+5 Measured, warm store, `nix eval` of the test's `drvPath`:
+5
+5 | what | seconds |
+5 | --- | --- |
+5 | this repo's smallest guest (`impure`) | 2.7 |
+5 | this repo's Kubernetes guest (`k8s`) | 4.8 |
+5 | nixkube's `umlTest`, the largest real consumer | 9.3 |
+5
+5 Acceptable. The smallest guest here takes 6.9s to boot, and nixkube's
+5 test runs for about twenty minutes, so the evaluation is a minority of
+5 even the shortest run. An evaluation cache is an optimisation, not a
+5 requirement. Worth re-measuring on a cold store, which these numbers are
+5 not.
 5
 5 **3. The CLI now builds, and a build can fail.** Evaluating gives
 5 derivations; something must realise them. So a failure that used to
@@ -520,8 +530,9 @@
 5    `types.str` option is not, so nothing is discovered and nothing is
 5    scanned. See area 0c. The sorted-list-file answer stays written down
 5    in area 0a for the case where a free-form attrset survives somewhere.
-5 11. **What does an evaluation cost per run?** Not measured, and it lands
-5    on the case the design is for. See area 0c.
+5 11. **What does an evaluation cost per run?** Answered: 2.7s to 9.3s,
+5    warm. Acceptable against a 6.9s boot and a twenty-minute test. See
+5    area 0c for the table.
 5 12. **Where do the CLI's build output and build failures go?** New
 5    surface: realising a derivation moves inside the runner.
 1
