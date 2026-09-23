@@ -116,6 +116,16 @@
 4 - **Nothing that is built may depend on the spec.** The runner is a tool,
 4   the way `pynix` is a tool: it reads a spec and acts on it. The recipe
 4   scripts are the same. Neither is rebuilt because a knob moved.
+5
+5 From the fourth round:
+5
+5 - **The module system is the only source.** Evaluating it produces three
+5   things: the image specs, a wrapper that runs the runner unsandboxed,
+5   and a wrapper that runs it sandboxed.
+5 - **The CLI evaluates that same module system** to get the spec it runs.
+5 - **A phase contributes configuration as well as a script.** Much of what
+5   a phase is will be systemd units, plus whatever coordinates several
+5   nodes.
 1
 4 ## Area 0a — the spec is input, not an ingredient
 4
@@ -177,6 +187,60 @@
 4   that is missed is not a build error, it is a guest that goes looking
 4   for a substituter.
 4
+5 ## Area 0c — one evaluation, three outputs
+5
+5 Evaluating the module system gives the image specs, an unsandboxed
+5 wrapper and a sandboxed wrapper. The CLI evaluates the same thing when it
+5 is run by hand.
+5
+5 The gain is real and it is the one worth naming first: today `.run` and
+5 the sandboxed `attempt` are written separately, and every asymmetry
+5 between them is a bug somebody meets later — no log by hand, no report by
+5 hand, `$@` promised and not delivered. Two outputs of one evaluation
+5 cannot drift that way, **as long as they are the same script generated
+5 twice with a flag**, and not two scripts that happen to agree today.
+5
+5 Five things to watch.
+5
+5 **1. Typed options make the path problem disappear.** Question 10 asks
+5 how the guests learn which store paths the spec mentions. That question
+5 only exists because `settings` is a free-form attrset, so the paths have
+5 to be discovered. Options have types. A `types.package` or `types.path`
+5 option *is* a path; a `types.str` option is not. The module system
+5 already knows the difference, so nothing has to scan anything and the
+5 `.drv` trap above never arises. This is a better answer than the sorted
+5 list file, and it comes free with the direction already chosen.
+5
+5 **2. Every run pays for an evaluation.** `.run` is a store path today, so
+5 running it costs nothing but the boot. A CLI that evaluates pays the
+5 NixOS module system on every run, for every guest. That is seconds at
+5 best and much worse for a large guest — nixkube's node is not small. It
+5 must be measured before this is committed to, because it lands on exactly
+5 the case the whole design is for: change one line, run again. An
+5 evaluation cache, or reusing one evaluation across several runs, may turn
+5 out to be required rather than an optimisation.
+5
+5 **3. The CLI now builds, and a build can fail.** Evaluating gives
+5 derivations; something must realise them. So a failure that used to
+5 happen before the runner started now happens inside it, and its progress
+5 and its errors need somewhere to go. That is new surface, and it is the
+5 part users see first when something is wrong.
+5
+5 **4. The CLI needs the same door as `nix`.** `uml run mytest` has to find
+5 the file to evaluate, the nixpkgs to evaluate it against, and the
+5 arguments to pass. `nix build --file . <attr>` answers all three. The CLI
+5 should answer them the same way and with the same spelling, or people
+5 learn two conventions for one thing.
+5
+5 **5. Selecting a phase must not rebuild a guest.** A phase contributes
+5 configuration, so enabling one changes what is built — correct. But
+5 *choosing which phases to run* is the thing this design exists to make
+5 fast. So the rule has to be: every declared phase's configuration is
+5 always built, and selection happens at run time. A guest carries the
+5 units for all its phases and runs the ones it is asked to. Selecting
+5 otherwise would rebuild the image for every selection, which is the cost
+5 area 0a exists to remove.
+5
 2 ## Area 0 — the CLI, and what a script is
 2
 2 This is the change that cements the rest, so it comes first.
@@ -451,11 +515,15 @@
 3 9. **Does the sandboxed path keep the spec file?** Assumed yes — the
 3    sandbox must not evaluate. Worth confirming, because it means two
 3    doors into the same run for good.
-4 10. **How does a guest learn about a store path in the spec?** Area 0a
-4    splits paths from values, so the database needs the closure of the
-4    paths without the file that lists them. Registering each path's
-4    closure directly is the obvious answer; whether that is as cheap as
-4    the one `closure-info` call today is not checked.
+5 10. **How does a guest learn about a store path in the spec?** Probably
+5    answered: typed options. A `types.package` option is a path and a
+5    `types.str` option is not, so nothing is discovered and nothing is
+5    scanned. See area 0c. The sorted-list-file answer stays written down
+5    in area 0a for the case where a free-form attrset survives somewhere.
+5 11. **What does an evaluation cost per run?** Not measured, and it lands
+5    on the case the design is for. See area 0c.
+5 12. **Where do the CLI's build output and build failures go?** New
+5    surface: realising a derivation moves inside the runner.
 1
 1 ## Issues
 1
