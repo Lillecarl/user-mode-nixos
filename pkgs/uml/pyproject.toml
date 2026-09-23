@@ -1,0 +1,15 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "uml"
+version = "0.1.0"
+description = "A session a caller drives: boot guests, run phases, hold, tear down"
+requires-python = ">=3.12"
+
+[project.scripts]
+uml = "uml.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["uml"]

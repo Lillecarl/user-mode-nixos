@@ -24,6 +24,14 @@ rec {
   */
   runner = pkgs.callPackage ./pkgs/uml-runner { };
 
+  /**
+    The session, and the `uml` CLI that drives one.
+
+    The redesign lives here; `runner` above is the mechanism it uses and
+    is not going away. See `docs/design/running-anywhere.md`.
+  */
+  session = pkgs.callPackage ./pkgs/uml { uml-runner = runner; };
+
   /*
     pyright over a caller's test scripts, against this library.
 

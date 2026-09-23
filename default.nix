@@ -29,7 +29,7 @@ let
   inherit (pkgs) lib;
 
   uml = import ./lib.nix { inherit pkgs lib; };
-  inherit (uml) mkNode mkTest runner typeCheck;
+  inherit (uml) mkNode mkTest runner session typeCheck;
 
   # Two guests on one segment, addressed statically.
   pair = network: {
@@ -374,8 +374,8 @@ in
 tests
 // {
   # The library, for a caller that writes its own test.
-  inherit mkNode mkTest runner typeCheck;
-  lib = { inherit mkNode mkTest runner typeCheck; };
+  inherit mkNode mkTest runner session typeCheck;
+  lib = { inherit mkNode mkTest runner session typeCheck; };
 
   inherit demo store k8s-pull;
   inherit (demo.config.system.build) umlRunner umlRootImage toplevel;
