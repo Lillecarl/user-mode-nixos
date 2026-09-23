@@ -270,6 +270,107 @@
 6 sessions in one process have two sets and will pick the same address.
 6 The set has to move up to whatever owns the sessions.
 6
+7 ## Prior art: nixpkgs' own test driver
+7
+7 `nixos/lib/test-driver` answers most of these questions already. Read it
+7 before inventing anything. Four things to copy and one to avoid.
+7
+7 **Copy: the spec is a validated model.** `DriverConfiguration` is a
+7 pydantic model loaded from a JSON file (`driver.py:42`). Same shape area
+7 0a argues for, and it gets a schema and an error message free.
+7
+7 **Copy: the driver is already a session.** `Driver` has `__enter__` and
+7 `__exit__` (`driver.py:170`). It is not decomposed into steps, but the
+7 object exists.
+7
+7 **Copy: one event API, several sinks.** `CompositeLogger` holds a list of
+7 loggers; `JunitXMLLogger` is one of them; and `log_serial(message,
+7 machine)` is a separate call from `log` (`logger.py:63`). That is area 3
+7 as a working design, and junit XML comes with it.
+7
+7 **Copy: breakpoint-on-failure exists and works in a sandbox.**
+7 `debug.py` is 53 lines. It forks a `sleep <random>` as a findable marker,
+7 prints the command to attach, and hands the frame to `RemotePdb` on a TCP
+7 port. Sandboxed tests turn it on with `enableDebugHook`. So the hard part
+7 of area 4 — holding a failed run open inside `nix build` — is proven,
+7 not speculative.
+7
+7 **Avoid: the test script is `exec`'d.** `test_script()` runs
+7 `exec(self.tests, symbols)` with the driver's methods injected as globals
+7 (`driver.py:390`). No imports, no type checking, and every frame is named
+7 `<string>` — the driver carries a traceback-filtering hack to make an
+7 assertion readable. Importing a module and calling a coroutine is
+7 strictly better, and it is the direction already chosen.
+7
+7 ## Area 0e — the session, and what it answers
+7
+7 ### Ordering: `after`, sorted by `lib.toposort`
+7
+7 Recommended over `mkBefore`/`mkAfter`/`mkOrder`.
+7
+7 `lib.toposort` takes a "comes before" predicate and returns either
+7 `{ result }` or `{ cycle, loops }` (`lib/lists.nix:1244`). So a cycle
+7 between phases is an evaluation error with the cycle printed, for free.
+7
+7 The argument against `mkOrder` is not style. An order number says a phase
+7 is 1200 and another is 1500, and nothing anywhere says why. `after`
+7 names a real dependency — and that same graph answers the next question,
+7 which a number cannot.
+7
+7 ### After a phase fails: skip its dependents, run the rest
+7
+7 Recommended, and only possible because of the graph above.
+7
+7 The two obvious answers are both wrong here. nixpkgs stops everything: a
+7 `subtest` logs and re-raises (`driver.py:306`), so one failure ends the
+7 run. pytest runs everything: each test is independent. Phases are
+7 neither — `check` needs `cluster`, and running it after `cluster` failed
+7 produces a second failure that says nothing.
+7
+7 With `after` known, a failure marks its dependents skipped and leaves
+7 everything else to run. One run then reports every independent failure
+7 instead of the first one.
+7
+7 ### The session's operations
+7
+7 The CLI drives these in a line. An MCP tool is one of them.
+7
+7 | operation | what it does | MCP tool |
+7 | --- | --- | --- |
+7 | `evaluate` | module system → spec, knobs resolved | `list`, `describe` |
+7 | `build` | realise the images and the paths | — |
+7 | `boot` | guests up, agents answering | `start` |
+7 | `phases` | the sorted list, with state | `phases` |
+7 | `run(phase)` | one phase | `run_phase` |
+7 | `exec(machine, cmd)` | one command in a guest | `exec` |
+7 | `python(machine, code)` | code in the guest's agent | `python` |
+7 | `hold` | stop here, keep everything | implicit on failure |
+7 | `teardown` | guests down, output written | `stop` |
+7
+7 `uml run` is `evaluate, build, boot, [run each phase], teardown`, with
+7 `hold` instead of `teardown` when a phase fails and the caller asked.
+7
+7 ### Considerations, not yet decided
+7
+7 **Two front ends on one hold.** A human at a held session wants a shell;
+7 an agent wants structure and must not screen-scrape a pdb prompt. The
+7 hold is one mechanism either way. `remote_pdb` is the human half and
+7 already works; the agent half is a call on the session.
+7
+7 **`python` in a guest inherits the agent's limit.** The agent serves one
+7 request at a time and each runs to completion (`agent.py:10`). Code that
+7 blocks stops every other question to that guest — the same limit as area
+7 5, met again.
+7
+7 **The report becomes a parameter.** `report.RUN` is reached from five
+7 places in `machine.py` and two in `harness.py`. A `Machine` takes its
+7 recorder; the session owns one. That is the whole change.
+7
+7 **A phase is the unit everywhere.** It is a section in the report, a span
+7 in the event stream, a name a breakpoint can take, and a row in the MCP
+7 tool above. Worth keeping that alignment deliberate rather than letting
+7 three names for one thing appear.
+7
 5 ## Area 0c — one evaluation, three outputs
 5
 5 Evaluating the module system gives the image specs, an unsandboxed
@@ -587,15 +688,18 @@
 1
 1 ## Open questions
 1
-3 1. **How is a phase ordered?** An explicit `after` list, or the module
-3    system's own list merging (`mkBefore`, `mkAfter`, `mkOrder`)? The
-3    second invents nothing.
+7 1. **How is a phase ordered?** Recommended: `after = [ ... ]`, sorted by
+7    `lib.toposort`, which makes a cycle an evaluation error for free. See
+7    area 0e. `mkOrder` is rejected: a number carries no reason, and the
+7    dependency graph is what question 3 needs.
 3 2. **Does a phase pick its guests?** A recipe that brings up a cluster
 3    also wants to say what the guest must be. If a phase can contribute
 3    NixOS configuration as well as a script, a recipe becomes one thing
 3    instead of two that must be used together.
-3 3. **What happens after a phase fails?** Stop, or run the rest anyway?
-3    Stop is right for a dependency and wrong for two independent checks.
+7 3. **What happens after a phase fails?** Recommended: skip its
+7    dependents, run everything else. Possible only because `after` gives
+7    the graph. nixpkgs stops the whole run; pytest runs it all; phases are
+7    neither. See area 0e.
 3 4. **Does the CLI let a phase's script be overridden with a path?** It is
 3    what keeps iteration fast once the phase list lives in Nix.
 1 5. **Does `nix build` ever take a steer?** Today: no, by design. The cost
