@@ -97,6 +97,54 @@ rec {
         cp report.json $out
       '';
 
+  /**
+    How one guest becomes a line in a spec.
+
+    Shared by `mkTest` and `mkSession` so that the two cannot describe the
+    same machine differently. A field added here reaches both doors.
+  */
+  machineSpec = machine: {
+    name = machine.networking.hostName;
+    backend = machine.boot.uml.backend;
+    index = machine.boot.uml.index;
+    memory = machine.boot.uml.memory;
+    seccomp = machine.boot.uml.seccomp;
+    cpus = machine.boot.uml.cpus;
+    sshPort = machine.boot.uml.sshPort;
+    mtu = machine.boot.uml.mtu;
+    network = machine.boot.uml.lan.network;
+    address = machine.boot.uml.lan.address;
+    forward = machine.boot.uml.forward;
+    # Both backends get a read-only root image of `boot.uml.diskSize`
+    # and a per-run copy-on-write layer over it. Only what is inside
+    # differs: UML boots `/init` from it, QEMU mounts it as `/`.
+    image = "${machine.system.build.umlRootImage}";
+  }
+  // lib.optionalAttrs (machine.boot.uml.backend == "qemu") {
+    boot = machine.system.build.qemuBoot;
+  };
+
+  /**
+    The host-side binaries a run needs, and none of the other backend's.
+
+    Naming a store path is what builds it. A QEMU run that mentioned
+    `umlKernel` would spend half an hour on a kernel it never boots, and a
+    UML run that mentioned `qemu_kvm` would pull QEMU into a sandbox that
+    has no use for it.
+  */
+  toolchainFor = chosen: first: {
+    passt = "${pkgs.passt}/bin/passt";
+  }
+  // lib.optionalAttrs (chosen == "uml") {
+    kernel = "${first.system.build.umlKernel}/linux";
+    bridge = lib.getExe first.system.build.umlPasstBridge;
+  }
+  // lib.optionalAttrs (chosen == "qemu") {
+    qemu = "${pkgs.qemu_kvm}/bin/qemu-system-x86_64";
+    qemuImg = "${pkgs.qemu_kvm}/bin/qemu-img";
+    virtiofsd = "${pkgs.virtiofsd}/bin/virtiofsd";
+  };
+
   # A guest: an ordinary NixOS configuration plus ./modules.
   #
   # `eval-config.nix` and not `lib.nixosSystem`. That name only exists on the
@@ -267,47 +315,7 @@ rec {
           inherit (cfg) extraPackages strict ignore;
         }}";
 
-      /*
-        Only the backend this run uses, and nothing of the other.
-
-        Naming a store path is what builds it. A QEMU run that mentioned
-        `umlKernel` would spend half an hour on a kernel it never boots,
-        and a UML run that mentioned `qemu_kvm` would pull QEMU into a
-        sandbox that has no use for it.
-      */
-      toolchain = {
-        passt = "${pkgs.passt}/bin/passt";
-      }
-      // lib.optionalAttrs (chosen == "uml") {
-        kernel = "${first.system.build.umlKernel}/linux";
-        bridge = lib.getExe first.system.build.umlPasstBridge;
-      }
-      // lib.optionalAttrs (chosen == "qemu") {
-        qemu = "${pkgs.qemu_kvm}/bin/qemu-system-x86_64";
-        qemuImg = "${pkgs.qemu_kvm}/bin/qemu-img";
-        virtiofsd = "${pkgs.virtiofsd}/bin/virtiofsd";
-      };
-
-      machineSpec = machine: {
-        name = machine.networking.hostName;
-        backend = machine.boot.uml.backend;
-        index = machine.boot.uml.index;
-        memory = machine.boot.uml.memory;
-        seccomp = machine.boot.uml.seccomp;
-        cpus = machine.boot.uml.cpus;
-        sshPort = machine.boot.uml.sshPort;
-        mtu = machine.boot.uml.mtu;
-        network = machine.boot.uml.lan.network;
-        address = machine.boot.uml.lan.address;
-        forward = machine.boot.uml.forward;
-        # Both backends get a read-only root image of `boot.uml.diskSize`
-        # and a per-run copy-on-write layer over it. Only what is inside
-        # differs: UML boots `/init` from it, QEMU mounts it as `/`.
-        image = "${machine.system.build.umlRootImage}";
-      }
-      // lib.optionalAttrs (machine.boot.uml.backend == "qemu") {
-        boot = machine.system.build.qemuBoot;
-      };
+      toolchain = toolchainFor chosen first;
 
       spec = pkgs.writeText "uml-${name}${suffix}-spec.json" (
         builtins.toJSON (
@@ -420,6 +428,197 @@ rec {
         mkdir -p $out
         ln -s ${attempt} $out/attempt
         ln -s ${attempt}/log $out/log
+        ln -s ${attempt}/report.json $out/report.json
+        ln -s ${attempt}/artifacts $out/artifacts
+      '';
+
+  /**
+    A run: guests, and the phases that drive them.
+
+        mkSession {
+          name = "mine";
+          nodes.one = { };
+          phases.check.script = ./check.py;
+        }
+
+    `mkTest` is the older door and takes one script. This one takes a
+    module, so a recipe can contribute a phase, the guest configuration
+    that phase needs and the knobs it reads in a single import -- and a
+    consumer overrides any of it the way they override a NixOS option.
+
+    Three attributes come out, and they are one program run three ways:
+
+        .check   the sandboxed derivation, which CI builds
+        .run     the same run by hand, `--out` where you want it
+        .phases  what would run, in order, without booting anything
+
+    A phase script exports one coroutine:
+
+        async def test(vms: Machines) -> None: ...
+
+    It is imported rather than executed, so it may import whatever it
+    likes and pyright checks it.
+
+    **`after` is a dependency, not a hint.** A phase whose `after` failed
+    is skipped, because running it against a world that was never built
+    gives a second failure that says nothing. An `after` naming a phase
+    that does not exist is an evaluation error, since the alternative is
+    a phase that quietly never gets skipped.
+  */
+  mkSession =
+    module:
+    let
+      run = lib.evalModules {
+        modules = [
+          ./modules/run.nix
+          module
+        ];
+        specialArgs = { inherit pkgs; };
+      };
+
+      cfg = run.config;
+
+      failed = lib.filter (each: !each.assertion) cfg.assertions;
+      checkedConfig =
+        if failed == [ ] then
+          cfg
+        else
+          throw (lib.concatMapStringsSep "\n" (each: each.message) failed);
+
+      inherit (checkedConfig) name backend;
+
+      settingsFile = pkgs.writeText "uml-${name}-settings.json" (
+        builtins.toJSON checkedConfig.settings
+      );
+
+      machines = lib.imap0 (
+        index: hostName:
+        (mkNode {
+          imports = [ checkedConfig.nodes.${hostName} ];
+          networking.hostName = lib.mkDefault hostName;
+          boot.uml.sshPort = lib.mkDefault (4325 + index);
+          boot.uml.backend = lib.mkDefault backend;
+          boot.uml.index = index;
+          boot.uml.nixDatabase.extraRoots = lib.optional (
+            checkedConfig.settings != { }
+          ) "${settingsFile}";
+        }).config
+      ) (lib.attrNames checkedConfig.nodes);
+
+      first = lib.head machines;
+
+      # Named in the builder rather than added to it: naming a store path
+      # is what makes Nix build it, so the check runs before the guests
+      # do. Every phase's script, not one -- a recipe that does not type
+      # check is a recipe that breaks its consumers.
+      checked =
+        let
+          typing = first.boot.uml.typeCheck;
+        in
+        lib.optionalString typing.enable "${typeCheck {
+          name = "${name}-phases";
+          scripts = map (phase: phase.script) checkedConfig.ordered;
+          inherit (typing) extraPackages strict ignore;
+        }}";
+
+      spec = pkgs.writeText "uml-${name}-spec.json" (
+        builtins.toJSON (
+          toolchainFor backend first
+          // {
+            inherit (checkedConfig) settings;
+            knobs = checkedConfig.resolved;
+            phases = map (phase: {
+              inherit (phase) name after;
+              script = "${phase.script}";
+            }) checkedConfig.ordered;
+            machines = map machineSpec machines;
+          }
+        )
+      );
+
+      uml = lib.getExe session;
+
+      /*
+        The run outside the sandbox.
+
+        `--out` is required and not defaulted. `lib.nix` has held since
+        the beginning that a run by hand records only where it is told
+        to, so that nothing writes to a directory nobody chose -- and
+        being told is now cheap, because it is one flag rather than an
+        environment variable nobody remembers.
+      */
+      runner = pkgs.writeShellApplication {
+        name = "uml-run-${name}";
+        text = ''
+          exec ${uml} run --spec ${spec} "$@"
+        '';
+      };
+
+      lister = pkgs.writeShellApplication {
+        name = "uml-phases-${name}";
+        text = ''
+          exec ${uml} phases --spec ${spec} "$@"
+        '';
+      };
+
+      /*
+        The run inside one, which never fails.
+
+        Nix deletes the output of a derivation that fails, so a run that
+        reports failure by failing throws away the evidence of the one run
+        anybody wanted to read. This always succeeds and writes what
+        happened to `status`; the check below fails, and reads nothing but
+        that file.
+
+        The same `uml run` the developer gets, with `--out` pointed at the
+        derivation's own output. Nothing branches on being in a sandbox,
+        which is what stops the two drifting.
+      */
+      attempt =
+        pkgs.runCommand "uml-session-${name}-attempt"
+          {
+            requiredSystemFeatures = lib.optional (backend == "qemu") "kvm";
+            passthru = { inherit spec; };
+          }
+          ''
+            export HOME="$TMPDIR"
+            mkdir -p "$out"
+            echo "phases checked: ${checked}" > "$out/typecheck"
+            ${uml} run --spec ${spec} --out "$out" || true
+            test -f "$out/status" || echo 1 > "$out/status"
+          '';
+    in
+    pkgs.runCommand "uml-session-${name}"
+      {
+        passthru = {
+          inherit attempt spec;
+          run = runner;
+          phases = lister;
+          config = checkedConfig;
+        };
+      }
+      ''
+        echo "the run is at ${attempt}"
+        echo "  log:       ${attempt}/log"
+        echo "  phases:    ${attempt}/phases.json"
+        echo "  timings:   ${attempt}/report.json"
+        echo "  artifacts: ${attempt}/artifacts"
+
+        status=$(cat ${attempt}/status)
+        if [ "$status" != 0 ]; then
+          echo
+          echo "--- the last 50 lines of ${attempt}/log ---"
+          tail -n 50 ${attempt}/log
+          echo "--- end ---"
+          echo
+          echo "the run failed (exit $status); the paths above hold what it left" >&2
+          exit 1
+        fi
+
+        mkdir -p $out
+        ln -s ${attempt} $out/attempt
+        ln -s ${attempt}/log $out/log
+        ln -s ${attempt}/phases.json $out/phases.json
         ln -s ${attempt}/report.json $out/report.json
         ln -s ${attempt}/artifacts $out/artifacts
       '';

@@ -10,9 +10,10 @@ sequence.
 
 from .phases import PhaseState, dependents, passed, runnable, skipped_by, summarise
 from .session import Session, SessionError, load_phase
-from .spec import PhaseSpec, Spec
+from .spec import Knob, PhaseSpec, Spec
 
 __all__ = [
+    "Knob",
     "PhaseSpec",
     "PhaseState",
     "Session",

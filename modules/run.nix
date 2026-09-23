@@ -1,0 +1,259 @@
+# The run itself, as a module.
+#
+# A guest is a NixOS configuration and always was. This is the other half:
+# the run that drives them -- which phases there are, what order they go
+# in, and what may be told to them from outside.
+#
+# It is a module and not a function argument so that a **recipe** can be
+# one thing. A recipe contributes a phase, the guest configuration that
+# phase needs, and the knobs it reads, in one import -- and a consumer
+# reorders it, replaces its script or drops it with `lib.mkForce`, the way
+# they override any other option.
+#
+# See docs/design/running-anywhere.md.
+{
+  config,
+  lib,
+  ...
+}:
+let
+  inherit (lib) mkOption types;
+
+  enabled = lib.filterAttrs (_: phase: phase.enable) config.phases;
+
+  named = lib.mapAttrsToList (name: phase: phase // { inherit name; }) enabled;
+
+  /*
+    `a` must run before `b` when `b` names `a`.
+
+    `lib.toposort` wants exactly this predicate and returns either
+    `{ result }` or `{ cycle, loops }`, so a cycle between phases is an
+    evaluation error naming the cycle rather than a run that deadlocks or
+    quietly picks an order.
+  */
+  sorted = lib.toposort (a: b: lib.elem a.name b.after) named;
+
+  /*
+    An `after` that names nothing is the silent failure this guards.
+
+    A typo there does not stop anything. The phase simply has no
+    dependency, so a failure upstream does not skip it, and it runs
+    against a world that was never built -- reporting a second failure
+    that has nothing to do with the first. Checked here, where the answer
+    is a message and not a mystery.
+  */
+  unknown = lib.unique (
+    lib.concatMap (phase: lib.subtractLists (lib.attrNames enabled) phase.after) named
+  );
+in
+{
+  options = {
+    name = mkOption {
+      type = types.str;
+      description = "What this run is called, in derivation names and logs.";
+    };
+
+    nodes = mkOption {
+      type = types.attrsOf types.deferredModule;
+      default = { };
+      description = ''
+        The guests, by hostname. Each is an ordinary NixOS module.
+
+        A recipe adds to these rather than replacing them, so importing
+        one brings the configuration its phase needs with it.
+      '';
+    };
+
+    backend = mkOption {
+      type = types.enum [
+        "uml"
+        "qemu"
+      ];
+      default = "uml";
+      description = ''
+        What the guests become. `uml` needs nothing of the host; `qemu`
+        needs /dev/kvm and is much faster. A phase script never knows
+        which it got, and neither does a node configuration.
+      '';
+    };
+
+    phases = mkOption {
+      default = { };
+      description = ''
+        The work, by name. Each phase is a Python module exporting one
+        `test` coroutine, and the runner calls them in the order worked
+        out from `after`.
+      '';
+      type = types.attrsOf (
+        types.submodule (
+          { name, ... }:
+          {
+            options = {
+              enable = mkOption {
+                type = types.bool;
+                default = true;
+                description = "Whether to run this phase at all.";
+              };
+
+              script = mkOption {
+                type = types.path;
+                description = ''
+                  A Python module exporting `async def test(vms: Machines)`.
+
+                  Imported, not executed as a script, so it may import
+                  whatever it likes and pyright can check it.
+                '';
+              };
+
+              after = mkOption {
+                type = types.listOf types.str;
+                default = [ ];
+                example = [ "cluster" ];
+                description = ''
+                  Phases that must run first.
+
+                  This is a real dependency and not a hint about order.
+                  When one of these fails, this phase is **skipped** --
+                  running it against a world that was never built gives a
+                  second failure that says nothing. So name what this
+                  actually needs, not what happens to come first.
+                '';
+              };
+
+              description = mkOption {
+                type = types.str;
+                default = name;
+                description = "One line, for `uml phases` and the report.";
+              };
+            };
+          }
+        )
+      );
+    };
+
+    knobs = mkOption {
+      default = { };
+      description = ''
+        What this run may be told from outside, by name.
+
+        Nix resolves each one while evaluating, so a knob can change what
+        is *built* -- a phase order, a guest's memory, an image -- which
+        nothing read at run time can do. Under a pure evaluation
+        `builtins.getEnv` answers `""`, which is the same as unset, so a
+        flake consumer and a sandboxed check both get the declared
+        default with no special case.
+      '';
+      example = lib.literalExpression ''
+        knobs.scenarios = { env = "SCENARIOS"; default = "all"; };
+      '';
+      type = types.attrsOf (
+        types.submodule (
+          { name, ... }:
+          {
+            options = {
+              env = mkOption {
+                type = types.str;
+                default = "UML_${lib.toUpper (builtins.replaceStrings [ "-" ] [ "_" ] name)}";
+                defaultText = lib.literalMD "`UML_` and the knob's name in upper case";
+                description = "The environment variable that sets this knob.";
+              };
+
+              default = mkOption {
+                type = types.str;
+                default = "";
+                description = ''
+                  What the knob is worth when the variable is unset --
+                  which is always the case inside a build sandbox, so this
+                  is what the check runs.
+                '';
+              };
+
+              description = mkOption {
+                type = types.str;
+                default = name;
+                description = "One line, printed with the value at run time.";
+              };
+            };
+          }
+        )
+      );
+    };
+
+    settings = mkOption {
+      type = types.attrs;
+      default = { };
+      description = ''
+        Values only Nix knows that a phase needs -- a version, an image
+        tag, a store path.
+
+        A store path in here is a dependency like any other: the JSON
+        carries its context, so the derivation builds it and the guest
+        reads it from the host's store.
+      '';
+    };
+
+    resolved = mkOption {
+      internal = true;
+      readOnly = true;
+      type = types.attrs;
+      description = "Each knob's value and where the value came from.";
+    };
+
+    ordered = mkOption {
+      internal = true;
+      readOnly = true;
+      type = types.listOf types.attrs;
+      description = "The enabled phases, sorted.";
+    };
+
+    # Declared here rather than imported: this is `evalModules`, not a
+    # NixOS system, so nothing else brings the option in and nothing else
+    # evaluates it. `lib.nix` is what turns a false one into an error.
+    assertions = mkOption {
+      internal = true;
+      default = [ ];
+      type = types.listOf (
+        types.submodule {
+          options = {
+            assertion = mkOption { type = types.bool; };
+            message = mkOption { type = types.str; };
+          };
+        }
+      );
+    };
+  };
+
+  config = {
+    assertions = [
+      {
+        assertion = unknown == [ ];
+        message =
+          "uml: these phases are named in an `after` and do not exist: "
+          + lib.concatStringsSep ", " unknown
+          + ". A phase that depends on nothing is not skipped when its"
+          + " dependency fails, so this would be silent.";
+      }
+    ];
+
+    resolved = lib.mapAttrs (
+      _: knob:
+      let
+        fromEnv = builtins.getEnv knob.env;
+      in
+      {
+        value = if fromEnv == "" then knob.default else fromEnv;
+        source = if fromEnv == "" then "default" else "environment";
+        inherit (knob) env;
+      }
+    ) config.knobs;
+
+    ordered =
+      if sorted ? cycle then
+        throw (
+          "uml: the phases in run '${config.name}' depend on each other in a cycle: "
+          + lib.concatMapStringsSep " -> " (phase: phase.name) sorted.cycle
+        )
+      else
+        sorted.result;
+  };
+}

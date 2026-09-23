@@ -29,7 +29,7 @@ let
   inherit (pkgs) lib;
 
   uml = import ./lib.nix { inherit pkgs lib; };
-  inherit (uml) mkNode mkTest runner session typeCheck;
+  inherit (uml) mkNode mkSession mkTest runner session typeCheck;
 
   # Two guests on one segment, addressed statically.
   pair = network: {
@@ -241,6 +241,81 @@ let
       impurities = [ "UML_TEST_IMPURITY" ];
       nodes.one = { };
     };
+
+    /*
+      Does a failure skip what depends on it, and nothing else?
+
+      The claim the whole phase design rests on, against a booted guest.
+      Four phases: `boot` passes, `cluster` fails on purpose, `check`
+      needs `cluster` and must be skipped, `independent` needs only
+      `boot` and must still run.
+
+      Both neighbours get this wrong, which is why it is worth a test.
+      nixpkgs' driver re-raises out of `subtest`, so `independent` would
+      never run and a real bug in it would stay invisible behind an
+      unrelated failure. pytest would run `check` anyway, against a
+      cluster that was never built, and report a second failure that
+      says nothing.
+
+      The session derivation *fails* when a phase fails -- which is
+      correct -- so this reads `phases.json` from the attempt instead.
+    */
+    phase-rules =
+      let
+        run = mkSession {
+          name = "phase-rules";
+          nodes.one = { };
+          phases = {
+            boot.script = ./tests/phases/boot.py;
+            cluster = {
+              script = ./tests/phases/cluster.py;
+              after = [ "boot" ];
+            };
+            check = {
+              script = ./tests/phases/check.py;
+              after = [ "cluster" ];
+            };
+            independent = {
+              script = ./tests/phases/independent.py;
+              after = [ "boot" ];
+            };
+          };
+        };
+      in
+      pkgs.runCommand "uml-check-phase-rules"
+        {
+          nativeBuildInputs = [ pkgs.jq ];
+          passthru = { inherit run; };
+        }
+        ''
+          report=${run.attempt}/phases.json
+          echo "--- $report ---"
+          cat "$report"
+
+          want() {
+            got=$(jq -r --arg n "$1" '.phases[] | select(.name == $n) | .state' "$report")
+            if [ "$got" != "$2" ]; then
+              echo "phase $1 is '$got', expected '$2'" >&2
+              exit 1
+            fi
+            echo "ok: $1 is $2"
+          }
+
+          want boot passed
+          want cluster failed
+          # The rule. Skipped, not failed: nothing ran it.
+          want check skipped
+          # The other half of the rule, and the one nixpkgs cannot do.
+          want independent passed
+
+          if [ "$(jq -r '.passed' "$report")" != "false" ]; then
+            echo "a run holding a failure and a skip reported itself passed" >&2
+            exit 1
+          fi
+          echo "ok: the run failed, as a run with unanswered phases must"
+
+          touch $out
+        '';
 
     /*
       Can a guest host a userspace filesystem?

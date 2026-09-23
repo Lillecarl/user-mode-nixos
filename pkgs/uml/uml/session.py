@@ -27,12 +27,16 @@ sequence, not the guests.
 from __future__ import annotations
 
 import importlib.util
+import json
+import time
+import traceback
 from collections import defaultdict
 from typing import TYPE_CHECKING, Any
 
 import anyio
 from uml_runner import Machine, Machines, MachineSpec, Toolchain
 from uml_runner.net import build_lans
+from uml_runner.report import Report
 
 from .phases import PhaseState, passed, runnable, skipped_by
 
@@ -79,7 +83,11 @@ class Session:
         self.state: dict[str, PhaseState] = {
             phase.name: PhaseState.PENDING for phase in spec.phases
         }
+        self.errors: dict[str, str] = {}
         self.vms: Machines | None = None
+        # Its own, not `report.RUN`. A process may hold several sessions
+        # and their timings are not one run's.
+        self.report = Report()
         self._lans: list[Any] = []
         self._booted = False
 
@@ -110,14 +118,17 @@ class Session:
                     tools,
                     lan_fd=lan_fd.get(one.name),
                     artifacts=self._guest_artifacts(one.name),
+                    recorder=self.report,
                 ),
             )
             for one in specs
         )
         vms.settings = self.spec.settings
         vms.artifacts = self.artifacts
-        vms.env = dict(self.spec.knobs)
-        vms.argv = []
+        # A phase reads `vms.knobs["name"]` and gets the value, not the
+        # record: a script branching on a steer should not have to know
+        # where the steer came from.
+        vms.knobs = {name: knob.value for name, knob in self.spec.knobs.items()}
 
         # Serially, and before anything spawns: picking a free host
         # address means binding a port and letting go of it again, so two
@@ -147,18 +158,66 @@ class Session:
         test = load_phase(phase.script)
         self.state[phase.name] = PhaseState.RUNNING
         print(f"[phase] {phase.name}", flush=True)
+        started = time.monotonic()
         try:
             await test(self.vms)
         except Exception as error:
+            self._record(phase, started)
             self.state[phase.name] = PhaseState.FAILED
+            self.errors[phase.name] = f"{type(error).__name__}: {error}"
             print(f"[phase] {phase.name} FAILED: {error}", flush=True)
+            traceback.print_exc()
             for name in skipped_by(phase.name, self.spec.phases):
                 if self.state.get(name) is PhaseState.PENDING:
                     self.state[name] = PhaseState.SKIPPED
                     print(f"[phase] {name} skipped, it needs {phase.name}", flush=True)
             return PhaseState.FAILED
+        self._record(phase, started)
         self.state[phase.name] = PhaseState.PASSED
+        print(f"[phase] {phase.name} passed", flush=True)
         return PhaseState.PASSED
+
+    def _record(self, phase: PhaseSpec, started: float) -> None:
+        """A phase is a span in the timings as well as a row in the state.
+
+        The same unit everywhere -- report, event stream, breakpoint name,
+        MCP tool -- rather than three names for one thing.
+        """
+        self.report.step("-", "phase", phase.name, time.monotonic() - started)
+
+    def write_output(self) -> None:
+        """Everything a reader needs, in the directory the caller named.
+
+        The same four things whether or not this ran in a sandbox, which
+        is the point: `.run` and the check used to be written separately,
+        and every asymmetry between them was a bug somebody met later.
+
+            status       0 or 1, as text
+            report.json  where the time went
+            phases.json  what each phase did, and why it was skipped
+            artifacts/   what the guests wrote to /artifacts
+        """
+        self.out.mkdir(parents=True, exist_ok=True)
+        (self.out / "status").write_text("0\n" if self.passed else "1\n")
+        (self.out / "phases.json").write_text(
+            json.dumps(
+                {
+                    "passed": self.passed,
+                    "phases": [
+                        {
+                            "name": name,
+                            "state": str(state),
+                            "error": self.errors.get(name),
+                        }
+                        for name, state in self.state.items()
+                    ],
+                },
+                indent=2,
+            )
+            + "\n"
+        )
+        first = next(iter(self.errors.values()), None)
+        self.report.write(self.out / "report.json", self.passed, first)
 
     def pending(self) -> list[PhaseSpec]:
         """The phases still worth running, in the order Nix sorted them."""

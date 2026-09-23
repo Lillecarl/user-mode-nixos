@@ -32,6 +32,23 @@ class PhaseSpec(BaseModel):
     after: list[str] = Field(default_factory=list)
 
 
+class Knob(BaseModel):
+    """One declared steer, already resolved.
+
+    Nix resolves it, because Nix is where it can change what is *built* —
+    a phase order, a guest's memory, a different image — which no amount
+    of reading the environment at run time can do.
+
+    `source` is carried rather than inferred. A knob set to the same text
+    as its default would otherwise read as "default", and the whole
+    reason this is printed is to make a misspelled variable visible.
+    """
+
+    value: str
+    source: str
+    env: str
+
+
 class Spec(BaseModel):
     """A whole run, as evaluating the module system produced it."""
 
@@ -41,7 +58,7 @@ class Spec(BaseModel):
 
     phases: list[PhaseSpec] = Field(default_factory=list)
     settings: dict = Field(default_factory=dict)
-    knobs: dict[str, str] = Field(default_factory=dict)
+    knobs: dict[str, Knob] = Field(default_factory=dict)
 
     kernel: Path | None = None
     bridge: Path | None = None

@@ -176,12 +176,18 @@ class Machine:
         # Generous, because several guests on a loaded builder are slow
         # in a way that looks exactly like a hang.
         command_timeout: float = 120,
+        recorder: report.Report | None = None,
     ) -> None:
         self.spec = spec
         self.tools = tools
         self.backend = backends.get(spec.backend)
         self.lan_fd = lan_fd
         self.artifacts = artifacts
+        # `report.RUN` is the process-wide one, which is right while a
+        # process holds a single run. A session passes its own, because
+        # an MCP server holds several at once and their timings are not
+        # one run's. See uml/session.py.
+        self.recorder = recorder if recorder is not None else report.RUN
         self.boot_timeout = boot_timeout
         self.command_timeout = command_timeout
         self.forward: list[forward.Rule] = list(spec.forward)
@@ -286,7 +292,7 @@ class Machine:
             )
             elapsed = loop.time() - started
             self._log(f"up in {elapsed:.1f}s")
-            report.RUN.booted(
+            self.recorder.booted(
                 self.name,
                 elapsed,
                 {
@@ -474,7 +480,7 @@ class Machine:
                 f"{self._console_tail()}"
             ) from None
         finally:
-            report.RUN.step(self.name, "rpc", what, time.monotonic() - started)
+            self.recorder.step(self.name, "rpc", what, time.monotonic() - started)
 
     def _console_tail(self, lines: int = 15) -> str:
         """The last thing the guest said, for an error that has no other
@@ -719,7 +725,7 @@ class Machine:
                 f"[{self.name}] has no control channel for its memory, so it "
                 "cannot be resized"
             )
-        with report.RUN.waiting(self.name, f"balloon {delta // 1024 // 1024}M"):
+        with self.recorder.waiting(self.name, f"balloon {delta // 1024 // 1024}M"):
             try:
                 await self._memory.balloon(delta)
             except (mconsole.MconsoleError, qmp.QmpError) as error:
@@ -736,11 +742,11 @@ class Machine:
             with cp.waiting("the node's state to settle"):
                 await settle(cp)
         """
-        return report.RUN.waiting(self.name, what)
+        return self.recorder.waiting(self.name, what)
 
     async def wait_for_unit(self, unit: str, timeout: float = 120) -> None:
         """Wait until *unit* is active, failing fast if it dies first."""
-        with report.RUN.waiting(self.name, f"unit {unit}"):
+        with self.recorder.waiting(self.name, f"unit {unit}"):
             await self._wait_for_unit(unit, timeout)
 
     async def _wait_for_unit(self, unit: str, timeout: float) -> None:
