@@ -465,6 +465,78 @@ let
         '';
 
     /*
+      Does the standard library do its job on the run that went wrong?
+
+      Two recipes, each one line for a consumer. `boot` waits for every
+      guest to reach a running system and names the failed units when it
+      does not. `journal` writes each guest's journal into its
+      `/artifacts` directory, after everything else.
+
+      The case worth testing is a failing run, because that is the one
+      the journal exists for -- and `after` alone would have skipped it,
+      since it is ordered after the phase that failed. `always` is what
+      separates "run me later" from "do not bother if that failed".
+
+      Also checks the failure does not pass *through* the journal: a
+      phase a consumer puts after it still runs.
+    */
+    recipes =
+      let
+        run = mkSession {
+          name = "recipes";
+          nodes.one = { };
+          uml.recipes.journal.enable = true;
+          phases.cluster = {
+            script = ./tests/phases/cluster.py;
+            after = [ "boot" ];
+          };
+        };
+      in
+      pkgs.runCommand "uml-check-recipes"
+        {
+          nativeBuildInputs = [ pkgs.jq ];
+          passthru = { inherit run; };
+        }
+        ''
+          report=${run.attempt}/phases.json
+          echo "--- $report ---"
+          cat "$report"
+
+          want() {
+            got=$(jq -r --arg n "$1" '.phases[] | select(.name == $n) | .state' "$report")
+            if [ "$got" != "$2" ]; then
+              echo "phase $1 is '$got', expected '$2'" >&2
+              exit 1
+            fi
+            echo "ok: $1 is $2"
+          }
+
+          # The recipe's own phase, which nothing in this session declared.
+          want boot passed
+          want cluster failed
+          # The rule `always` exists for.
+          want journal passed
+          echo "ok: the journal ran although the phase before it failed"
+
+          lines=$(wc -l < ${run.attempt}/artifacts/one/journal.txt)
+          if [ "$lines" -lt 50 ]; then
+            echo "the journal is $lines lines, which is not a journal" >&2
+            exit 1
+          fi
+          echo "ok: and left $lines lines on the host"
+
+          # It must still be a failed run: a journal is evidence, not an
+          # answer to the question the failed phase was asked.
+          if [ "$(jq -r '.passed' "$report")" != "false" ]; then
+            echo "collecting a journal turned a failure into a pass" >&2
+            exit 1
+          fi
+          echo "ok: and the run still failed"
+
+          touch $out
+        '';
+
+    /*
       Can a guest host a userspace filesystem?
 
       The question a build sandbox cannot answer for itself: its /dev has

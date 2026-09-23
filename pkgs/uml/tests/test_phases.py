@@ -21,8 +21,13 @@ from uml.phases import (
 from uml.spec import PhaseSpec
 
 
-def phase(name: str, *after: str) -> PhaseSpec:
-    return PhaseSpec(name=name, script=Path(f"/dev/null/{name}.py"), after=list(after))
+def phase(name: str, *after: str, always: bool = False) -> PhaseSpec:
+    return PhaseSpec(
+        name=name,
+        script=Path(f"/dev/null/{name}.py"),
+        after=list(after),
+        always=always,
+    )
 
 
 BOOT = phase("boot")
@@ -76,6 +81,34 @@ class TestSkippedBy:
         """And not pytest's answer either: `check` against a cluster that
         does not exist is a second failure that says nothing."""
         assert skipped_by("cluster", CHAIN) == {"check", "report"}
+
+
+class TestAlways:
+    """A phase that collects evidence must survive the failure.
+
+    `after` normally means "run me later" and "do not bother if that
+    failed" at once. A journal wants only the first: it is most wanted on
+    the run where something broke, and ordering it after everything would
+    otherwise have the failure skip it.
+    """
+
+    JOURNAL = phase("journal", "cluster", always=True)
+    AFTER_JOURNAL = phase("summary", "journal")
+    WITH_JOURNAL = [BOOT, CLUSTER, JOURNAL, AFTER_JOURNAL]
+
+    def test_an_always_phase_is_not_skipped(self):
+        assert "journal" not in skipped_by("cluster", self.WITH_JOURNAL)
+
+    def test_a_failure_does_not_pass_through_it(self):
+        """`summary` is after `journal`, which ran. So it runs too.
+
+        Without this, adding a journal to the end of a run would silently
+        skip everything a consumer put after it, any time anything failed.
+        """
+        assert "summary" not in skipped_by("cluster", self.WITH_JOURNAL)
+
+    def test_an_ordinary_dependent_is_still_skipped(self):
+        assert skipped_by("boot", [BOOT, CLUSTER, self.JOURNAL]) == {"cluster"}
 
 
 class TestRunnable:

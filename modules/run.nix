@@ -120,6 +120,25 @@ in
                 '';
               };
 
+              always = mkOption {
+                type = types.bool;
+                default = false;
+                description = ''
+                  Run even when something in `after` failed.
+
+                  `after` normally means two things at once: run me later,
+                  and do not bother if that failed. A phase that collects
+                  evidence wants only the first. A journal is most wanted
+                  on the run where something broke, and one ordered after
+                  everything would otherwise be skipped by the very
+                  failure it exists to explain.
+
+                  A failure is not passed on through such a phase either,
+                  so nothing after it is skipped on account of something
+                  before it.
+                '';
+              };
+
               description = mkOption {
                 type = types.str;
                 default = name;

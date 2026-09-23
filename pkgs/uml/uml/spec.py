@@ -31,6 +31,19 @@ class PhaseSpec(BaseModel):
     script: Path
     after: list[str] = Field(default_factory=list)
 
+    always: bool = False
+    """Run even when something in `after` failed.
+
+    `after` normally means two things at once: run me later, and do not
+    bother if that failed. A phase that collects evidence wants only the
+    first -- a journal is most wanted on the run where something broke,
+    and a journal phase ordered after everything would otherwise be
+    skipped by the very failure it exists to explain.
+
+    Nothing is expanded *through* one of these either: a phase after the
+    journal is not skipped because a phase before the journal failed.
+    """
+
 
 class Knob(BaseModel):
     """One declared steer, already resolved.

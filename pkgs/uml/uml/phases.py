@@ -65,7 +65,11 @@ def dependents(name: str, phases: Iterable[PhaseSpec]) -> set[str]:
         grown = found | {
             phase.name
             for phase in phases
-            if found & set(phase.after)
+            # `always` stops the walk as well as excluding itself. A phase
+            # that runs whatever happened does not pass the failure on, so
+            # nothing after it is skipped on account of something before
+            # it.
+            if not phase.always and found & set(phase.after)
         }
         if grown == found:
             return found - {name}

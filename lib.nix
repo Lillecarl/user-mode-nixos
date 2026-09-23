@@ -471,6 +471,11 @@ rec {
       run = lib.evalModules {
         modules = [
           ./modules/run.nix
+          # The standard library is always imported and nothing in it is
+          # on by default except `boot`, which every run wants and any
+          # run can turn off. A recipe a consumer has to import by path
+          # is a recipe nobody finds.
+          ./modules/recipes
           module
         ];
         specialArgs = { inherit pkgs; };
@@ -528,7 +533,7 @@ rec {
             inherit (checkedConfig) settings;
             knobs = checkedConfig.resolved;
             phases = map (phase: {
-              inherit (phase) name after;
+              inherit (phase) name after always;
               script = "${phase.script}";
             }) checkedConfig.ordered;
             machines = map machineSpec machines;
