@@ -227,6 +227,22 @@ let
     };
 
     /*
+      What may a run take from the host environment?
+
+      Declared as a name here and never as a value, so this test's store
+      path is the same whatever `UML_TEST_IMPURITY` is set to -- which is
+      the property the whole mechanism exists for.  Try it:
+
+          UML_TEST_IMPURITY=anything nix run --file . impure.run
+    */
+    impure = mkTest {
+      name = "impure";
+      script = ./tests/impure.py;
+      impurities = [ "UML_TEST_IMPURITY" ];
+      nodes.one = { };
+    };
+
+    /*
       Can a guest host a userspace filesystem?
 
       The question a build sandbox cannot answer for itself: its /dev has

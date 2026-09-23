@@ -128,6 +128,30 @@ rec {
     it from the host's store.  That is how a caller gets its own program
     into a guest without an image, a copy or a network.
 
+    `impurities` is the opposite channel: a list of environment variable
+    *names* the run may read from the host, reaching the script as
+    `vms.env`.
+
+        impurities = [ "PYTEST_ARGS" ];
+
+        PYTEST_ARGS='-k mounts' nix run --file . mytest.run
+
+    Names, never values.  A value never enters the spec, so it never
+    enters a store path and no derivation hash moves with it -- which is
+    what lets the same test stay pure under `nix build`.  A sandbox has no
+    environment to read, so every value is empty there and the test does
+    whatever it does by default.  Prefer this to `builtins.getEnv`, which
+    needs an impure evaluation and rebuilds the test for each value.
+
+    The run prints each name and its value before it boots anything.  A
+    misspelled variable is otherwise invisible: the run does the whole
+    suite instead of the one case, and says nothing.
+
+    Anything after `--spec` on the command line reaches the script as
+    `vms.argv`, unparsed:
+
+        nix run --file . mytest.run -- -k mounts
+
     `backend` picks what the guests become.  The script does not change
     with it, and neither does a node's configuration: `uml` needs nothing
     of the host, `qemu` needs `/dev/kvm` and is much faster.  A node may
@@ -177,6 +201,7 @@ rec {
       script,
       nodes,
       settings ? { },
+      impurities ? [ ],
       # `.uml`, `.qemu`, `.attempt` and `.run` are added after this, so a
       # name here cannot take one of theirs.
       passthru ? { },
@@ -280,7 +305,7 @@ rec {
         builtins.toJSON (
           toolchain
           // {
-            inherit settings;
+            inherit settings impurities;
             machines = map machineSpec machines;
           }
         )

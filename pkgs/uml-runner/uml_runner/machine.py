@@ -483,7 +483,11 @@ class Machine:
         return "\n".join(f"    | {line}" for line in tail) or "    | (silent)"
 
     async def execute(
-        self, command: str, timeout: float | None = None, label: str | None = None
+        self,
+        command: str,
+        timeout: float | None = None,
+        label: str | None = None,
+        env: dict[str, str] | None = None,
     ) -> tuple[int, str]:
         """Run a shell command in the guest; returns (exit code, output).
 
@@ -491,26 +495,42 @@ class Machine:
         carrying shell plumbing -- a redirect kept so that a deadline has
         something to read -- is unreadable as a report line and says
         nothing the program name does not.
+
+        *env* is added to this one command's environment, and is how a
+        declared impurity reaches the guest -- ``vms.env`` on the host,
+        chosen by the script, and never the whole host environment.
         """
         timeout = timeout or self.command_timeout
         # The guest kills the command at `timeout`; give the round trip
         # longer, so its error is what we report, not ours.
         return await self._ask(
-            label or command, self._agent.run(command, timeout=timeout), timeout + 10
+            label or command,
+            self._agent.run(command, timeout=timeout, env=env),
+            timeout + 10,
         )
 
-    async def succeed(self, command: str, timeout: float | None = None) -> str:
+    async def succeed(
+        self,
+        command: str,
+        timeout: float | None = None,
+        env: dict[str, str] | None = None,
+    ) -> str:
         """Run a command that must succeed; returns its output."""
-        rc, out = await self.execute(command, timeout=timeout)
+        rc, out = await self.execute(command, timeout=timeout, env=env)
         if rc != 0:
             raise MachineError(
                 f"[{self.name}] command failed (exit {rc}): {command}\n{out}"
             )
         return out
 
-    async def fail(self, command: str, timeout: float | None = None) -> str:
+    async def fail(
+        self,
+        command: str,
+        timeout: float | None = None,
+        env: dict[str, str] | None = None,
+    ) -> str:
         """Run a command that must fail; returns its output."""
-        rc, out = await self.execute(command, timeout=timeout)
+        rc, out = await self.execute(command, timeout=timeout, env=env)
         if rc == 0:
             raise MachineError(
                 f"[{self.name}] command unexpectedly succeeded: {command}\n{out}"

@@ -32,14 +32,20 @@ virtio driver exists -- and the agent gets hvc0 instead."""
 GUEST_PATH = "/run/current-system/sw/bin:/run/current-system/sw/sbin"
 
 
-def _sh(command: str, timeout: float) -> subprocess.CompletedProcess:
+def _sh(
+    command: str, timeout: float, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess:
     return subprocess.run(
         command,
         shell=True,
         capture_output=True,
         text=True,
         timeout=timeout,
-        env=dict(os.environ, PATH=GUEST_PATH),
+        # PATH last: the guest's own is what makes `environment.systemPackages`
+        # callable, and a caller that sets PATH here would break every later
+        # command in ways that read as a missing package. `dict(a, **b)` cannot
+        # do this -- a `PATH` in *env* would collide with the keyword.
+        env={**os.environ, **(env or {}), "PATH": GUEST_PATH},
     )
 
 
@@ -49,9 +55,19 @@ class Agent(Service):
     def on_disconnect(self, conn) -> None:
         print("uml-agent: host disconnected", flush=True)
 
-    def exposed_run(self, command: str, timeout: float = 900) -> tuple[int, str]:
-        """Run a shell command; returns (exit code, stdout and stderr)."""
-        done = _sh(command, timeout)
+    def exposed_run(
+        self,
+        command: str,
+        timeout: float = 900,
+        env: dict[str, str] | None = None,
+    ) -> tuple[int, str]:
+        """Run a shell command; returns (exit code, stdout and stderr).
+
+        *env* is added to this one command's environment.  The same
+        argument on both backends -- UML could pass a variable on the
+        kernel command line and QEMU has no equivalent, so neither does.
+        """
+        done = _sh(command, timeout, env)
         return done.returncode, (done.stdout + done.stderr).rstrip("\n")
 
     def exposed_unit_state(self, unit: str) -> str:

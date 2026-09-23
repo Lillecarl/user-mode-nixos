@@ -56,6 +56,21 @@ class Machines(dict[str, Machine]):
     subdirectory as ``/artifacts``, so a test collects a file by writing
     it in the guest and nothing is copied afterwards."""
 
+    env: dict[str, str]
+    """The impurities this test declared, read from the host environment.
+
+    One entry per name in ``mkTest``'s ``impurities``, and every declared
+    name is present -- unset reads as ``""``, so a test branches on the
+    value and never on a missing key.  Empty inside a build sandbox,
+    which has no environment to read; that is what makes the test's
+    default the thing CI runs."""
+
+    argv: list[str]
+    """What was left on the command line after ``--spec``.
+
+    ``nix run --file . <test>.run -- -k mytest`` reaches a script here.
+    The harness parses none of it."""
+
     def __getattr__(self, name: str) -> Machine:
         try:
             return self[name]
@@ -93,6 +108,8 @@ async def machines(spec: dict):
     )
     vms.settings = spec.get("settings", {})
     vms.artifacts = artifacts
+    vms.env = _impurities(spec.get("impurities", []))
+    vms.argv = list(spec.get("argv", []))
     # Serially, and before anything spawns: picking a free host address
     # means binding a port and letting go of it again, so two guests
     # doing it at once would both be told the same address is free.
@@ -139,6 +156,26 @@ def _artifacts_dir() -> Path:
     return path
 
 
+def _impurities(names: list[str]) -> dict[str, str]:
+    """The declared names, read from the host environment, and announced.
+
+    Nix carries the *names*.  A value never enters the spec, so it never
+    enters a store path and the derivation hash does not move with it --
+    which is what lets a sandboxed build stay pure while a run by hand is
+    steerable.  The sandbox has no environment, so every value is empty
+    there and the test takes its own default.
+
+    Printed, always, because that default is the failure this cannot have:
+    a misspelled variable changes nothing, the run does the whole suite
+    instead of the one case asked for, and nothing says why.
+    """
+    env = {name: os.environ.get(name, "") for name in names}
+    for name, value in env.items():
+        said = repr(value) if value else "unset"
+        print(f"[test] impurity {name}={said}", flush=True)
+    return env
+
+
 def _guest_artifacts(root: Path, name: str) -> Path:
     """One guest's own subdirectory, made before it boots.
 
@@ -152,12 +189,21 @@ def _guest_artifacts(root: Path, name: str) -> Path:
 
 
 def load_spec(argv: list[str] | None = None) -> dict:
-    """Read the test spec named by ``--spec`` on the command line."""
+    """Read the test spec named by ``--spec`` on the command line.
+
+    ``parse_known_args``, and the remainder lands under ``argv`` in the
+    returned spec -- so what the run was told and what Nix wrote arrive
+    as one thing.  Strict parsing here rejected every flag a test wanted,
+    with an exit 2 the caller had no way to read as its own.
+    """
     parser = argparse.ArgumentParser(description="Run a UML test")
     parser.add_argument(
         "--spec", type=Path, required=True, help="JSON test spec from Nix"
     )
-    return json.loads(parser.parse_args(argv).spec.read_text())
+    args, rest = parser.parse_known_args(argv)
+    spec = json.loads(args.spec.read_text())
+    spec["argv"] = rest
+    return spec
 
 
 def run_test(test: Callable[[Machines], Awaitable[None]]) -> None:

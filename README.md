@@ -308,8 +308,47 @@ $ nix run --file . iperf.qemu.run   # the same test, as machines
 Nothing about a test belongs on a command line. The spec names the images,
 the toolchain, the addresses and the ports, and Nix built every one of
 them — so the invocation is a store path too, and a run by hand is the
-same run the check makes. Arguments after `--` reach the script, which is
-where a test's own flags go.
+same run the check makes. Arguments after `--` reach the script as
+`vms.argv`, unparsed, which is where a test's own flags go:
+
+```console
+$ nix run --file . iperf.run -- -k mounts
+```
+
+### Telling a test what to do, without making it impure
+
+A run by hand usually wants something the check does not: one case out of
+a suite, a longer deadline, a different image tag. `mkTest` takes
+`impurities`, a list of environment variable **names**:
+
+```nix
+impure = mkTest {
+  name = "impure";
+  script = ./tests/impure.py;
+  impurities = [ "UML_TEST_IMPURITY" ];
+  nodes.one = { };
+};
+```
+
+```console
+$ UML_TEST_IMPURITY=anything nix run --file . impure.run
+```
+
+The script reads them as `vms.env`, and passes what it chooses into a
+guest command with `succeed(..., env = {...})`. Every declared name is
+there; one that is unset reads as `""`, so a test branches on a value and
+never on a missing key.
+
+**Names, never values.** A value never enters the spec, so it never enters
+a store path and no derivation hash moves with it. `nix build` needs no
+`--impure`, and the same test under the sandbox reads an empty environment
+and does whatever it does by default — which is what makes the check still
+the check. That is the difference from `builtins.getEnv`, which needs an
+impure evaluation and rebuilds the test for every value.
+
+The run prints each declared name and its value before it boots anything.
+A misspelled variable is invisible otherwise: the run quietly does the
+whole suite instead of the one case asked for.
 
 **A run leaves nothing behind, including when it is killed.** The guest's
 disk is unlinked before QEMU starts and handed over as file descriptors,
