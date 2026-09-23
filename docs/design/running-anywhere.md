@@ -132,6 +132,41 @@
 6 - **The MCP server is a stateful version of this CLI.** That is why the
 6   CLI is a separate thing rather than something Nix generates. It is not
 6   a later feature; it is the reason for the shape.
+7
+7 ## How to build it
+7
+7 The question was whether to reshape this tree or start a separate one,
+7 because the tree was written fast and its structure may fight the new
+7 shape. Counted instead of guessed. 4060 lines in `uml_runner`:
+7
+7 | | lines | share | what happens to it |
+7 | --- | --- | --- | --- |
+7 | `harness.py`, `cli.py` | 414 | 10% | replaced |
+7 | `cluster.py` | 665 | 16% | moves; it is a recipe in the wrong place |
+7 | everything else | 2981 | 73% | untouched |
+7
+7 That 73% is the expensive part, and none of it has an opinion about
+7 sessions: fd passing, passt, virtiofsd, copy-on-write disks, rpyc over a
+7 serial line in raw mode, `die_with_parent`. Starting again means earning
+7 all of it a second time to fix 10%.
+7
+7 The coupling that looked structural is seven lines. `report.RUN` is
+7 reached from five places in `machine.py` and two in `harness.py`. That is
+7 a constructor parameter, not a rewrite.
+7
+7 **So: a new package beside the old one, in this repository.** The session
+7 and the CLI are written fresh and import the mechanism. `uml_runner`
+7 keeps working while they are built, and `harness.py` and `cli.py` are
+7 deleted when the new door passes the tests the old one passes.
+7
+7 Not a separate repository, for one reason above the others: `tests/` and
+7 `default.nix` are the only proof that any of this works. Somewhere else
+7 means no proof, or a copy of the proof that drifts.
+7
+7 **And with real guests, not a fake backend.** The smallest guest here
+7 boots in 6.9 seconds and its whole test runs in 7. A stub backend is a
+7 second implementation to keep honest, and it cannot fail the way the real
+7 one fails. Develop against `impure`; it is already the small one.
 1
 4 ## Area 0a — the spec is input, not an ingredient
 4
