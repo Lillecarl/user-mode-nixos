@@ -126,6 +126,12 @@
 5 - **A phase contributes configuration as well as a script.** Much of what
 5   a phase is will be systemd units, plus whatever coordinates several
 5   nodes.
+6
+6 From the fifth round:
+6
+6 - **The MCP server is a stateful version of this CLI.** That is why the
+6   CLI is a separate thing rather than something Nix generates. It is not
+6   a later feature; it is the reason for the shape.
 1
 4 ## Area 0a — the spec is input, not an ingredient
 4
@@ -187,6 +193,48 @@
 4   that is missed is not a build error, it is a guest that goes looking
 4   for a substituter.
 4
+6 ## Area 0d — the CLI is one drive of a session
+6
+6 The MCP server is this CLI with the state kept. So the CLI is not the
+6 program either: **a session is**, and `uml run` is one linear drive of
+6 one session from start to teardown. The MCP server drives the same
+6 session, more slowly, from outside.
+6
+6 That turns area 4 from a later feature into a constraint on this one.
+6 Write the CLI as a `main` with the logic inside it, and the MCP server
+6 cannot reuse any of it.
+6
+6 What the session has to look like, and what stands in the way today.
+6
+6 **Each step is addressable, not one `run()`.** Evaluate, build, boot,
+6 run a phase, run the next phase, hold, tear down. A caller must be able
+6 to stop between any two and come back later. `run_test` does the whole
+6 sequence in one call and tears down in a `finally` (`harness.py:113`), so
+6 there is no point at which anything outside can speak.
+6
+6 **A session has an identity and a lifetime.** An MCP caller names one.
+6 Something has to reap a session nobody is using: `die_with_parent`
+6 covers the parent being killed, but an MCP server that stays up *is* the
+6 parent, so a forgotten session is a UML kernel spinning on a core until
+6 somebody notices.
+6
+6 **Nothing per-run may be a module global.** One process holds several
+6 sessions. Two things break that today:
+6
+6 - `report.RUN` is a module-level `Report()` (`report.py:188`), and its
+6   docstring says why: "a test never makes a second run in one process".
+6   That assumption is exactly what the MCP server ends.
+6 - The signal handling belongs to the CLI, not to the library.
+6   `_unwind_on_signal` cancels the current task (`harness.py:263`), which
+6   is right for a program and wrong for one session among several.
+6
+6 **Two sessions race for host addresses.** Picking a free one means
+6 binding a port and letting it go, so the choice is only safe while
+6 something serialises it. Today that is a `taken` set local to one run
+6 (`harness.py:116`), and the comment beside it names the race. Two
+6 sessions in one process have two sets and will pick the same address.
+6 The set has to move up to whatever owns the sessions.
+6
 5 ## Area 0c — one evaluation, three outputs
 5
 5 Evaluating the module system gives the image specs, an unsandboxed
@@ -465,6 +513,10 @@
 1 A hold-on-failure mode is the first step, and it is useful with no MCP
 1 server at all. Reboots (#11) want the same ownership: a machine that comes
 1 back is a machine something outside it drives.
+6
+6 This area is no longer last. The MCP server is the CLI with its state
+6 kept, so the session shape it needs is a constraint on area 0, not a
+6 thing to add afterwards. See area 0d.
 3
 3 Phases give a breakpoint a name. "Stop before `check`" is a thing a
 3 caller can say without reading any Python, and an agent can list the
