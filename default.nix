@@ -660,7 +660,11 @@ let
       # `.py` only: a run outside the sandbox leaves `__pycache__` beside
       # them, and pyright has nothing to say about a `.pyc`.
       scripts = lib.filter (p: lib.hasSuffix ".py" (toString p)) (
-        lib.filesystem.listFilesRecursive ./tests
+        # `recipes` as well as `tests`: a recipe is shipped for other
+        # projects to enable, so one that does not type check breaks a
+        # consumer rather than this repository.
+        lib.filesystem.listFilesRecursive ./recipes
+        ++ lib.filesystem.listFilesRecursive ./tests
       );
     };
   };

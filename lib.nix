@@ -80,10 +80,20 @@ rec {
       ''
         # Copied in rather than checked in place: pyright follows a path,
         # and a store path is read-only.
-        mkdir -p scripts
-        ${lib.concatMapStringsSep "\n" (
-          script: "cp ${script} scripts/${baseNameOf script}"
-        ) scripts}
+        #
+        # One directory each, numbered. Two scripts may share a basename
+        # -- `recipes/boot.py` and `tests/phases/boot.py` do -- and
+        # copying both to `scripts/boot.py` failed with "Permission
+        # denied", because the first arrived read-only from the store and
+        # the second tried to overwrite it. A collision must not depend
+        # on which two files a caller happens to pass.
+        ${lib.concatStringsSep "\n" (
+          lib.imap0 (index: script: ''
+            mkdir -p scripts/${toString index}
+            cp ${script} scripts/${toString index}/${baseNameOf script}
+            chmod +w scripts/${toString index}/${baseNameOf script}
+          '') scripts
+        )}
         cp ${pkgs.writeText "pyrightconfig.json" (builtins.toJSON settings)} \
           pyrightconfig.json
         # Offline: pyright downloads a node runtime unless it is told

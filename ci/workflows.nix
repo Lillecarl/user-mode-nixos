@@ -198,6 +198,38 @@ let
       })
     ];
   };
+  /*
+    The session's own rules, on the smallest guests there are.
+
+    Five checks in one job rather than five jobs: each boots a single
+    guest with nothing on it, so the whole set costs less than any one of
+    the tests above. What they answer is about the runner and not about
+    the backend -- what a failure skips, what a knob is worth, what
+    `--only` leaves alone -- so one backend is enough.
+
+    UML, because `mkSession` defaults to it. That is why this waits on
+    `kernel` although nothing in it is a kernel test.
+  */
+  sessionJob = job {
+    id = "sessions";
+    needs = [ "kernel" ];
+    timeoutMinutes = 30;
+    cond = selectable "sessions";
+    ghanix = sandboxBootstrap;
+    steps = [
+      (steps.build {
+        name = "The session: phase rules, knobs, --only, recipes";
+        attrs = [
+          "phase-rules"
+          "knobs"
+          "only-rules"
+          "recipes"
+          "impure"
+        ];
+        timeoutMinutes = 20;
+      })
+    ];
+  };
 in
 {
   # Through ghanix's schema rather than straight to YAML. That is what
@@ -222,6 +254,7 @@ in
     };
     jobs = {
       checks = checksJob;
+      sessions = sessionJob;
       kernel = kernelJob;
       test-k8s-pull = pullJob;
     }
