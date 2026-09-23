@@ -150,6 +150,33 @@
 4 evaluation and a small JSON file. That is most of what makes question 6
 4 a question, so it is worth doing first.
 4
+4 **The obvious way to split them does not work.** Asking the JSON for its
+4 string context looks like it names the paths, and it does not:
+4
+4 ```nix
+4 builtins.getContext (builtins.toJSON { a = "${pkgs.hello}"; })
+4 # => { "/nix/store/...-hello-2.12.3.drv" = { outputs = [ "out" ]; }; }
+4 ```
+4
+4 A derivation in a value gives its **`.drv`**, not its output path. The
+4 guest needs the output. So context alone cannot build the list, although
+4 it looks like it can — checked, because the failure would be silent: the
+4 database would register a path nothing in the guest ever asks for, and
+4 the real one would be invalid at run time.
+4
+4 Three candidates, none tried:
+4
+4 - Scan the JSON text for store paths. The text already holds the output
+4   path; only the context names the `.drv`. Crude, and it is what Nix's
+4   own scanner does.
+4 - Write the sorted path list to its own file and build the database from
+4   that. Two settings that differ only in a plain value then produce the
+4   same file, so the image does not move.
+4 - Make the author name the paths. No discovery, no trap, and the doc
+4   comment at `lib.nix` says why that was rejected once already: a path
+4   that is missed is not a build error, it is a guest that goes looking
+4   for a substituter.
+4
 2 ## Area 0 — the CLI, and what a script is
 2
 2 This is the change that cements the rest, so it comes first.
