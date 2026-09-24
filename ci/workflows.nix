@@ -218,7 +218,7 @@ let
     ghanix = sandboxBootstrap;
     steps = [
       (steps.build {
-        name = "The session: phase rules, knobs, --only, recipes, stream, pytest, breakpoints";
+        name = "The session: phase rules, knobs, --only, recipes, stream, pytest, breakpoints, parallel";
         attrs = [
           "phase-rules"
           "knobs"
@@ -230,6 +230,7 @@ let
           "breakpoint"
           "guest-suites"
           "kernel-override"
+          "parallel"
         ];
         timeoutMinutes = 20;
       })

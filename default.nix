@@ -707,6 +707,90 @@ let
         '';
 
     /*
+      Do phases on disjoint guests run at once, and is everything they
+      say still filed under the right phase?
+
+      `left` holds `a`, `right` holds `b`, and `both` holds every guest
+      and comes after them. Three claims, each read from events.jsonl:
+
+      - `left` and `right` overlap in time.
+      - `both` overlaps nothing: a phase without `nodes` runs alone. This
+        is the negative control, and what a scheduler that ignored
+        `nodes` would fail.
+      - Every journal marker and every print carries the phase that held
+        its guest, although two phases were writing at once.
+    */
+    parallel =
+      let
+        run = mkSession {
+          name = "parallel";
+          nodes.a = { };
+          nodes.b = { };
+          phases = {
+            left = {
+              script = ./tests/phases/parallel.py;
+              nodes = [ "a" ];
+              after = [ "boot" ];
+            };
+            right = {
+              script = ./tests/phases/parallel.py;
+              nodes = [ "b" ];
+              after = [ "boot" ];
+            };
+            both = {
+              script = ./tests/phases/parallel.py;
+              after = [
+                "left"
+                "right"
+              ];
+            };
+          };
+        };
+      in
+      pkgs.runCommand "uml-check-parallel"
+        {
+          nativeBuildInputs = [ pkgs.jq ];
+          passthru.session = run;
+        }
+        ''
+          a=${run.attempt}
+          fail() { echo "$*" >&2; exit 1; }
+          jq -r '.phases[] | "\(.name)\t\(.state)"' $a/phases.json
+          [ "$(cat $a/status)" = 0 ] || fail "the run failed"
+
+          jq -s '[.[] | select(.kind == "phase_started" or .kind == "phase_finished")]
+                 | group_by(.phase)
+                 | map({(.[0].phase): {
+                     start: (map(select(.kind == "phase_started"))[0].at),
+                     end: (map(select(.kind == "phase_finished"))[0].at)}})
+                 | add' $a/events.jsonl | tee spans.json
+
+          jq -e '.left.start < .right.end and .right.start < .left.end' spans.json > /dev/null \
+            || fail "left and right did not overlap"
+          echo "ok: left and right ran at once"
+
+          jq -e '.both.start >= ([.left.end, .right.end] | max)' spans.json > /dev/null \
+            || fail "both started while left or right still ran"
+          echo "ok: and both, which holds every guest, ran alone"
+
+          jq -c 'select(.kind == "journal" and .data.identifier == "parallel")
+                 | {machine, phase, text}' $a/events.jsonl | tee markers
+          [ "$(wc -l < markers)" = 12 ] || fail "expected 12 markers: 3 on a, 3 on b, 6 from both"
+          jq -e -s 'all(.[]; (.text | split("-")[0]) == .phase)' markers > /dev/null \
+            || fail "a journal marker was filed under a phase that did not write it"
+          echo "ok: every journal marker names the phase that held its guest"
+
+          jq -c 'select(.kind == "output" and (.text | test(" step "))) | {phase, text}' \
+            $a/events.jsonl | tee said
+          [ "$(wc -l < said)" = 9 ] || fail "expected 9 printed lines"
+          jq -e -s 'all(.[]; (.text | split(" ")[0]) == .phase)' said > /dev/null \
+            || fail "a print was filed under the other phase"
+          echo "ok: and so does every print"
+
+          touch $out
+        '';
+
+    /*
       Can a suite that has to run inside a guest report like one that
       runs on the host?
 
