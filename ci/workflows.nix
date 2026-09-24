@@ -229,6 +229,7 @@ let
           "pytest-phase"
           "breakpoint"
           "guest-suites"
+          "kernel-override"
         ];
         timeoutMinutes = 20;
       })
