@@ -109,6 +109,15 @@
 14 UML kernel whose death nobody noticed. `--kernel` boots a kernel from
 14 a working tree.
 14
+15 Phases run at once where their guests allow it. A phase declares
+15 `nodes`; one without holds every guest, so a session that declares
+15 nothing runs one phase at a time as before. Parallelism is a property
+15 of the graph and the declarations, not a flag to ask for. A pause
+15 waits until nothing runs, and every command, journal entry and print
+15 keeps its phase. `parallel` proves the overlap and the attribution,
+15 and fails under `--serial`. pynixd, a guest per suite, same build,
+15 QEMU on 16 cores: suites 75.9s to 40.7s, whole run 87.8s to 53.3s.
+15
 14 ## Suggestions, ranked
 14
 14 Not built yet. Each came from a run, not from a list.
@@ -119,28 +128,31 @@
 14    starting a *new* chaos phase against it from the working tree --
 14    `inject` covers a script, not a pytest phase. `run_phase` with a
 14    pytest path would make "edit a scenario, run it again" seconds.
-14 2. **Independent phases in parallel.** pynixd's three suites need only
-14    `prepare` and ran one after another for 167s; on three guests they
-14    would take about as long as the slowest, 78s. The graph already
-14    says they are independent. Needs a phase to name its guest.
-14 3. **Kernel builds that keep their objects.** nanopynix's namespaced
+15 2. **pytest phases beside others.** A pytest phase runs alone: pytest
+15    is not reentrant, and `--capture=sys` is the process's stdout. A
+15    pytest per phase in a child process, driving the guests over the
+15    portal's wire instead of a thread, lifts both.
+15 3. **Shard a suite across guests.** pynixd's `unit` is now the
+15    critical path, 40.7s of 40.7s. Phases generated per shard, each
+15    on its own guest, split it the way the suites are split now.
+14 4. **Kernel builds that keep their objects.** nanopynix's namespaced
 14    worker owns `sandbox-paths`, so a `ccacheStdenv` kernel can keep
 14    `/ccache` between builds without `nix.conf` on the host. For "does
 14    my patch series build as CI builds it", in minutes rather than half
 14    an hour; `--kernel` stays the inner loop.
-14 4. **KTAP to cases.** kselftest and KUnit write KTAP, not JUnit.
+14 5. **KTAP to cases.** kselftest and KUnit write KTAP, not JUnit.
 14    Reading it the way `junit_in` reads JUnit makes each a case.
-14 5. **Evidence out of CI.** nixkube's `test-qemu` now writes `--out
+14 6. **Evidence out of CI.** nixkube's `test-qemu` now writes `--out
 14    ./uml-out`; an `upload-artifact` step keeps junit.xml, events.jsonl
 14    and every console on a failure, and a JUnit reporter shows the
 14    chaos scenarios as tests.
-14 6. **gdb as a tool.** A UML kernel is a process: the pid is known
+14 7. **gdb as a tool.** A UML kernel is a process: the pid is known
 14    (`Machine._guest_pid`). For QEMU, `-s` behind an option. An MCP
 14    tool that answers the attach command.
-14 7. **Exact per-test journal attribution, opt-in.** `settle` per
+14 8. **Exact per-test journal attribution, opt-in.** `settle` per
 14    pytest test costs one command per guest per test; worth it for a
 14    suite where "which test logged this" is the question.
-14 8. **Retire `mkTest`.** This repository's own tests and nixkube's
+14 9. **Retire `mkTest`.** This repository's own tests and nixkube's
 14    `ciTest` still use it. Every feature above is session-only.
 14
 14 Still open from before: pytest as the entrypoint, and why pynixd's

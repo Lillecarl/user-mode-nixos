@@ -194,6 +194,31 @@ generated from a list in Nix. `vms.shared` is a dict that survives from
 one phase to the next. `nix build --file . guest-suites` proves all
 three.
 
+## Phases at once
+
+`phases.<name>.nodes = [ "a" ]` declares the guests a phase uses; empty
+is every guest. Once its `after` has finished, a phase starts beside the
+running ones when their guests do not overlap. So a session gets
+parallelism by declaring what each phase touches, and one that declares
+nothing runs one phase at a time.
+
+- The script's `vms` holds only its guests, with its own `vms.phase`;
+  `shared`, `settings` and `knobs` are the session's. Reaching an
+  undeclared guest fails on the name.
+- Commands, journal entries and prints are attributed by the guest
+  that produced them, and prints through a context variable. Keep both
+  exact when touching `session.py`: `settle`, the JUnit import and the
+  console replay take the phase's guests, never all.
+- A pytest phase holds every guest whatever its `nodes`: pytest is not
+  reentrant, and `--capture=sys` swaps the process's stdout.
+- A breakpoint or a failure stops new phases, and the pause starts when
+  the running ones end. Paused means nothing runs.
+- `uml run --serial` runs one at a time in Nix's order.
+
+Logic in `phases.ready`/`launchable`; the loop in `cli._schedule`. `nix
+build --file . parallel` proves the overlap, the negative control and
+the attribution.
+
 ## VCS
 
 This project uses jj (Jujutsu), not git. Do not use git commands.
