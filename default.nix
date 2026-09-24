@@ -220,6 +220,27 @@ let
     };
   };
 
+  /*
+    Does a guest's incremental write reach the host incrementally?
+
+    The journal stream rests on this answer. Measured on both backends
+    (2026-09-24): the host sees each line the moment the guest writes
+    it, `(7,7) (14,14) ... (42,42)` guest/host bytes, and `sync`
+    changes nothing. hostfs and virtiofs are both write-through here.
+
+    By hand:
+
+        nix run --file . incr.run -- --out ./out
+  */
+  incr = mkSession {
+    name = "incr";
+    nodes.one = { };
+    phases.incr = {
+      script = ./tests/phases/incr.py;
+      after = [ "boot" ];
+    };
+  };
+
   tests = {
     # Do the guests boot, see each other on vec1, and answer the host?
     lan = mkTest {
@@ -675,7 +696,7 @@ tests
   inherit mkNode mkSession mkTest runner session typeCheck;
   lib = { inherit mkNode mkSession mkTest runner session typeCheck; };
 
-  inherit demo store k8s-pull uplink;
+  inherit demo store k8s-pull uplink incr;
   inherit (demo.config.system.build) umlRunner umlRootImage toplevel;
 
   # The slowest thing in the repository and the same for every guest, so
