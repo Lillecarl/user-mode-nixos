@@ -421,6 +421,9 @@ class Session:
             # A phase that tested nothing is a selection that matched
             # nothing, and a green run would hide the typo.
             raise CasesFailed("no tests were collected")
+        if code == pytest.ExitCode.USAGE_ERROR:
+            # pytest says why on its own stderr, not through any hook.
+            raise CasesFailed(f"pytest rejected its arguments: {args[1:]}")
         if code != pytest.ExitCode.OK:
             raise CasesFailed(
                 plugin.summary() if plugin.outcomes else f"pytest exited {code}"

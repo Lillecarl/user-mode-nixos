@@ -193,6 +193,12 @@ class TestAFailingRun:
         with pytest.raises(CasesFailed, match="no tests were collected"):
             await session._pytest("cases", PytestSpec(tests=write_tests(tmp_path, BAD)))
 
+    async def test_arguments_pytest_rejects_are_named(self, tmp_path: Path):
+        sink = Collect()
+        session = session_for(tmp_path, sink, "-k", "bad((")
+        with pytest.raises(CasesFailed, match="rejected its arguments.*bad"):
+            await session._pytest("cases", PytestSpec(tests=write_tests(tmp_path, BAD)))
+
     async def test_a_module_that_does_not_import(self, tmp_path: Path):
         sink = Collect()
         session = session_for(tmp_path, sink)
