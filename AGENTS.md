@@ -272,6 +272,13 @@ nix build .#lan .#lan.qemu --print-build-logs 2>&1 | tee /tmp/umlboth.log
 `.#lan.qemu` needs `/dev/kvm` and asks the daemon for the `kvm` feature,
 so it refuses to build where there is none rather than failing.
 
+A run can hold both kinds: a node sets its own `boot.uml.backend`, and
+the run's `backend` is only the default. The toolchain and the `kvm`
+feature follow the machines, and a segment carries raw frames both
+accept. UML for what is single-threaded and should cost the host little,
+QEMU for what wants the CPU. `nix build --file . mixed` proves it, by
+hand (it needs /dev/kvm).
+
 A QEMU guest gets `-cpu host` minus `vmx` and `svm`, so it cannot run
 VMs. `boot.uml.nestedVirtualization = true` passes the flag through and
 loads KVM in the guest; the host needs nesting on. `nix build --file .

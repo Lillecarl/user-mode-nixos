@@ -707,6 +707,37 @@ let
         '';
 
     /*
+      One run, both kinds of guest: a UML guest and a QEMU guest on one
+      segment. UML for what is single-threaded and wants to cost the host
+      little, QEMU for what wants the CPU. A node sets its own
+      `boot.uml.backend`; the run's `backend` is only the default.
+
+      By hand: the QEMU guest needs /dev/kvm, which the session job in CI
+      does not have.
+    */
+    mixed = mkSession {
+      name = "mixed";
+      nodes.small.boot.uml = {
+        backend = "uml";
+        lan = {
+          network = "mixed";
+          address = "10.55.0.1/24";
+        };
+      };
+      nodes.fast.boot.uml = {
+        backend = "qemu";
+        lan = {
+          network = "mixed";
+          address = "10.55.0.2/24";
+        };
+      };
+      phases.reach = {
+        script = ./tests/phases/mixed.py;
+        after = [ "boot" ];
+      };
+    };
+
+    /*
       Can a QEMU guest run virtual machines of its own?
 
       By hand, not in CI: a GitHub runner is itself a VM, and its KVM

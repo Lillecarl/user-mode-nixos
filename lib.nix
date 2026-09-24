@@ -54,13 +54,18 @@ rec {
     let
       # `session` brings pytest with it, so a pytest phase's tests and
       # conftest check against the same pytest that runs them.
-      python = pkgs.python3.withPackages (_: [ runner session ] ++ extraPackages);
+      python = pkgs.python3.withPackages (
+        _:
+        [
+          runner
+          session
+        ]
+        ++ extraPackages
+      );
 
       # pyright's rule names, the way `writePython3Bin`'s `flakeIgnore`
       # is flake8's codes.
-      rules = lib.listToAttrs (
-        map (rule: lib.nameValuePair rule "none") ignore
-      );
+      rules = lib.listToAttrs (map (rule: lib.nameValuePair rule "none") ignore);
 
       settings = {
         typeCheckingMode = if strict then "strict" else "standard";
@@ -120,26 +125,28 @@ rec {
     Shared by `mkTest` and `mkSession` so that the two cannot describe the
     same machine differently. A field added here reaches both doors.
   */
-  machineSpec = machine: {
-    name = machine.networking.hostName;
-    backend = machine.boot.uml.backend;
-    index = machine.boot.uml.index;
-    memory = machine.boot.uml.memory;
-    seccomp = machine.boot.uml.seccomp;
-    cpus = machine.boot.uml.cpus;
-    sshPort = machine.boot.uml.sshPort;
-    mtu = machine.boot.uml.mtu;
-    network = machine.boot.uml.lan.network;
-    address = machine.boot.uml.lan.address;
-    forward = machine.boot.uml.forward;
-    # Both backends get a read-only root image of `boot.uml.diskSize`
-    # and a per-run copy-on-write layer over it. Only what is inside
-    # differs: UML boots `/init` from it, QEMU mounts it as `/`.
-    image = "${machine.system.build.umlRootImage}";
-  }
-  // lib.optionalAttrs (machine.boot.uml.backend == "qemu") {
-    boot = machine.system.build.qemuBoot;
-  };
+  machineSpec =
+    machine:
+    {
+      name = machine.networking.hostName;
+      backend = machine.boot.uml.backend;
+      index = machine.boot.uml.index;
+      memory = machine.boot.uml.memory;
+      seccomp = machine.boot.uml.seccomp;
+      cpus = machine.boot.uml.cpus;
+      sshPort = machine.boot.uml.sshPort;
+      mtu = machine.boot.uml.mtu;
+      network = machine.boot.uml.lan.network;
+      address = machine.boot.uml.lan.address;
+      forward = machine.boot.uml.forward;
+      # Both backends get a read-only root image of `boot.uml.diskSize`
+      # and a per-run copy-on-write layer over it. Only what is inside
+      # differs: UML boots `/init` from it, QEMU mounts it as `/`.
+      image = "${machine.system.build.umlRootImage}";
+    }
+    // lib.optionalAttrs (machine.boot.uml.backend == "qemu") {
+      boot = machine.system.build.qemuBoot;
+    };
 
   /**
     The host-side binaries a run needs, and none of the other backend's.
@@ -148,19 +155,36 @@ rec {
     `umlKernel` would spend half an hour on a kernel it never boots, and a
     UML run that mentioned `qemu_kvm` would pull QEMU into a sandbox that
     has no use for it.
+
+    Taken from the machines and not from the run's `backend`: a node may
+    set its own `boot.uml.backend`, and a run then holds both kinds. The
+    runner picks a backend per machine, and a segment carries raw frames
+    that both accept, so nothing else has to know.
   */
-  toolchainFor = chosen: first: {
-    passt = "${pkgs.passt}/bin/passt";
-  }
-  // lib.optionalAttrs (chosen == "uml") {
-    kernel = "${first.system.build.umlKernel}/linux";
-    bridge = lib.getExe first.system.build.umlPasstBridge;
-  }
-  // lib.optionalAttrs (chosen == "qemu") {
-    qemu = "${pkgs.qemu_kvm}/bin/qemu-system-x86_64";
-    qemuImg = "${pkgs.qemu_kvm}/bin/qemu-img";
-    virtiofsd = "${pkgs.virtiofsd}/bin/virtiofsd";
-  };
+  toolchainFor =
+    machines:
+    let
+      on = backend: lib.filter (machine: machine.boot.uml.backend == backend) machines;
+      uml = on "uml";
+    in
+    {
+      passt = "${pkgs.passt}/bin/passt";
+    }
+    // lib.optionalAttrs (uml != [ ]) {
+      kernel = "${(lib.head uml).system.build.umlKernel}/linux";
+      bridge = lib.getExe (lib.head uml).system.build.umlPasstBridge;
+    }
+    // lib.optionalAttrs (on "qemu" != [ ]) {
+      qemu = "${pkgs.qemu_kvm}/bin/qemu-system-x86_64";
+      qemuImg = "${pkgs.qemu_kvm}/bin/qemu-img";
+      virtiofsd = "${pkgs.virtiofsd}/bin/virtiofsd";
+    };
+
+  # A QEMU guest is only worth booting with KVM, and the daemon only hands
+  # /dev/kvm to a derivation that asks for it. Any QEMU guest in the run
+  # asks; UML asks for nothing, which is the whole point of UML.
+  kvmFor =
+    machines: lib.optional (lib.any (machine: machine.boot.uml.backend == "qemu") machines) "kvm";
 
   # A guest: an ordinary NixOS configuration plus ./modules.
   #
@@ -332,7 +356,7 @@ rec {
           inherit (cfg) extraPackages strict ignore;
         }}";
 
-      toolchain = toolchainFor chosen first;
+      toolchain = toolchainFor machines;
 
       spec = pkgs.writeText "uml-${name}${suffix}-spec.json" (
         builtins.toJSON (
@@ -383,33 +407,31 @@ rec {
             report.json  where the time went, see report.py
             artifacts/   what the guests wrote to /artifacts
       */
-      attempt = pkgs.runCommand "uml-test-${name}${suffix}-attempt"
-        {
-          nativeBuildInputs = [ python ];
-          # A QEMU guest is only worth booting with KVM, and the daemon
-          # only hands /dev/kvm to a derivation that asks for it. UML asks
-          # for nothing, which is the whole point of UML.
-          requiredSystemFeatures = lib.optional (chosen == "qemu") "kvm";
-          passthru = { inherit spec python run; };
-        }
-        ''
-          export HOME="$TMPDIR"
-          mkdir -p "$out/artifacts"
-          # Empty when `boot.uml.typeCheck.enable` is off.
-          echo "script checked: ${checked}" > "$out/typecheck"
-          export UML_TEST_REPORT=$out/report.json
-          export UML_TEST_ARTIFACTS=$out/artifacts
+      attempt =
+        pkgs.runCommand "uml-test-${name}${suffix}-attempt"
+          {
+            nativeBuildInputs = [ python ];
+            requiredSystemFeatures = kvmFor machines;
+            passthru = { inherit spec python run; };
+          }
+          ''
+            export HOME="$TMPDIR"
+            mkdir -p "$out/artifacts"
+            # Empty when `boot.uml.typeCheck.enable` is off.
+            echo "script checked: ${checked}" > "$out/typecheck"
+            export UML_TEST_REPORT=$out/report.json
+            export UML_TEST_ARTIFACTS=$out/artifacts
 
-          # The shell writes the marker, not the runner: the runner can die
-          # before any Python of ours runs, and a missing marker would then
-          # be read as a pass. `tee` keeps `--print-build-logs` streaming;
-          # PIPESTATUS is the runner's exit code rather than tee's.
-          set +e
-          python3 ${script} --spec ${spec} 2>&1 | tee "$out/log"
-          status=''${PIPESTATUS[0]}
-          set -e
-          echo "$status" > "$out/status"
-        '';
+            # The shell writes the marker, not the runner: the runner can die
+            # before any Python of ours runs, and a missing marker would then
+            # be read as a pass. `tee` keeps `--print-build-logs` streaming;
+            # PIPESTATUS is the runner's exit code rather than tee's.
+            set +e
+            python3 ${script} --spec ${spec} 2>&1 | tee "$out/log"
+            status=''${PIPESTATUS[0]}
+            set -e
+            echo "$status" > "$out/status"
+          '';
     in
     /*
       The check reads the marker and nothing else, and names the run's
@@ -422,7 +444,12 @@ rec {
     pkgs.runCommand "uml-test-${name}${suffix}"
       {
         passthru = passthru // {
-          inherit attempt spec python run;
+          inherit
+            attempt
+            spec
+            python
+            run
+            ;
         };
       }
       ''
@@ -502,16 +529,11 @@ rec {
 
       failed = lib.filter (each: !each.assertion) cfg.assertions;
       checkedConfig =
-        if failed == [ ] then
-          cfg
-        else
-          throw (lib.concatMapStringsSep "\n" (each: each.message) failed);
+        if failed == [ ] then cfg else throw (lib.concatMapStringsSep "\n" (each: each.message) failed);
 
       inherit (checkedConfig) name backend;
 
-      settingsFile = pkgs.writeText "uml-${name}-settings.json" (
-        builtins.toJSON checkedConfig.settings
-      );
+      settingsFile = pkgs.writeText "uml-${name}-settings.json" (builtins.toJSON checkedConfig.settings);
 
       machines = lib.imap0 (
         index: hostName:
@@ -521,9 +543,7 @@ rec {
           boot.uml.sshPort = lib.mkDefault (4325 + index);
           boot.uml.backend = lib.mkDefault backend;
           boot.uml.index = index;
-          boot.uml.nixDatabase.extraRoots = lib.optional (
-            checkedConfig.settings != { }
-          ) "${settingsFile}";
+          boot.uml.nixDatabase.extraRoots = lib.optional (checkedConfig.settings != { }) "${settingsFile}";
         }).config
       ) (lib.attrNames checkedConfig.nodes);
 
@@ -548,7 +568,7 @@ rec {
 
       spec = pkgs.writeText "uml-${name}-spec.json" (
         builtins.toJSON (
-          toolchainFor backend first
+          toolchainFor machines
           // {
             inherit (checkedConfig) name settings;
             # The runner that knows every field below. No cycle: the
@@ -631,7 +651,7 @@ rec {
       attempt =
         pkgs.runCommand "uml-session-${name}-attempt"
           {
-            requiredSystemFeatures = lib.optional (backend == "qemu") "kvm";
+            requiredSystemFeatures = kvmFor machines;
             passthru = { inherit spec; };
           }
           ''
