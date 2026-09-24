@@ -26,6 +26,7 @@ still answer.
 from __future__ import annotations
 
 import json
+import math
 import os
 import shlex
 import signal
@@ -41,13 +42,14 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.stdio import stdio_server
 from mcp.shared.message import SessionMessage
 from mcp.types import JSONRPCMessage, JSONRPCNotification
-from uml.control import SOCKET, Op, Reply, request
+from uml.control import SOCKET, Op, Reply, reachable, request
 from uml.journal import Tail
+from uml.monitor import SOCKET as MONITOR_SOCKET, TERMINAL
 
 from .cli import split_attr
 
 if TYPE_CHECKING:
-    from anyio.abc import Process, TaskGroup
+    from anyio.abc import Process, SocketStream, TaskGroup
     from anyio.streams.memory import MemoryObjectSendStream
 
 CHANNEL: Final = "notifications/claude/channel"
@@ -69,6 +71,9 @@ phase_finished, rpc, output, error), machine, unit, phase or case.
 Events arrive as <channel source="uml" run="..." event="progress|paused|failed|finished|exited" ...>.
 A `progress` event marks a phase starting or passing; say one line about
 it so the person watching sees the run move, and do nothing else.
+Without channels, run the `monitor` command that `start` returns in a
+Monitor: it prints the same events, one line each, and exits with the
+verdict (0 passed, 1 failed, 2 exited without one).
 On `paused`, look with `events` and `exec` before you `resume` -- the
 guests go down when the run ends. `stop` ends a run early and still
 tears the guests down.
@@ -207,6 +212,9 @@ class Run:
     process: Process
     finished: bool = False
     tail: Tail = field(init=False)
+    backlog: list[dict[str, str]] = field(default_factory=list)
+    """Every event pushed for this run, for a monitor that connects late."""
+    watchers: list[MemoryObjectSendStream[dict[str, str]]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.tail = Tail(self.out / "events.jsonl")
@@ -225,6 +233,13 @@ class Runs:
         self.runs: dict[str, Run] = {}
 
     async def push(self, content: str, meta: dict[str, str]) -> None:
+        """To the channel, and to every monitor of the run."""
+        event = {**meta, "text": content}
+        run = self.runs.get(meta["run"])
+        if run is not None:
+            run.backlog.append(event)
+            for watcher in run.watchers:
+                watcher.send_nowait(event)
         notification = JSONRPCNotification(
             jsonrpc="2.0", method=CHANNEL, params={"content": content, "meta": meta}
         )
@@ -242,6 +257,13 @@ class Runs:
         log.close()
         run = Run(id=out.name, out=out, process=process)
         self.runs[run.id] = run
+        # Bound before `start` answers, so a monitor started on the reply
+        # finds the socket.
+        path = out / MONITOR_SOCKET
+        with reachable(path) as name:
+            listener = await anyio.create_unix_listener(name)
+        path.chmod(0o600)
+        self.group.start_soon(listener.serve, lambda stream: _monitor(run, stream))
         self.group.start_soon(self._watch, run)
         return run
 
@@ -279,6 +301,30 @@ class Runs:
     async def stop_all(self) -> None:
         for run in self.runs.values():
             await _stop(run)
+
+
+async def _monitor(run: Run, stream: SocketStream) -> None:
+    """One `uml monitor`: the backlog, then each event, until the verdict."""
+    send, receive = anyio.create_memory_object_stream[dict[str, str]](math.inf)
+    # No await between the copy and the append, so no event falls between.
+    backlog = list(run.backlog)
+    run.watchers.append(send)
+    try:
+        async with stream, receive:
+            for event in backlog:
+                await stream.send(json.dumps(event).encode() + b"\n")
+                if event.get("event") in TERMINAL:
+                    return
+            async for event in receive:
+                await stream.send(json.dumps(event).encode() + b"\n")
+                if event.get("event") in TERMINAL:
+                    return
+    except (anyio.BrokenResourceError, anyio.ClosedResourceError):
+        # The monitor went away first; that ends only its own stream.
+        return
+    finally:
+        run.watchers.remove(send)
+        send.close()
 
 
 async def _stop(run: Run) -> None:
@@ -360,7 +406,8 @@ def build(runs_holder: list[Runs]) -> FastMCP:
         (`UML_<NAME>`), or `UMBRELLA_DEV` to build against a working copy.
         `kernel` boots a kernel from a working tree instead of Nix's:
         `linux` from a UML build, or a bzImage with virtio built in.
-        Events arrive on the uml channel; `state` and `events` answer
+        Events arrive on the uml channel, and `monitor` in the reply is a
+        command that prints the same events; `state` and `events` answer
         meanwhile."""
         written = _spec(Path(str(spec))) if spec is not None else {}
         name = (attr or str(written.get("name", "run"))).replace(".", "-")
@@ -379,7 +426,8 @@ def build(runs_holder: list[Runs]) -> FastMCP:
             kernel=os.path.abspath(kernel) if kernel else None,
         )
         run = await runs().start(argv, out, env or {})
-        return {"run": run.id, "out": str(out)}
+        monitor = shlex.join([sys.executable, "-m", "uml.cli", "monitor", str(out)])
+        return {"run": run.id, "out": str(out), "monitor": monitor}
 
     @server.tool()
     async def state(run: str) -> dict[str, Any]:

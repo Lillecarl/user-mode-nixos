@@ -121,8 +121,15 @@ only when started from this directory with:
 claude --dangerously-load-development-channels server:uml
 ```
 
-Without the flag the tools still work; poll `state`. `nix build --file .
-mcp-check` drives the server over raw JSON-RPC against a guest.
+Without the flag the tools still work, and `uml monitor` carries the
+same events. `start` returns it as `monitor`, a command line: run that
+in Claude Code's Monitor tool. Each run has `<out>/monitor.sock`, served
+by the `uml-mcp` that started it; `uml monitor <out|run id>` replays the
+run's events so far, prints each one as one line (`--json` for JSONL)
+and exits with the verdict: 0 passed, 1 failed, 2 exited without one,
+3 the stream ended first. `uml/monitor.py` is the client. `nix build
+--file . mcp-check` drives the server over raw JSON-RPC against a guest,
+and checks a monitor prints exactly the channel's events.
 
 ## Getting evidence out of a session
 

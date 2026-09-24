@@ -1,11 +1,13 @@
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
+import anyio
 import pytest
 
 from uml_eval.cli import explain
-from uml_eval.server import channel_event, run_argv, select, why_it_exited
+from uml_eval.server import _monitor, channel_event, run_argv, select, why_it_exited
 
 
 class TestAnEvaluationError:
@@ -203,3 +205,56 @@ class TestRunArgv:
                 offline=False,
                 pytest_args=[],
             )
+
+
+@pytest.fixture
+def anyio_backend() -> str:
+    return "asyncio"
+
+
+async def _read_lines(stream) -> list[dict]:
+    buffer = b""
+    while True:
+        try:
+            buffer += await stream.receive()
+        except anyio.EndOfStream:
+            return [json.loads(raw) for raw in buffer.splitlines()]
+
+
+@pytest.mark.anyio
+async def test_a_monitor_gets_the_backlog_then_each_event_until_the_verdict(tmp_path: Path):
+    run = SimpleNamespace(
+        backlog=[{"run": "r", "event": "progress", "text": "phase boot started"}],
+        watchers=[],
+    )
+    path = str(tmp_path / "monitor.sock")
+    async with await anyio.create_unix_listener(path) as listener, anyio.create_task_group() as group:
+        group.start_soon(listener.serve, lambda stream: _monitor(run, stream))
+        with anyio.fail_after(5):
+            client = await anyio.connect_unix(path)
+            while not run.watchers:
+                await anyio.sleep(0.01)
+            live = {"run": "r", "event": "finished", "passed": "true", "text": "run passed"}
+            run.backlog.append(live)
+            run.watchers[0].send_nowait(live)
+            async with client:
+                lines = await _read_lines(client)
+        group.cancel_scope.cancel()
+    assert [event["event"] for event in lines] == ["progress", "finished"]
+    assert run.watchers == []
+
+
+@pytest.mark.anyio
+async def test_a_monitor_of_a_finished_run_gets_the_backlog_and_an_end(tmp_path: Path):
+    run = SimpleNamespace(
+        backlog=[{"run": "r", "event": "exited", "text": "run exited 1 without a verdict:"}],
+        watchers=[],
+    )
+    path = str(tmp_path / "monitor.sock")
+    async with await anyio.create_unix_listener(path) as listener, anyio.create_task_group() as group:
+        group.start_soon(listener.serve, lambda stream: _monitor(run, stream))
+        with anyio.fail_after(5):
+            async with await anyio.connect_unix(path) as client:
+                lines = await _read_lines(client)
+        group.cancel_scope.cancel()
+    assert [event["event"] for event in lines] == ["exited"]

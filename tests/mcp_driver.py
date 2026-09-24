@@ -90,6 +90,11 @@ async def main(server: str, spec: str) -> None:
     started = await client.tool("start", spec=spec)
     run = started["run"]
     print(f"ok: started {run}", flush=True)
+    # The channel's events without channels: the command `start` gave,
+    # in a shell, as Claude Code's Monitor runs it.
+    watcher = await asyncio.create_subprocess_shell(
+        started["monitor"] + " --json", stdout=asyncio.subprocess.PIPE
+    )
 
     paused = await asyncio.wait_for(client.until("paused"), 600)
     if paused["meta"].get("run") != run:
@@ -130,6 +135,22 @@ async def main(server: str, spec: str) -> None:
     if finished["meta"].get("passed") != "false":
         fail(f"the verdict is wrong: {finished}")
     print(f"ok: a channel event gave the verdict: {finished['content']}", flush=True)
+
+    output, _ = await asyncio.wait_for(watcher.communicate(), 60)
+    watched = [json.loads(line) for line in output.decode().splitlines()]
+    heard = [{**p["meta"], "text": p["content"]} for p in client.channel if p["meta"].get("run") == run]
+    if watched != heard:
+        fail(f"the monitor and the channel disagree:\n{watched}\n{heard}")
+    if watcher.returncode != 1:
+        fail(f"the monitor exited {watcher.returncode} for a failed run, not 1")
+    print(f"ok: the monitor printed the channel's {len(watched)} events and exited 1", flush=True)
+
+    late = await asyncio.create_subprocess_shell(started["monitor"], stdout=asyncio.subprocess.PIPE)
+    output, _ = await asyncio.wait_for(late.communicate(), 60)
+    lines = output.decode().splitlines()
+    if late.returncode != 1 or len(lines) != len(heard):
+        fail(f"a monitor after the verdict exited {late.returncode} with {lines}")
+    print(f"ok: a monitor after the verdict replayed it: {lines[-1]}", flush=True)
 
     assert process.stdin is not None
     process.stdin.close()
