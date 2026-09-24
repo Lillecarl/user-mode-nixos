@@ -83,6 +83,23 @@ hand only, and the run records that it is not the check's kernel. `nix
 build --file . kernel-override` proves both directions: a copy boots,
 and a file that is not a kernel fails the boot at once.
 
+To rebuild the kernel as Nix builds it without starting cold each
+time, build `umlKernelCcache` with a cache directory mounted into the
+sandbox:
+
+```sh
+pynix build --file . --attr umlKernelCcache --namespaced \
+  --sandbox-path /ccache=$HOME/.cache/uml-ccache
+```
+
+Measured on 16 cores: 122s cold, 31s after a one-line change (1187 of
+1188 compiles hit). Needs nanopynix with the `--sandbox-path` fix: the
+flag replaced nix.conf's `sandbox-paths`, `/bin/sh` included. It is a
+different derivation from `umlKernel`, whose derivation is unchanged,
+so CI never builds it. Traps, all measured: ccache on the config
+derivation breaks `.config`; `buildFlags` carry their own `CC=`; `env`
+does not export under structured attributes.
+
 That last half found a bug: the UML bridge never watched its kernel
 child, so a kernel that failed to start, panicked or powered off left
 the runner waiting out its whole boot timeout. The bridge now exits with

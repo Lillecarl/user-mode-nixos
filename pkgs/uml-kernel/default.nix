@@ -6,15 +6,28 @@
   stdenv,
   lib,
   linuxKernel,
+  ccache,
   version,
   modDirVersion,
   src,
   # UML is uniprocessor unless asked otherwise; SMP costs boot time and
   # is only worth it for tests that measure parallelism.
   smp ? false,
+  /*
+    A directory inside the build sandbox to keep compiled objects in, or
+    null. Set, the build compiles through ccache and fails at once if the
+    directory is not writable: only a builder that mounts one has it, as
+
+      pynix build --namespaced --sandbox-path /ccache=$HOME/.cache/uml-ccache ...
+
+    A different derivation from the plain kernel, so CI never builds it.
+  */
+  ccacheDir ? null,
 }:
 
 let
+  ccacheCC = "CC=${lib.getExe ccache} ${lib.getExe stdenv.cc}";
+
   baseConfig = with lib.kernel; {
     BINFMT_ELF = yes;
     BINFMT_SCRIPT = yes;
@@ -283,10 +296,13 @@ let
     IP6_NF_NAT = yes;
   };
 
-  smpConfig = lib.optionalAttrs smp (with lib.kernel; {
-    SMP = yes;
-    NR_CPUS = freeform "64";
-  });
+  smpConfig = lib.optionalAttrs smp (
+    with lib.kernel;
+    {
+      SMP = yes;
+      NR_CPUS = freeform "64";
+    }
+  );
 in
 
 (linuxKernel.buildLinux {
@@ -311,13 +327,52 @@ in
   ];
   structuredExtraConfig = baseConfig // containerConfig // smpConfig;
   extraMeta.platforms = lib.platforms.linux;
-}).overrideAttrs (_: {
-  installTargets = [ ];
-  preInstall = "";
-  installPhase = ''
-    mkdir -p $out $dev $modules
-    cp -v linux $out/
-    cp -v System.map $out/
-    cp -v .config $out/config
-  '';
-})
+}).overrideAttrs
+  (
+    old:
+    {
+      installTargets = [ ];
+      preInstall = "";
+      installPhase = ''
+        mkdir -p $out $dev $modules
+        cp -v linux $out/
+        cp -v System.map $out/
+        cp -v .config $out/config
+      '';
+    }
+    # Only when asked, so the plain kernel's derivation is the one CI builds.
+    // lib.optionalAttrs (ccacheDir != null) {
+      # Here and not in `extraMakeFlags`, which the config derivation
+      # shares: there ccache had no directory, every compiler probe
+      # failed, and `.config` was never written. The last `CC=` on make's
+      # command line wins, and `buildFlags` follow `makeFlags` there and
+      # end in `extraMakeFlags` -- measured, only the configure phase's
+      # 117 calls reached ccache until both carried it.
+      makeFlags = old.makeFlags ++ [ ccacheCC ];
+      buildFlags = old.buildFlags ++ [ ccacheCC ];
+      # Exported here and not through `env`: this derivation has
+      # structured attributes, and measured, `env` reached the build as
+      # unexported shell variables, so the compiler's ccache saw none.
+      # preConfigure, because `make oldconfig` and `make prepare` in the
+      # configure phase already compile through it.
+      preConfigure = (old.preConfigure or "") + ''
+        export CCACHE_DIR=${ccacheDir}
+        # Every build unpacks to the same /build path, so hashing it costs
+        # nothing; relative paths keep hits across a changed source hash.
+        export CCACHE_BASEDIR=/build CCACHE_NOHASHDIR=true
+        # Patching and unpacking give every file a fresh mtime, and ccache's
+        # direct mode refuses a header newer than the compile otherwise.
+        export CCACHE_SLOPPINESS=include_file_mtime,include_file_ctime,time_macros
+        export CCACHE_MAXSIZE=5G
+        if ! touch "$CCACHE_DIR/.writable" 2>/dev/null; then
+          echo "ccacheDir ${ccacheDir} is not writable in the sandbox; build with" >&2
+          echo "  pynix build --namespaced --sandbox-path ${ccacheDir}=<a host directory>" >&2
+          exit 1
+        fi
+        ${lib.getExe ccache} --zero-stats
+      '';
+      postBuild = (old.postBuild or "") + ''
+        ${lib.getExe ccache} --show-stats
+      '';
+    }
+  )

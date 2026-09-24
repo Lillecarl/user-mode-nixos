@@ -1166,6 +1166,19 @@ tests
   # jobs.
   umlKernel = k8sConfig.system.build.umlKernel;
 
+  /*
+    The same kernel, compiled through ccache into `/ccache`, for a patch
+    series rebuilt as CI builds it but without starting cold each time.
+    Only a builder that mounts the directory can build it:
+
+      pynix build --file . --attr umlKernelCcache --namespaced \
+        --sandbox-path /ccache=$HOME/.cache/uml-ccache
+
+    Measured: 122s cold, 31s after a one-line change. `--kernel` with
+    `make ARCH=um` in a tree is still the inner loop.
+  */
+  umlKernelCcache = k8sConfig.system.build.umlKernel.override { ccacheDir = "/ccache"; };
+
   # What CI builds. `flake.nix` re-exports this as both packages and checks.
   checks = tests;
 
