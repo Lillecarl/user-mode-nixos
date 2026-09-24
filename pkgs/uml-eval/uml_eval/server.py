@@ -237,7 +237,7 @@ class Runs:
         if not run.finished:
             # Died before a verdict: an evaluation error, a crash. The
             # reason is at the end of what it printed.
-            tail = _last_lines(run.out / "terminal.log", 15)
+            tail = why_it_exited(_read(run.out / "terminal.log"))
             await self.push(
                 f"run exited {run.process.returncode} without a verdict:\n{tail}",
                 {"run": run.id, "event": "exited"},
@@ -273,11 +273,25 @@ def _spec_name(spec: Path) -> str:
         return "run"
 
 
-def _last_lines(path: Path, count: int) -> str:
+def _read(path: Path) -> str:
     try:
-        return "\n".join(path.read_text(errors="replace").splitlines()[-count:])
+        return path.read_text(errors="replace")
     except OSError:
         return ""
+
+
+def why_it_exited(output: str, lines: int = 15) -> str:
+    """The part of a dead run's output that says why.
+
+    An evaluation failure is printed point first by `uml-eval`, with the
+    Nix trace after it, so its opening lines are the ones to show; the
+    last lines would be the trace. Anything else died at the end.
+    """
+    text = output.splitlines()
+    for index, line in enumerate(text):
+        if line.startswith("[uml] evaluation failed:"):
+            return "\n".join(text[index : index + 4])
+    return "\n".join(text[-lines:])
 
 
 def _reply(reply: Reply) -> dict[str, Any]:

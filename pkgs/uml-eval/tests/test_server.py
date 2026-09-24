@@ -4,7 +4,34 @@ from pathlib import Path
 
 import pytest
 
-from uml_eval.server import channel_event, run_argv, select
+from uml_eval.cli import explain
+from uml_eval.server import channel_event, run_argv, select, why_it_exited
+
+
+class TestAnEvaluationError:
+    # What Nix printed for an `after` naming a phase that does not exist,
+    # measured through `uml-mcp`: the point was the last of 60 lines.
+    NIX = (
+        "\x1b[31;1merror:\x1b[0m\n"
+        "       … while calling the 'derivationStrict' builtin\n"
+        "         at /nix/store/x/lib/customisation.nix:405:12:\n"
+        "       \x1b[31;1merror:\x1b[0m uml: these phases are named in an `after`"
+        " and do not exist: bot."
+    )
+
+    def test_the_point_comes_first_without_colour(self):
+        text = explain(self.NIX)
+        assert text.startswith("error: uml: these phases")
+        assert "\x1b" not in text
+        assert "customisation.nix" in text, "the trace is kept, after the point"
+
+    def test_the_channel_shows_the_point_not_the_trace(self):
+        output = "[uml] evaluating broken\n[uml] evaluation failed: " + explain(self.NIX) + "\n"
+        assert "do not exist: bot" in why_it_exited(output)
+
+    def test_any_other_death_shows_the_end(self):
+        output = "\n".join(f"line {n}" for n in range(40))
+        assert why_it_exited(output).splitlines()[-1] == "line 39"
 
 
 def event(kind: str, **fields: object) -> dict:

@@ -21,6 +21,7 @@ environment the same way here as there.
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 import time
 from dataclasses import dataclass
@@ -112,6 +113,28 @@ async def resolve(file: Path, attr: list[str]) -> str:
         return await target.attr("spec").realise_string()
 
 
+ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def explain(error: str) -> str:
+    """A Nix error with its point first.
+
+    Nix prints the stack from the outside in, so the line that says what
+    is wrong comes last, under a trace of `writeTextFile` and `//`. A
+    reader -- a person, or an agent reading a channel event that shows
+    the last lines -- wants it first. Colour codes go too: this text
+    lands in files and events, not only on a terminal.
+    """
+    plain = ANSI.sub("", error).rstrip()
+    lines = plain.splitlines()
+    last = max((i for i, line in enumerate(lines) if line.lstrip().startswith("error:")), default=None)
+    if last is None:
+        return plain
+    point = "\n".join(lines[last:]).strip()
+    trace = "\n".join(lines[:last]).rstrip()
+    return f"{point}\n\n{trace}" if trace else point
+
+
 def say(text: str) -> None:
     # Before a session exists, so there is no `emit` to go through yet.
     print(f"[uml] {text}", file=sys.stderr, flush=True)
@@ -124,7 +147,7 @@ def main(argv: list[str] | None = None) -> None:
     try:
         spec = anyio.run(resolve, request.file, request.attr)
     except NixError as error:
-        say(f"evaluation failed:\n{error}")
+        say(f"evaluation failed: {explain(str(error))}")
         raise SystemExit(1) from None
     say(f"evaluated and built in {time.monotonic() - started:.1f}s")
     uml_cli.main([request.command, "--spec", spec, *request.rest])
