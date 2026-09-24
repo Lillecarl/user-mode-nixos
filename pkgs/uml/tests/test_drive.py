@@ -224,6 +224,121 @@ class TestBreakpoints:
         assert not (tmp_path / SOCKET).exists()
 
 
+def parallel_session(**phases: list[str]) -> FakeSession:
+    """Phases on guests `a` and `b`, each on the guests named, all after `boot`."""
+    session = FakeSession()
+    session.spec = Spec(
+        machines=[{"name": "a"}, {"name": "b"}],
+        phases=[
+            PhaseSpec(name="boot", script=Path("x")),
+            *(
+                PhaseSpec(name=name, script=Path("x"), nodes=nodes, after=["boot"])
+                for name, nodes in phases.items()
+            ),
+            PhaseSpec(name="end", script=Path("x"), after=list(phases)),
+        ],
+    )
+    session.state = {phase.name: PhaseState.PENDING for phase in session.spec.phases}
+    return session
+
+
+class Overlap:
+    """A `run` that records how many phases were running at once."""
+
+    def __init__(self, session: FakeSession, fail: str | None = None) -> None:
+        self.session = session
+        self.fail = fail
+        self.now: set[str] = set()
+        self.most = 0
+        self.seen_beside: dict[str, set[str]] = {}
+
+    async def __call__(self, phase: PhaseSpec) -> PhaseState:
+        self.now.add(phase.name)
+        self.most = max(self.most, len(self.now))
+        self.seen_beside[phase.name] = set(self.now) - {phase.name}
+        await anyio.sleep(0 if phase.name == self.fail else 0.05)
+        self.seen_beside[phase.name] |= self.now - {phase.name}
+        self.now.discard(phase.name)
+        self.session.ran.append(phase.name)
+        state = PhaseState.FAILED if phase.name == self.fail else PhaseState.PASSED
+        self.session.state[phase.name] = state
+        return state
+
+
+@pytest.mark.anyio
+class TestPhasesAtOnce:
+    async def test_disjoint_guests_run_together(self):
+        session = parallel_session(left=["a"], right=["b"])
+        run = Overlap(session)
+        session.run = run  # ty: ignore[invalid-assignment]
+        with anyio.fail_after(5):
+            await drive(session)
+        assert run.seen_beside["left"] == {"right"}
+        assert run.most == 2
+
+    async def test_a_dependent_waits_for_every_dependency(self):
+        session = parallel_session(left=["a"], right=["b"])
+        run = Overlap(session)
+        session.run = run  # ty: ignore[invalid-assignment]
+        await drive(session)
+        assert session.ran[-1] == "end"
+        assert run.seen_beside["end"] == set()
+
+    async def test_phases_that_declare_nothing_run_one_at_a_time(self):
+        """Every session written before `nodes` existed."""
+        session = parallel_session(left=[], right=[])
+        run = Overlap(session)
+        session.run = run  # ty: ignore[invalid-assignment]
+        await drive(session)
+        assert run.most == 1
+
+    async def test_a_shared_guest_is_a_queue(self):
+        session = parallel_session(left=["a"], right=["a", "b"])
+        run = Overlap(session)
+        session.run = run  # ty: ignore[invalid-assignment]
+        await drive(session)
+        assert run.most == 1
+
+    async def test_serial_runs_one_at_a_time(self):
+        session = parallel_session(left=["a"], right=["b"])
+        run = Overlap(session)
+        session.run = run  # ty: ignore[invalid-assignment]
+        await drive(session, serial=True)
+        assert run.most == 1
+        assert session.ran == ["boot", "left", "right", "end"], "not the order Nix sorted"
+
+    async def test_a_failure_pauses_only_once_the_others_have_ended(self, tmp_path: Path):
+        """Paused means nothing is running. `exec` against a guest a phase
+        is still driving is the race breakpoints exist to avoid."""
+        session = parallel_session(left=["a"], right=["b"])
+        session.out = tmp_path
+        run = Overlap(session, fail="left")
+        session.run = run  # ty: ignore[invalid-assignment]
+        socket = tmp_path / SOCKET
+        async with anyio.create_task_group() as group:
+            group.start_soon(lambda: drive(session, break_on_failure=True))
+            await until_paused(socket)
+            reply = await request(socket, Op.STATE)
+            assert reply.state is not None
+            assert reply.state["left"] == "failed"
+            assert reply.state["right"] == "passed", "paused while `right` still ran"
+            assert (await request(socket, Op.CONTINUE)).ok
+
+    async def test_a_breakpoint_holds_back_only_its_phase(self, tmp_path: Path):
+        session = parallel_session(left=["a"], right=["b"])
+        session.out = tmp_path
+        run = Overlap(session)
+        session.run = run  # ty: ignore[invalid-assignment]
+        socket = tmp_path / SOCKET
+        async with anyio.create_task_group() as group:
+            group.start_soon(lambda: drive(session, breaks=["end"]))
+            await until_paused(socket)
+            assert "end" not in session.ran
+            assert {"left", "right"} <= set(session.ran)
+            await request(socket, Op.CONTINUE)
+        assert session.ran[-1] == "end"
+
+
 @pytest.mark.anyio
 class TestPendingIsAskedAgain:
     async def test_a_phase_marked_done_mid_loop_is_not_run(self):

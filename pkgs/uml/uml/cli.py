@@ -25,10 +25,10 @@ from uml_runner import MachineError
 
 from .control import SOCKET, Controller, Op, request
 from .events import Kind, Level
-from .phases import PhaseState, summarise
+from .phases import PhaseState, launchable, ready, summarise
 from .sinks import Broadcast, ConsoleFiles, JsonLines, Junit, Log, Terminal
 from .session import Session, SessionError
-from .spec import Spec, SpecError
+from .spec import PhaseSpec, Spec, SpecError
 
 
 
@@ -90,6 +90,14 @@ def parse(argv: list[str] | None = None) -> argparse.Namespace:
         "--break-on-failure",
         action="store_true",
         help="pause when a phase fails, with the guests up and the state intact",
+    )
+    run.add_argument(
+        "--serial",
+        action="store_true",
+        help=(
+            "one phase at a time, in the order Nix sorted them, even where"
+            " `nodes` would let phases run at once"
+        ),
     )
     run.add_argument(
         "--offline",
@@ -230,7 +238,12 @@ async def run(args: argparse.Namespace) -> int:
         raise SessionError(f"no such phase to break before: {', '.join(sorted(unknown))}")
 
     try:
-        await drive(session, breaks=args.breaks, break_on_failure=args.break_on_failure)
+        await drive(
+            session,
+            breaks=args.breaks,
+            break_on_failure=args.break_on_failure,
+            serial=args.serial,
+        )
         for line in session.report.summary().splitlines():
             session.emit(Kind.NOTE, line.removeprefix("[time] "))
         session.emit(Kind.NOTE, summarise(session.state))
@@ -244,6 +257,7 @@ async def drive(
     *,
     breaks: Collection[str] = (),
     break_on_failure: bool = False,
+    serial: bool = False,
 ) -> None:
     """Boot, run what is pending, write the evidence, put the guests down.
 
@@ -262,7 +276,7 @@ async def drive(
         if control is not None:
             await group.start(control.serve)
         try:
-            await _sequence(session, control, set(breaks), break_on_failure)
+            await _sequence(session, control, set(breaks), break_on_failure, serial)
         finally:
             group.cancel_scope.cancel()
 
@@ -272,30 +286,14 @@ async def _sequence(
     control: Controller | None,
     breaks: set[str],
     break_on_failure: bool,
+    serial: bool = False,
 ) -> None:
-    paused_before: set[str] = set()
     try:
         # Inside the `try`, not before it. `_start_all` lets every guest
         # settle before reporting, so a failed boot can leave others
         # running -- and outside this block nothing would ever stop them.
         await session.boot()
-        # Asked again every time, not snapshotted. A phase that failed
-        # marks its dependents skipped *while this loop runs*, and a list
-        # taken before the loop would still hold them -- which ran
-        # `check` against a cluster that had already failed. Caught by
-        # the guest test; the pure tests could not see it, because
-        # `skipped_by` was right and the driver ignored the answer.
-        while todo := session.pending():
-            phase = todo[0]
-            if control is not None and phase.name in breaks - paused_before:
-                paused_before.add(phase.name)
-                await control.pause(f"before {phase.name}")
-                # Asked again: a phase run by hand while paused changed
-                # what is pending, this one included.
-                continue
-            state = await session.run(phase)
-            if control is not None and break_on_failure and state is PhaseState.FAILED:
-                await control.pause(f"after {phase.name} failed")
+        await _schedule(session, control, breaks, break_on_failure, serial)
     except MachineError as error:
         # A guest that would not boot. Every phase stays pending, so the
         # run fails on its own account below; this only keeps a traceback
@@ -311,6 +309,84 @@ async def _sequence(
             await session.drain()
             session.write_output()
             await session.teardown()
+
+
+async def _schedule(
+    session: Session,
+    control: Controller | None,
+    breaks: set[str],
+    break_on_failure: bool,
+    serial: bool,
+) -> None:
+    """Start every phase that may start, and again each time one ends.
+
+    Not in waves: a wave waits for its slowest phase before the next
+    starts, which gives the gain back on any graph deeper than one level.
+
+    What is ready is asked again every time, never snapshotted. A phase
+    that failed marks its dependents skipped *while this runs*, and a list
+    taken before would still hold them -- which once ran `check` against a
+    cluster that had already failed.
+
+    **A pause waits for quiet.** A breakpoint or a failure stops new
+    phases, and the pause begins when the running ones have ended. So
+    paused always means nothing is running, and `exec` never races a phase
+    on the same guest.
+    """
+    every = frozenset(machine["name"] for machine in session.spec.machines)
+    running: dict[str, PhaseSpec] = {}
+    failed: list[str] = []
+    paused_before: set[str] = set()
+    changed = anyio.Event()
+
+    async def one(phase: PhaseSpec) -> None:
+        try:
+            if await session.run(phase) is PhaseState.FAILED:
+                failed.append(phase.name)
+        finally:
+            del running[phase.name]
+            changed.set()
+
+    async with anyio.create_task_group() as group:
+        while True:
+            candidates = [p for p in ready(session.spec.phases, session.state) if p.name not in running]
+            reason = None
+            if control is not None:
+                if break_on_failure and failed:
+                    reason = f"after {', '.join(failed)} failed"
+                elif stop := [p.name for p in candidates if p.name in breaks - paused_before]:
+                    reason = f"before {stop[0]}"
+            if reason is not None and control is not None:
+                if not running:
+                    if reason.startswith("before "):
+                        paused_before.add(reason.removeprefix("before "))
+                    failed.clear()
+                    # Asked again afterwards: a phase run by hand while
+                    # paused changed what is ready.
+                    await control.pause(reason)
+                    continue
+                todo = []
+            else:
+                todo = launchable(candidates, running.values(), every)
+                if serial:
+                    todo = todo[:1] if not running else []
+            for phase in todo:
+                running[phase.name] = phase
+                group.start_soon(one, phase, name=f"phase {phase.name}")
+            if not running:
+                break
+            await changed.wait()
+            changed = anyio.Event()
+    for name, state in session.state.items():
+        if state is PhaseState.PENDING:
+            # Only a spec not from Nix can do this: Nix asserts every
+            # `after` names a phase.
+            session.emit(
+                Kind.ERROR,
+                f"{name} never ran: something in its `after` never finished",
+                level=Level.ERROR,
+                phase=name,
+            )
 
 
 async def ctl(args: argparse.Namespace) -> int:

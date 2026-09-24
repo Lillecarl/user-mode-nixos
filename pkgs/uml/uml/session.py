@@ -580,6 +580,14 @@ class Session:
         if self.vms is None:
             raise SessionError("run before boot")
         wanted = phase.nodes or list(self.vms)
+        missing = [name for name in wanted if name not in self.vms]
+        if missing:
+            # A node whose `networking.hostName` is not its attribute name
+            # boots under the hostname.
+            raise SessionError(
+                f"phase {phase.name} names {', '.join(missing)} in `nodes`;"
+                f" the guests are {', '.join(self.vms)}"
+            )
         vms = Machines((name, self.vms[name]) for name in wanted)
         vms.settings = self.vms.settings
         vms.artifacts = self.vms.artifacts
@@ -596,8 +604,9 @@ class Session:
         per phase is keyed by the phase or by its guests. Which phases
         may overlap is `phases.launchable`'s answer, not this method's.
         """
-        vms = self.view(phase)
-        nodes = list(vms)
+        if self.vms is None:
+            raise SessionError("run before boot")
+        nodes = phase.nodes or list(self.vms)
         await self.drain()
         self.state[phase.name] = PhaseState.RUNNING
         for name in nodes:
@@ -605,6 +614,7 @@ class Session:
         self.emit(Kind.PHASE_STARTED, phase.name, phase=phase.name, nodes=nodes)
         started = time.monotonic()
         try:
+            vms = self.view(phase)
             if phase.pytest is not None:
                 await self._pytest(phase.name, phase.pytest, vms)
             elif phase.script is not None:
