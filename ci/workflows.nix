@@ -228,6 +228,7 @@ let
           "stream"
           "pytest-phase"
           "breakpoint"
+          "guest-suites"
         ];
         timeoutMinutes = 20;
       })

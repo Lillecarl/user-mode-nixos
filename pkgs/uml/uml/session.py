@@ -42,7 +42,7 @@ from uml_runner import Machine, MachineError, Machines, MachineSpec, Toolchain
 from uml_runner.net import build_lans
 from uml_runner.report import Report
 
-from . import journal
+from . import journal, junit_in
 from .events import Event, Kind, Level
 from .phases import PhaseState, passed, runnable, skipped_by
 from .pytest_plugin import Plugin, arguments, machine_fixtures
@@ -133,6 +133,7 @@ class Session:
         # at once hands the same lines to both.
         self._draining = anyio.Lock()
         self._settled: set[str] = set()
+        self._junit_seen: set[tuple[Path, int]] = set()
 
     # ── events ─────────────────────────────────────────────────────
 
@@ -288,6 +289,10 @@ class Session:
         # record: a script branching on a steer should not have to know
         # where the steer came from.
         vms.knobs = {name: knob.value for name, knob in self.spec.knobs.items()}
+        # One phase's findings for a later one -- a process census taken
+        # before the suites, read by the phase that looks for leaks.
+        vms.shared = {}
+        vms.phase = None
 
         # Serially, and before anything spawns: picking a free host
         # address means binding a port and letting go of it again, so two
@@ -374,6 +379,57 @@ class Session:
                 await anyio.sleep(0.02)
         await self.drain()
 
+    def _cases_from_guests(self, phase: str) -> None:
+        """Every JUnit file a guest wrote during this phase, as cases.
+
+        See `junit_in`. Keyed on the file and its mtime, so a suite that
+        rewrites `unit.xml` in a later phase is read again, and a file
+        read once is not read twice.
+        """
+        for path in sorted(self.artifacts.glob(f"*/{junit_in.DIRECTORY}/*.xml")):
+            try:
+                key = (path, path.stat().st_mtime_ns)
+            except OSError:
+                continue
+            if key in self._junit_seen:
+                continue
+            self._junit_seen.add(key)
+            machine = path.parent.parent.name
+            try:
+                cases = junit_in.parse(path.read_text(errors="replace"))
+            except ValueError as error:
+                self.emit(
+                    Kind.ERROR,
+                    f"{path.name} from {machine}: {error}",
+                    level=Level.ERROR,
+                    machine=machine,
+                    phase=phase,
+                )
+                continue
+            for case in cases:
+                bad = case.outcome in ("failed", "error")
+                fields = {
+                    key: value
+                    for key, value in (
+                        ("message", case.message),
+                        ("error", case.error),
+                        ("reason", case.reason),
+                    )
+                    if value is not None
+                }
+                self.emit(
+                    Kind.CASE,
+                    case.name,
+                    level=Level.ERROR if bad else Level.DETAIL,
+                    machine=machine,
+                    phase=phase,
+                    seconds=case.seconds,
+                    outcome=case.outcome,
+                    when="guest",
+                    file=path.name,
+                    **fields,
+                )
+
     def _in_case(self) -> dict[str, str]:
         return {"case": self.case} if self.case is not None else {}
 
@@ -438,6 +494,8 @@ class Session:
         await self.drain()
         self.state[phase.name] = PhaseState.RUNNING
         self.running = phase.name
+        # One script may serve several phases, told apart by this.
+        self.vms.phase = phase.name
         self.emit(Kind.PHASE_STARTED, phase.name, phase=phase.name)
         started = time.monotonic()
         try:
@@ -449,6 +507,7 @@ class Session:
         except Exception as error:
             took = time.monotonic() - started
             await self.settle()
+            self._cases_from_guests(phase.name)
             self._record(phase, started)
             self.state[phase.name] = PhaseState.FAILED
             self.errors[phase.name] = f"{type(error).__name__}: {error}"
@@ -501,6 +560,7 @@ class Session:
             raise
         took = time.monotonic() - started
         await self.settle()
+        self._cases_from_guests(phase.name)
         self.running = None
         self._record(phase, started)
         self.state[phase.name] = PhaseState.PASSED

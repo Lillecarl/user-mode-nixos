@@ -26,7 +26,7 @@ import tempfile
 from collections import defaultdict
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Awaitable, Callable
+from typing import Any, Awaitable, Callable
 
 from .forward import ForwardError
 from .machine import Machine, MachineError, MachineSpec, Toolchain
@@ -74,6 +74,18 @@ class Machines(dict[str, Machine]):
     what a sandboxed check always gets. Set by ``mkSession``; empty under
     ``mkTest``, which has ``env`` instead."""
 
+    shared: dict[str, Any]
+    """One phase's findings for a later phase of the same run.
+
+    The phases are separate modules, so a value one computes -- a
+    process census taken before the suites -- reaches the phase that
+    compares against it only through here. Set by ``mkSession``."""
+
+    phase: str | None
+    """The phase running now. One script can serve several phases, told
+    apart by name: ``mkSession`` phases generated from one list in Nix.
+    ``None`` under ``mkTest``."""
+
     argv: list[str]
     """What was left on the command line after ``--spec``.
 
@@ -119,6 +131,10 @@ async def machines(spec: dict):
     vms.artifacts = artifacts
     vms.env = _impurities(spec.get("impurities", []))
     vms.argv = list(spec.get("argv", []))
+    # Declared, so set: an attribute read before it was assigned is an
+    # AttributeError, not an empty value.
+    vms.shared = {}
+    vms.phase = None
     # Serially, and before anything spawns: picking a free host address
     # means binding a port and letting go of it again, so two guests
     # doing it at once would both be told the same address is free.

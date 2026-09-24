@@ -707,6 +707,68 @@ let
         '';
 
     /*
+      Can a suite that has to run inside a guest report like one that
+      runs on the host?
+
+      pynixd's suites start daemons and build into stores they make, so
+      they run in the guest and write JUnit there. The session reads
+      `/artifacts/junit/*.xml` back at the end of each phase and each
+      test becomes a case: an event with its machine and phase, and a
+      case in the run's own junit.xml.
+
+      Also the two things generating phases from one list needs: one
+      script serving two phases through `vms.phase`, and a value crossing
+      from one phase to the next through `vms.shared`.
+    */
+    guest-suites =
+      let
+        run = mkSession {
+          name = "guest-suites";
+          nodes.one = { };
+          phases = {
+            census = {
+              script = ./tests/phases/suite.py;
+              after = [ "boot" ];
+            };
+            suite = {
+              script = ./tests/phases/suite.py;
+              after = [ "census" ];
+            };
+          };
+        };
+      in
+      pkgs.runCommand "uml-check-guest-suites"
+        {
+          nativeBuildInputs = [
+            pkgs.jq
+            pkgs.libxml2
+          ];
+          passthru.session = run;
+        }
+        ''
+          a=${run.attempt}
+          fail() { echo "$*" >&2; exit 1; }
+          jq -r '.phases[] | "\(.name)\t\(.state)"' $a/phases.json
+          [ "$(cat $a/status)" = 0 ] || fail "the run failed; the script's verdict is the phase's, not the cases'"
+          echo "ok: both phases passed, one script serving both"
+
+          jq -c 'select(.kind == "case")' $a/events.jsonl | tee cases
+          [ "$(wc -l < cases)" = 2 ] || fail "expected the two cases the guest wrote"
+          jq -e 'select(.text == "inner.test_a::test_bad" and .data.outcome == "failed"
+                        and .machine == "one" and .phase == "suite")' cases > /dev/null \
+            || fail "the failed case lost its outcome, machine or phase"
+          echo "ok: the guest's JUnit became cases, with machine and phase"
+
+          n=$(xmllint --xpath 'count(//testcase[@classname="guest-suites.suite"])' $a/junit.xml)
+          [ "$n" = 2 ] || fail "junit.xml holds $n of the guest's cases, expected 2"
+          xmllint --xpath 'string(//testcase[@name="inner.test_a::test_bad"]/failure/@message)' $a/junit.xml \
+            | grep -q "assert 1 == 2" || fail "the failure message did not survive"
+          echo "ok: and they are cases in the run's own junit.xml"
+
+          touch $out
+        '';
+
+    /*
       Can a person reach into a paused run?
 
       The loop this is for: changing a phase costs an evaluation and a

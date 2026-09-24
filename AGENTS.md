@@ -168,6 +168,18 @@ An async generator fixture's setup and teardown are two separate portal
 calls, so an anyio task group held open across its `yield` does not
 work.
 
+A suite that must run *inside* a guest -- one that starts daemons, or
+builds into stores it makes -- writes JUnit to `/artifacts/junit/*.xml`
+there. The session reads each new file at the end of the phase, and every
+test becomes a `case` event with its machine and phase and a case in the
+run's `junit.xml`. Any runner that writes JUnit works. The phase's verdict
+is still its script's.
+
+`vms.phase` names the phase running, so one script can serve phases
+generated from a list in Nix. `vms.shared` is a dict that survives from
+one phase to the next. `nix build --file . guest-suites` proves all
+three.
+
 ## VCS
 
 This project uses jj (Jujutsu), not git. Do not use git commands.
