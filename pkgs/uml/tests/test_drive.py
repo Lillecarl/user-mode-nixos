@@ -14,6 +14,7 @@ import pytest
 from uml_runner import MachineError
 
 from uml.cli import drive
+from uml.control import SOCKET, Op, request
 from uml.phases import PhaseState
 from uml.spec import PhaseSpec, Spec
 
@@ -21,9 +22,15 @@ from uml.spec import PhaseSpec, Spec
 class FakeSession:
     """Enough of a session to drive, and a record of what was called."""
 
-    def __init__(self, *, boot_error: Exception | None = None) -> None:
+    def __init__(
+        self, *, boot_error: Exception | None = None, out: Path = Path("/nonexistent")
+    ) -> None:
         self.spec = Spec(machines=[], phases=[PhaseSpec(name="one", script=Path("x"))])
         self.state: dict[str, PhaseState] = {"one": PhaseState.PENDING}
+        self.out = out
+        self.vms = None
+        self.errors: dict[str, str] = {}
+        self.ran: list[str] = []
         self.boot_error = boot_error
         self.booted = False
         self.torn_down = False
@@ -50,6 +57,7 @@ class FakeSession:
         ]
 
     async def run(self, phase: PhaseSpec) -> PhaseState:
+        self.ran.append(phase.name)
         self.state[phase.name] = PhaseState.PASSED
         return PhaseState.PASSED
 
@@ -133,6 +141,87 @@ class TestTheJournalFollower:
         session = FakeSession()
         await drive(session)
         assert session.said.index("drain") < session.said.index("write")
+
+
+async def until_paused(socket: Path) -> None:
+    with anyio.fail_after(5):
+        while True:
+            if socket.exists() and (await request(socket, Op.STATE)).result == "paused":
+                return
+            await anyio.sleep(0.01)
+
+
+@pytest.mark.anyio
+class TestBreakpoints:
+    async def test_a_break_pauses_before_the_phase_until_continue(self, tmp_path: Path):
+        session = FakeSession(out=tmp_path)
+        socket = tmp_path / SOCKET
+        async with anyio.create_task_group() as group:
+            group.start_soon(lambda: drive(session, breaks=["one"]))
+            await until_paused(socket)
+            assert session.ran == [], "the phase ran through its breakpoint"
+            reply = await request(socket, Op.EXEC, "21 * 2")
+            assert reply.result == "42"
+            assert (await request(socket, Op.CONTINUE)).ok
+        assert session.ran == ["one"]
+        assert session.torn_down
+        assert not socket.exists(), "the socket outlived the run"
+
+    async def test_a_phase_run_while_paused_is_not_run_again(self, tmp_path: Path):
+        session = FakeSession(out=tmp_path)
+        socket = tmp_path / SOCKET
+        async with anyio.create_task_group() as group:
+            group.start_soon(lambda: drive(session, breaks=["one"]))
+            await until_paused(socket)
+            reply = await request(socket, Op.RUN, "one")
+            assert reply.result == "passed"
+            await request(socket, Op.CONTINUE)
+        assert session.ran == ["one"]
+
+    async def test_a_failure_pauses_with_the_state_intact(self, tmp_path: Path):
+        session = FakeSession(out=tmp_path)
+
+        async def fail(phase: PhaseSpec) -> PhaseState:
+            session.state[phase.name] = PhaseState.FAILED
+            return PhaseState.FAILED
+
+        session.run = fail  # ty: ignore[invalid-assignment]
+        socket = tmp_path / SOCKET
+        async with anyio.create_task_group() as group:
+            group.start_soon(lambda: drive(session, break_on_failure=True))
+            await until_paused(socket)
+            reply = await request(socket, Op.STATE)
+            assert reply.state == {"one": "failed"}
+            assert not session.torn_down, "the guests went down before anyone looked"
+            await request(socket, Op.CONTINUE)
+        assert session.torn_down
+
+    async def test_nothing_but_state_while_running(self, tmp_path: Path):
+        """Two things driving the same guests at once is a race."""
+        session = FakeSession(out=tmp_path)
+        started = anyio.Event()
+        release = anyio.Event()
+
+        async def slow(phase: PhaseSpec) -> PhaseState:
+            started.set()
+            await release.wait()
+            session.state[phase.name] = PhaseState.PASSED
+            return PhaseState.PASSED
+
+        session.run = slow  # ty: ignore[invalid-assignment]
+        socket = tmp_path / SOCKET
+        async with anyio.create_task_group() as group:
+            group.start_soon(lambda: drive(session, break_on_failure=True))
+            await started.wait()
+            reply = await request(socket, Op.EXEC, "1")
+            assert not reply.ok
+            assert "only while paused" in (reply.error or "")
+            release.set()
+
+    async def test_no_socket_without_a_breakpoint(self, tmp_path: Path):
+        session = FakeSession(out=tmp_path)
+        await drive(session)
+        assert not (tmp_path / SOCKET).exists()
 
 
 @pytest.mark.anyio

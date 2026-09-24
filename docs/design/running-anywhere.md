@@ -31,6 +31,7 @@
 11 | Every guest's journal streams to the host while it runs | `uml/journal.py`, `modules/guest.nix` | `stream`: survives SIGKILL, UML and QEMU |
 11 | pytest as a phase | `uml/pytest_plugin.py` | `pytest-phase`, 10 unit tests |
 12 | `uml-eval`: a run by name, evaluated by nanopynix | `pkgs/uml-eval` | by hand: phases, a knob from the environment, `-- -k`; 10 unit tests |
+13 | Breakpoints, and Python injected into a paused run | `uml/control.py` | `breakpoint`, 20 unit tests |
 9
 9 Four bugs were found by building it, and three of them only by running
 9 against a real guest:
@@ -85,14 +86,23 @@
 12 Measured by hand: 6.8 s to 8.0 s to evaluate and build, warm. It
 12 serves the CLI and a future MCP server equally.
 12
-12 It is not yet a session held open. It evaluates once and closes the
-12 nanopynix worker before the guests boot. An MCP server that re-reads
-12 the phases after an edit wants the worker kept, and that is the next
-12 step on this door.
-12
-12 Still open, in the order they look worth doing: the session API's
-12 remaining operations for the MCP server (area 0d), and pytest as the
-12 entrypoint.
+13 It evaluates once. Re-evaluating after an edit is not the loop to
+13 build: a phase edit is a new store path and a guest edit is a new
+13 image. The loop is injection instead. `--break PHASE` and
+13 `--break-on-failure` pause the drive with the guests up, and
+13 `<out>/control.sock` takes `exec` (Python with top-level await, one
+13 namespace for the whole pause), `inject` (a file's `test(vms)` from
+13 the working tree, never the store), `run`, `state` and `continue`.
+13 `uml ctl` is the client. The MCP server is another client of the same
+13 five operations, not a second implementation. Everything done by hand
+13 is an event, so the record of a run includes it.
+13
+13 `--hold` is gone. It slept on failure until ^C and relied on the
+13 kernel to kill the guests; a pause now ends in the same shielded
+13 teardown as every other run.
+13
+13 Still open, in the order they look worth doing: the MCP server over
+13 the control socket, and pytest as the entrypoint.
 9
 1 ## The goal
 1

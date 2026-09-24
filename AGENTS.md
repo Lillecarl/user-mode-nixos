@@ -43,6 +43,29 @@ nothing a consumer uses depends on it: the sandboxed check never
 evaluates. Not a CI check yet, because CI would have to build nanopynix.
 Its unit tests are `nix build --file . uml-eval.tests`.
 
+## Reaching into a paused run
+
+Do not iterate by editing a phase and re-running: that is an evaluation
+and a store path each time, and a guest change is a new image. Pause and
+send Python in:
+
+```sh
+uml-run-mine --out ./o --break check &        # or --break-on-failure
+uml ctl --out ./o state
+uml ctl --out ./o exec 'await one.succeed("systemctl --failed")'
+uml ctl --out ./o exec - < snippet.py         # top-level await; names persist
+uml ctl --out ./o inject ./scratch.py         # a file's test(vms), from the working tree
+uml ctl --out ./o run check                   # a declared phase
+uml ctl --out ./o continue
+```
+
+In scope for `exec`: `session`, `vms`, each guest by name, `anyio`.
+`exec`, `inject` and `run` are refused unless the run is paused. Every
+operation and its output is an event. The socket is `<out>/control.sock`,
+mode 0600, and exists only when a breakpoint was asked for.
+`uml/control.py` is the whole of it; `nix build --file . breakpoint`
+drives it against a guest.
+
 ## Getting evidence out of a session
 
 `grep '\[test\]'` over a build log still works. Prefer the files:

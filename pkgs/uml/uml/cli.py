@@ -16,12 +16,14 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections.abc import Collection
 from pathlib import Path
 
 
 import anyio
 from uml_runner import MachineError
 
+from .control import SOCKET, Controller, Op, request
 from .events import Kind, Level
 from .phases import PhaseState, summarise
 from .sinks import Broadcast, ConsoleFiles, JsonLines, Junit, Log, Terminal
@@ -67,9 +69,17 @@ def parse(argv: list[str] | None = None) -> argparse.Namespace:
         help="run only this phase; repeatable",
     )
     run.add_argument(
-        "--hold",
+        "--break",
+        dest="breaks",
+        action="append",
+        default=[],
+        metavar="PHASE",
+        help="pause before this phase, with the guests up; repeatable. `uml ctl` reaches in",
+    )
+    run.add_argument(
+        "--break-on-failure",
         action="store_true",
-        help="on failure, leave the guests up instead of tearing them down",
+        help="pause when a phase fails, with the guests up and the state intact",
     )
     run.add_argument(
         "--offline",
@@ -98,6 +108,16 @@ def parse(argv: list[str] | None = None) -> argparse.Namespace:
 
     phases = sub.add_parser("phases", help="list the phases and exit")
     phases.add_argument("--spec", type=Path, required=True)
+
+    ctl = sub.add_parser("ctl", help="reach into a run that is paused at a breakpoint")
+    ctl.add_argument("--out", type=Path, required=True, help="the run's --out")
+    ctl.add_argument("op", choices=[str(op) for op in Op])
+    ctl.add_argument(
+        "arg",
+        nargs="?",
+        default="",
+        help="exec: Python, or - for stdin. inject: a file with `test(vms)`. run: a phase",
+    )
     args = parser.parse_args(argv)
     args.pytest_args = extra
     return args
@@ -189,8 +209,13 @@ async def run(args: argparse.Namespace) -> int:
                     state=str(PhaseState.DESELECTED),
                 )
 
+    unknown = set(args.breaks) - {phase.name for phase in session.spec.phases}
+    if unknown:
+        # A misspelled breakpoint is a run that never stops.
+        raise SessionError(f"no such phase to break before: {', '.join(sorted(unknown))}")
+
     try:
-        await drive(session, hold=args.hold)
+        await drive(session, breaks=args.breaks, break_on_failure=args.break_on_failure)
         for line in session.report.summary().splitlines():
             session.emit(Kind.NOTE, line.removeprefix("[time] "))
         session.emit(Kind.NOTE, summarise(session.state))
@@ -199,27 +224,41 @@ async def run(args: argparse.Namespace) -> int:
         sink.close()
 
 
-async def drive(session: Session, *, hold: bool = False) -> None:
+async def drive(
+    session: Session,
+    *,
+    breaks: Collection[str] = (),
+    break_on_failure: bool = False,
+) -> None:
     """Boot, run what is pending, write the evidence, put the guests down.
 
     Separate from `run` so it can be driven with something other than a
     command line -- which is what an MCP server does, and what the test
     for the teardown path does.
 
-    The guests' journals stream beside it for the whole drive, a held
-    one included: a guest left up after a failure keeps logging, and
-    that is often what explains the failure.
+    The guests' journals stream beside it for the whole drive, a pause
+    included: a guest left up after a failure keeps logging, and that is
+    often what explains the failure. The control socket exists only when
+    a breakpoint was asked for.
     """
+    control = Controller(session) if breaks or break_on_failure else None
     async with anyio.create_task_group() as group:
         group.start_soon(session.follow)
+        if control is not None:
+            await group.start(control.serve)
         try:
-            await _sequence(session, hold=hold)
+            await _sequence(session, control, set(breaks), break_on_failure)
         finally:
             group.cancel_scope.cancel()
 
 
-async def _sequence(session: Session, *, hold: bool) -> None:
-    held = False
+async def _sequence(
+    session: Session,
+    control: Controller | None,
+    breaks: set[str],
+    break_on_failure: bool,
+) -> None:
+    paused_before: set[str] = set()
     try:
         # Inside the `try`, not before it. `_start_all` lets every guest
         # settle before reporting, so a failed boot can leave others
@@ -232,9 +271,16 @@ async def _sequence(session: Session, *, hold: bool) -> None:
         # the guest test; the pure tests could not see it, because
         # `skipped_by` was right and the driver ignored the answer.
         while todo := session.pending():
-            if await session.run(todo[0]) is PhaseState.FAILED and hold:
-                held = True
-                break
+            phase = todo[0]
+            if control is not None and phase.name in breaks - paused_before:
+                paused_before.add(phase.name)
+                await control.pause(f"before {phase.name}")
+                # Asked again: a phase run by hand while paused changed
+                # what is pending, this one included.
+                continue
+            state = await session.run(phase)
+            if control is not None and break_on_failure and state is PhaseState.FAILED:
+                await control.pause(f"after {phase.name} failed")
     except MachineError as error:
         # A guest that would not boot. Every phase stays pending, so the
         # run fails on its own account below; this only keeps a traceback
@@ -243,21 +289,34 @@ async def _sequence(session: Session, *, hold: bool) -> None:
         session._replay()
     finally:
         # So `events.jsonl` has the guests' last words before its verdict.
+        # Shielded, so a ^C at a breakpoint still writes the evidence
+        # and puts the guests down rather than leaving it to
+        # `die_with_parent`.
         with anyio.CancelScope(shield=True):
             await session.drain()
-        # Written before the hold, not after: a held session is stopped
-        # with a signal, and nothing after `sleep_forever` runs.
-        session.write_output()
-        if held:
-            session.emit(
-                Kind.NOTE,
-                "held on failure; the guests are up and the state is"
-                " intact. ^C to stop them.",
-                level=Level.ERROR,
-            )
-            await anyio.sleep_forever()
-        else:
+            session.write_output()
             await session.teardown()
+
+
+async def ctl(args: argparse.Namespace) -> int:
+    """One request to a paused run; its output, its value, its error."""
+    arg = sys.stdin.read() if args.arg == "-" else args.arg
+    socket = args.out / SOCKET
+    try:
+        reply = await request(socket, Op(args.op), arg)
+    except OSError as error:
+        print(f"[uml] no run is listening at {socket}: {error}", file=sys.stderr)
+        return 1
+    if reply.output:
+        print(reply.output, end="" if reply.output.endswith("\n") else "\n")
+    if reply.result is not None:
+        print(reply.result)
+    if reply.state:
+        for name, state in reply.state.items():
+            print(f"{name}\t{state}")
+    if reply.error:
+        print(reply.error.rstrip(), file=sys.stderr)
+    return 0 if reply.ok else 1
 
 
 async def phases(args: argparse.Namespace) -> int:
@@ -272,6 +331,8 @@ def main(argv: list[str] | None = None) -> None:
     args = parse(argv)
     if args.command == "phases":
         raise SystemExit(anyio.run(phases, args))
+    if args.command == "ctl":
+        raise SystemExit(anyio.run(ctl, args))
 
     args.out.mkdir(parents=True, exist_ok=True)
     try:
