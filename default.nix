@@ -340,7 +340,7 @@ let
       pkgs.runCommand "uml-check-phase-rules"
         {
           nativeBuildInputs = [ pkgs.jq ];
-          passthru = { inherit run; };
+          passthru.session = run;
         }
         ''
           report=${run.attempt}/phases.json
@@ -447,7 +447,7 @@ let
       pkgs.runCommand "uml-check-only"
         {
           nativeBuildInputs = [ pkgs.jq ];
-          passthru = { inherit run; };
+          passthru.session = run;
         }
         ''
           export HOME="$TMPDIR"
@@ -522,7 +522,7 @@ let
       pkgs.runCommand "uml-check-recipes"
         {
           nativeBuildInputs = [ pkgs.jq ];
-          passthru = { inherit run; };
+          passthru.session = run;
         }
         ''
           report=${run.attempt}/phases.json
@@ -584,7 +584,7 @@ let
       pkgs.runCommand "uml-check-stream"
         {
           nativeBuildInputs = [ pkgs.jq ];
-          passthru = { inherit run; };
+          passthru.session = run;
         }
         ''
           events=${run.attempt}/events.jsonl
@@ -659,7 +659,7 @@ let
             pkgs.jq
             pkgs.libxml2
           ];
-          passthru = { inherit run; };
+          passthru.session = run;
         }
         ''
           a=${run.attempt}
@@ -881,4 +881,15 @@ tests
 
   # Regenerate .github/workflows from ci/workflows.nix.
   render-workflows = ci.renderApp;
+
+  /*
+    Name a run and it is evaluated, built and run, with no `nix build`
+    first:
+
+        nix run --file . uml-eval -- run pytest-phase --out ./out -- -k hostname
+
+    Built on nanopynix, so not a check and not a dependency of anything
+    a consumer uses. `uml-eval.tests` holds its unit tests.
+  */
+  uml-eval = import ./pkgs/uml-eval { inherit pkgs sources; };
 }

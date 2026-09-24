@@ -30,6 +30,7 @@
 10 | A terminal worth reading, with replay on failure | `uml/cli.py` | measured: 350 lines → 53 |
 11 | Every guest's journal streams to the host while it runs | `uml/journal.py`, `modules/guest.nix` | `stream`: survives SIGKILL, UML and QEMU |
 11 | pytest as a phase | `uml/pytest_plugin.py` | `pytest-phase`, 10 unit tests |
+12 | `uml-eval`: a run by name, evaluated by nanopynix | `pkgs/uml-eval` | by hand: phases, a knob from the environment, `-- -k`; 10 unit tests |
 9
 9 Four bugs were found by building it, and three of them only by running
 9 against a real guest:
@@ -76,9 +77,22 @@
 11 pytest as the entrypoint (`pytest --uml-spec`) is the same plugin
 11 with the thread's owner swapped. It is not built yet.
 11
-11 Still open, in the order they look worth doing: the evaluator (area
-11 0b), the session API's remaining operations for the MCP server (area
-11 0d), and pytest as the entrypoint.
+12 The evaluator (area 0b) is a separate front door, `uml-eval`, and not
+12 part of `uml`. nanopynix links Nix, and `uml` is what every sandboxed
+12 check runs. A check must not evaluate, so a consumer of `mkSession`
+12 never builds nanopynix. `uml-eval` builds the attribute's `.run`, so the
+12 phase type check still runs, and then hands the spec to `uml run`.
+12 Measured by hand: 6.8 s to 8.0 s to evaluate and build, warm. It
+12 serves the CLI and a future MCP server equally.
+12
+12 It is not yet a session held open. It evaluates once and closes the
+12 nanopynix worker before the guests boot. An MCP server that re-reads
+12 the phases after an edit wants the worker kept, and that is the next
+12 step on this door.
+12
+12 Still open, in the order they look worth doing: the session API's
+12 remaining operations for the MCP server (area 0d), and pytest as the
+12 entrypoint.
 9
 1 ## The goal
 1

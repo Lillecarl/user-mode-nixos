@@ -25,6 +25,24 @@ pure test cannot see — and it has already earned that: the phase-skip
 rule was correct in `phases.py` while the driver ignored its answer, and
 only `nix build --file . phase-rules` caught it.
 
+## Running a session by name
+
+```sh
+nix run --file . uml-eval -- run pytest-phase --out ./out -- -k hostname
+nix run --file . uml-eval -- phases recipes
+```
+
+`uml-eval` evaluates with nanopynix, builds the attribute's `.run` (so
+the phase type check runs) and hands the spec to `uml run`. A check that
+wraps a session carries it as `.session`, and `uml-eval` steps into it,
+so the check's name works. Evaluation is impure, like `nix build
+--file`, so a knob reads the environment.
+
+It is its own package on nanopynix's Python set (`pkgs/uml-eval`), and
+nothing a consumer uses depends on it: the sandboxed check never
+evaluates. Not a CI check yet, because CI would have to build nanopynix.
+Its unit tests are `nix build --file . uml-eval.tests`.
+
 ## Getting evidence out of a session
 
 `grep '\[test\]'` over a build log still works. Prefer the files:

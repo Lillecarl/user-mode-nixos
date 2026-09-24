@@ -7,6 +7,10 @@ name = "uml"
 version = "0.1.0"
 description = "A session a caller drives: boot guests, run phases, hold, tear down"
 requires-python = ">=3.12"
+# Read by pyproject-nix when `uml-eval` builds this on nanopynix's Python
+# set. `default.nix` beside this file declares the same list for the
+# nixpkgs build; the two must agree.
+dependencies = ["anyio", "pydantic", "pytest", "uml-runner"]
 
 [project.scripts]
 uml = "uml.cli:main"

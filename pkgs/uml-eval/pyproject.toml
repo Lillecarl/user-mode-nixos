@@ -1,0 +1,16 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "uml-eval"
+version = "0.1.0"
+description = "Name a run; it is evaluated, built and run, with no nix build first"
+requires-python = ">=3.12"
+dependencies = ["anyio", "nanopynix", "uml"]
+
+[project.scripts]
+uml-eval = "uml_eval.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["uml_eval"]
