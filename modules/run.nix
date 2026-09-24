@@ -45,6 +45,11 @@ let
   unknown = lib.unique (
     lib.concatMap (phase: lib.subtractLists (lib.attrNames enabled) phase.after) named
   );
+
+  # Neither is a phase that does nothing and passes; both is a guess.
+  ambiguous = map (phase: phase.name) (
+    lib.filter (phase: (phase.script == null) == (phase.pytest == null)) named
+  );
 in
 {
   options = {
@@ -81,8 +86,8 @@ in
       default = { };
       description = ''
         The work, by name. Each phase is a Python module exporting one
-        `test` coroutine, and the runner calls them in the order worked
-        out from `after`.
+        `test` coroutine or a pytest run, and the runner runs them in the
+        order worked out from `after`.
       '';
       type = types.attrsOf (
         types.submodule (
@@ -96,13 +101,58 @@ in
               };
 
               script = mkOption {
-                type = types.path;
+                type = types.nullOr types.path;
+                default = null;
                 description = ''
                   A Python module exporting `async def test(vms: Machines)`.
 
                   Imported, not executed as a script, so it may import
-                  whatever it likes and pyright can check it.
+                  whatever it likes and pyright can check it. Set this or
+                  `pytest`, not both.
                 '';
+              };
+
+              pytest = mkOption {
+                default = null;
+                description = ''
+                  Run pytest against the guests instead of a script.
+
+                  Each guest is a fixture named after it and `vms` is all
+                  of them. A test or fixture may be `async def` and
+                  awaits `Machine` directly:
+
+                      async def test_hostname(one: Machine) -> None:
+                          assert await one.succeed("hostname") == "one"
+
+                  Every test is an event and a JUnit case of its own, and
+                  every command and journal entry names the test that
+                  caused it.
+                '';
+                example = lib.literalExpression ''
+                  { tests = ./tests/guest; args = [ "-x" ]; }
+                '';
+                type = types.nullOr (
+                  types.submodule {
+                    options = {
+                      tests = mkOption {
+                        type = types.path;
+                        description = "A test file, or a directory of them with its conftest.py.";
+                      };
+                      args = mkOption {
+                        type = types.listOf types.str;
+                        default = [ ];
+                        example = [
+                          "-k"
+                          "not slow"
+                        ];
+                        description = ''
+                          Given to pytest. `uml run ... -- <args>` adds to
+                          these by hand; a knob adds to them in a check.
+                        '';
+                      };
+                    };
+                  }
+                );
               };
 
               after = mkOption {
@@ -251,6 +301,12 @@ in
           + lib.concatStringsSep ", " unknown
           + ". A phase that depends on nothing is not skipped when its"
           + " dependency fails, so this would be silent.";
+      }
+      {
+        assertion = ambiguous == [ ];
+        message =
+          "uml: each phase sets exactly one of `script` and `pytest`; these do not: "
+          + lib.concatStringsSep ", " ambiguous;
       }
     ];
 

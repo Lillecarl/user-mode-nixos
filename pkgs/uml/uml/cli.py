@@ -33,7 +33,22 @@ from .spec import Spec
 
 
 def parse(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(prog="uml", description="Run NixOS guests")
+    """The command line, and whatever follows `--` for pytest.
+
+    `uml run --spec s --out o -- -k hostname -x` hands `-k hostname -x`
+    to every pytest phase. Split here rather than left to argparse, whose
+    REMAINDER takes the first unknown flag as the start of it.
+    """
+    argv = sys.argv[1:] if argv is None else list(argv)
+    extra: list[str] = []
+    if "--" in argv:
+        at = argv.index("--")
+        argv, extra = argv[:at], argv[at + 1 :]
+    parser = argparse.ArgumentParser(
+        prog="uml",
+        description="Run NixOS guests",
+        epilog="Arguments after -- go to every pytest phase.",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     run = sub.add_parser("run", help="boot the guests and run every phase")
@@ -83,7 +98,9 @@ def parse(argv: list[str] | None = None) -> argparse.Namespace:
 
     phases = sub.add_parser("phases", help="list the phases and exit")
     phases.add_argument("--spec", type=Path, required=True)
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    args.pytest_args = extra
+    return args
 
 
 def announce(session: Session) -> None:
@@ -145,7 +162,9 @@ def sinks_for(args: argparse.Namespace, name: str) -> Broadcast:
 async def run(args: argparse.Namespace) -> int:
     spec = Spec.read(args.spec)
     sink = sinks_for(args, spec.name)
-    session = Session(spec, args.out, offline=args.offline, sink=sink)
+    session = Session(
+        spec, args.out, offline=args.offline, sink=sink, pytest_args=args.pytest_args
+    )
     session.emit(Kind.RUN_STARTED, f"output in {args.out}")
     announce(session)
 

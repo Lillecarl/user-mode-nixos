@@ -28,6 +28,10 @@ if TYPE_CHECKING:
 FILE: Final = "journal.jsonl"
 """The name in each guest's `/artifacts`, and so in `artifacts/<name>/`."""
 
+SETTLE: Final = "uml-settle"
+"""The identifier of the marker `Session.settle` logs and waits for. Its
+entries are the runner's own bookkeeping and never become events."""
+
 
 @dataclass(frozen=True)
 class Entry:
@@ -109,6 +113,12 @@ class Tail:
         self.path = anyio.Path(path)
         self._offset = 0
         self._rest = b""
+
+    @property
+    def streaming(self) -> bool:
+        """Has anything arrived? A guest with `boot.uml.journal` off never
+        writes the file, and waiting on it would wait for nothing."""
+        return self._offset > 0
 
     async def read(self) -> list[str]:
         try:

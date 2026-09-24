@@ -28,6 +28,8 @@ python3Packages.buildPythonPackage {
     # The spec is input, so it is validated rather than read
     # defensively at each point of use. See uml/spec.py.
     python3Packages.pydantic
+    # A phase may be a pytest run. See uml/pytest_plugin.py.
+    python3Packages.pytest
   ];
 
   pythonImportsCheck = [ "uml" ];

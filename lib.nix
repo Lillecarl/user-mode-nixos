@@ -49,7 +49,9 @@ rec {
       ignore ? [ ],
     }:
     let
-      python = pkgs.python3.withPackages (_: [ runner ] ++ extraPackages);
+      # `session` brings pytest with it, so a pytest phase's tests and
+      # conftest check against the same pytest that runs them.
+      python = pkgs.python3.withPackages (_: [ runner session ] ++ extraPackages);
 
       # pyright's rule names, the way `writePython3Bin`'s `flakeIgnore`
       # is flake8's codes.
@@ -88,10 +90,11 @@ rec {
         # the second tried to overwrite it. A collision must not depend
         # on which two files a caller happens to pass.
         ${lib.concatStringsSep "\n" (
+          # `-r`: a pytest phase is a directory of tests.
           lib.imap0 (index: script: ''
             mkdir -p scripts/${toString index}
-            cp ${script} scripts/${toString index}/${baseNameOf script}
-            chmod +w scripts/${toString index}/${baseNameOf script}
+            cp -r ${script} scripts/${toString index}/${baseNameOf script}
+            chmod -R +w scripts/${toString index}/${baseNameOf script}
           '') scripts
         )}
         cp ${pkgs.writeText "pyrightconfig.json" (builtins.toJSON settings)} \
@@ -532,7 +535,9 @@ rec {
         in
         lib.optionalString typing.enable "${typeCheck {
           name = "${name}-phases";
-          scripts = map (phase: phase.script) checkedConfig.ordered;
+          scripts = map (
+            phase: if phase.pytest != null then phase.pytest.tests else phase.script
+          ) checkedConfig.ordered;
           inherit (typing) extraPackages strict ignore;
         }}";
 
@@ -542,10 +547,23 @@ rec {
           // {
             inherit (checkedConfig) name settings;
             knobs = checkedConfig.resolved;
-            phases = map (phase: {
-              inherit (phase) name after always;
-              script = "${phase.script}";
-            }) checkedConfig.ordered;
+            phases = map (
+              phase:
+              {
+                inherit (phase) name after always;
+              }
+              // (
+                if phase.pytest != null then
+                  {
+                    pytest = {
+                      tests = "${phase.pytest.tests}";
+                      inherit (phase.pytest) args;
+                    };
+                  }
+                else
+                  { script = "${phase.script}"; }
+              )
+            ) checkedConfig.ordered;
             machines = map machineSpec machines;
           }
         )

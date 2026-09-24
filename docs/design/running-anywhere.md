@@ -28,6 +28,8 @@
 9 | `always`, for a phase that collects evidence | `uml/phases.py` | `recipes` |
 10 | One event stream, five sinks | `uml/events.py`, `uml/sinks.py` | 63 unit tests |
 10 | A terminal worth reading, with replay on failure | `uml/cli.py` | measured: 350 lines → 53 |
+11 | Every guest's journal streams to the host while it runs | `uml/journal.py`, `modules/guest.nix` | `stream`: survives SIGKILL, UML and QEMU |
+11 | pytest as a phase | `uml/pytest_plugin.py` | `pytest-phase`, 10 unit tests |
 9
 9 Four bugs were found by building it, and three of them only by running
 9 against a real guest:
@@ -56,10 +58,27 @@
 10 `print` is captured and attributed to that phase rather than merely
 10 kept.
 10
-10 Still open, in the order they look worth doing: streaming *out of* a
-10 guest while it runs (area 5, and it needs the agent's one-command-at-a-
-10 time limit solved), the evaluator (area 0b), and the session API's
-10 remaining operations for the MCP server (area 0d).
+11 Streaming out of a guest (area 5) goes through `/artifacts`, not the
+11 agent's RPC. hostfs and virtiofs are write-through, measured on both
+11 backends, so a journal entry is on the host's disk as soon as journald
+11 has it, and no Python process holds it in between. That also avoided
+11 the agent's one-command-at-a-time limit. Each entry is a `journal`
+11 event carrying the machine, the unit, the phase and the pytest test.
+11 A phase ends with `settle`: each guest logs a token and the session
+11 waits until the token arrives. Without it, a line logged as a test
+11 returned was lost to the teardown (measured).
+11
+11 pytest is a phase and not the entrypoint. The ordering stays in Nix,
+11 where a failure skips its dependents; pytest would run a check
+11 against a cluster that was never built. pytest runs in a worker
+11 thread, and async tests and fixtures run on the session's loop
+11 through a portal, so a test uses the same `Machine` as a script.
+11 pytest as the entrypoint (`pytest --uml-spec`) is the same plugin
+11 with the thread's owner swapped. It is not built yet.
+11
+11 Still open, in the order they look worth doing: the evaluator (area
+11 0b), the session API's remaining operations for the MCP server (area
+11 0d), and pytest as the entrypoint.
 9
 1 ## The goal
 1

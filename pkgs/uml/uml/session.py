@@ -29,30 +29,44 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import json
+import sys
 import time
 import traceback
 from collections import defaultdict
 from typing import TYPE_CHECKING, Any
 
 import anyio
-from uml_runner import Machine, Machines, MachineSpec, Toolchain
+import pytest
+from anyio.from_thread import BlockingPortal
+from uml_runner import Machine, MachineError, Machines, MachineSpec, Toolchain
 from uml_runner.net import build_lans
 from uml_runner.report import Report
 
 from . import journal
 from .events import Event, Kind, Level
 from .phases import PhaseState, passed, runnable, skipped_by
+from .pytest_plugin import Plugin, arguments, machine_fixtures
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
     from pathlib import Path
 
     from .sinks import Sink
-    from .spec import PhaseSpec, Spec
+    from .spec import PhaseSpec, PytestSpec, Spec
 
 
 class SessionError(RuntimeError):
     """The session could not do what was asked."""
+
+
+class CasesFailed(RuntimeError):
+    """A pytest phase whose tests failed. Each one is its own event."""
+
+
+def _pytest_main(args: list[str], plugins: list[object]) -> int:
+    # The tests are in the store, which is read-only.
+    sys.dont_write_bytecode = True
+    return int(pytest.main(args, plugins=plugins))
 
 
 def load_phase(script: Path) -> Callable[[Machines], Awaitable[None]]:
@@ -87,11 +101,17 @@ class Session:
         *,
         offline: bool = False,
         sink: Sink | None = None,
+        pytest_args: list[str] | None = None,
     ) -> None:
         self.spec = spec
         self.out = out
         self.offline = offline
         self.sink = sink
+        # Added to every pytest phase's own `args`: `uml run ... -- -k x`.
+        self.pytest_args = pytest_args or []
+        # The pytest test running now, so a command or a journal entry
+        # names the test that caused it and not only the phase.
+        self.case: str | None = None
         self._started = time.monotonic()
         self.artifacts = out / "artifacts"
         self.state: dict[str, PhaseState] = {
@@ -112,6 +132,7 @@ class Session:
         # `follow` and a phase boundary both drain, and a Tail read twice
         # at once hands the same lines to both.
         self._draining = anyio.Lock()
+        self._settled: set[str] = set()
 
     # ── events ─────────────────────────────────────────────────────
 
@@ -153,6 +174,7 @@ class Session:
             machine=machine,
             seconds=seconds,
             phase=self.running,
+            **self._in_case(),
         )
 
     @contextlib.contextmanager
@@ -294,15 +316,18 @@ class Session:
     async def drain(self) -> None:
         """Emit every journal entry the guests have written since last asked.
 
-        Attributed to the running phase. That is exact to within
-        journald's own latency because a phase boundary drains too: what
-        is read while a phase runs was written after it started.
+        Attributed to the running phase. That is exact because both phase
+        boundaries wait for the stream: a drain as the phase starts, and
+        `settle` before it finishes.
         """
         async with self._draining:
             for name, tail in self._journals.items():
                 for line in await tail.read():
                     entry = journal.parse(line)
                     if entry is None:
+                        continue
+                    if entry.identifier == journal.SETTLE:
+                        self._settled.add(entry.message)
                         continue
                     self.emit(
                         Kind.JOURNAL,
@@ -311,7 +336,46 @@ class Session:
                         machine=name,
                         phase=self.running,
                         **entry.data(),
+                        **self._in_case(),
                     )
+
+    async def settle(self, timeout: float = 2.0) -> None:
+        """Wait until each guest's journal has reached the host.
+
+        A test that logs and returns is done before journald has handed
+        the line on, and a teardown straight after loses it: measured,
+        `echo` from a unit that `systemd-run --wait` had finished never
+        reached the file. So each live guest logs a token, and this
+        drains until every token has arrived -- everything logged before
+        it has arrived too.
+
+        Bounded, and skipped for a guest that is dead or not streaming:
+        evidence is worth two seconds, never a hung run.
+        """
+        if self.vms is None:
+            return
+        tokens: set[str] = set()
+        with anyio.move_on_after(timeout):
+            for name, tail in self._journals.items():
+                vm = self.vms.get(name)
+                if vm is None or not tail.streaming or not vm.alive():
+                    continue
+                token = f"{name}-{time.monotonic_ns()}"
+                try:
+                    await vm.succeed(
+                        f"echo {token} | systemd-cat --identifier={journal.SETTLE}",
+                        timeout=timeout,
+                    )
+                except MachineError:
+                    continue
+                tokens.add(token)
+            while not tokens <= self._settled:
+                await self.drain()
+                await anyio.sleep(0.02)
+        await self.drain()
+
+    def _in_case(self) -> dict[str, str]:
+        return {"case": self.case} if self.case is not None else {}
 
     async def follow(self, interval: float = 0.25) -> None:
         """Stream the guests' journals into the events, until cancelled.
@@ -329,22 +393,59 @@ class Session:
             with anyio.CancelScope(shield=True):
                 await self.drain()
 
+    async def begin_case(self, nodeid: str) -> None:
+        """A pytest test starts. What happens until `end_case` is its.
+
+        Exact for a command. A journal entry is attributed when it
+        arrives, and one logged in a test's last milliseconds can arrive
+        after the test ends: a barrier per test would cost a command per
+        guest per test. The phase has one, see `settle`.
+        """
+        await self.drain()
+        self.case = nodeid
+
+    async def end_case(self) -> None:
+        await self.drain()
+        self.case = None
+
+    async def _pytest(self, name: str, spec: PytestSpec) -> None:
+        """One pytest run, in a worker thread, against these guests."""
+        if self.vms is None:
+            raise SessionError("pytest before boot")
+        async with BlockingPortal() as portal:
+            plugin = Plugin(self, name, portal)
+            plugins = [plugin, machine_fixtures(self.vms)]
+            args = arguments(str(spec.tests), [*spec.args, *self.pytest_args])
+            code = await anyio.to_thread.run_sync(_pytest_main, args, plugins)
+        if code == pytest.ExitCode.NO_TESTS_COLLECTED:
+            # A phase that tested nothing is a selection that matched
+            # nothing, and a green run would hide the typo.
+            raise CasesFailed("no tests were collected")
+        if code != pytest.ExitCode.OK:
+            raise CasesFailed(
+                plugin.summary() if plugin.outcomes else f"pytest exited {code}"
+            )
+        self.emit(Kind.NOTE, plugin.summary(), phase=name)
+
     async def run(self, phase: PhaseSpec) -> PhaseState:
         """Run one phase, and record what its outcome means for the rest."""
         if self.vms is None:
             raise SessionError("run before boot")
-        test = load_phase(phase.script)
+        test = load_phase(phase.script) if phase.script is not None else None
         await self.drain()
         self.state[phase.name] = PhaseState.RUNNING
         self.running = phase.name
         self.emit(Kind.PHASE_STARTED, phase.name, phase=phase.name)
         started = time.monotonic()
         try:
-            with self._capture(phase.name):
-                await test(self.vms)
+            if phase.pytest is not None:
+                await self._pytest(phase.name, phase.pytest)
+            elif test is not None:
+                with self._capture(phase.name):
+                    await test(self.vms)
         except Exception as error:
             took = time.monotonic() - started
-            await self.drain()
+            await self.settle()
             self._record(phase, started)
             self.state[phase.name] = PhaseState.FAILED
             self.errors[phase.name] = f"{type(error).__name__}: {error}"
@@ -357,12 +458,16 @@ class Session:
                 state=str(PhaseState.FAILED),
                 error=self.errors[phase.name],
             )
-            self.emit(
-                Kind.ERROR,
-                traceback.format_exc().rstrip(),
-                level=Level.ERROR,
-                phase=phase.name,
-            )
+            # A failing test has already said why, with pytest's own
+            # rewritten assertion. The runner's traceback would only add
+            # the frames of the runner.
+            if not isinstance(error, CasesFailed):
+                self.emit(
+                    Kind.ERROR,
+                    traceback.format_exc().rstrip(),
+                    level=Level.ERROR,
+                    phase=phase.name,
+                )
             self._replay()
             for name in skipped_by(phase.name, self.spec.phases):
                 if self.state.get(name) is PhaseState.PENDING:
@@ -377,7 +482,7 @@ class Session:
             self.running = None
             return PhaseState.FAILED
         took = time.monotonic() - started
-        await self.drain()
+        await self.settle()
         self.running = None
         self._record(phase, started)
         self.state[phase.name] = PhaseState.PASSED

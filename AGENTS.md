@@ -89,9 +89,24 @@ nothing done to it is checked: measured, `await vms.node.succeed(123)` and
 a call to a nonexistent method both passed. `reportMissingParameterType`
 is on, so an unannotated script does not build.
 
-Not done yet: a pytest plugin, so a project writes guest tests as ordinary
-pytest tests instead of one `test` coroutine. `run_test` is the shape to
-grow out of.
+A phase can be a pytest run instead of a script:
+
+```nix
+phases.cases = { pytest.tests = ./tests/guest; after = [ "boot" ]; };
+```
+
+Each guest is a fixture named after it, `vms` is all of them, and a test
+or fixture may be `async def` and await `Machine` directly. pytest runs
+in a worker thread; async code is sent back to the session's loop through
+a portal, because a `Machine` only works on the loop that started it.
+`uml run ... -- -k name` selects. Each test is a `case` event and a JUnit
+case, and every command and journal entry carries `data.case`.
+`uml/pytest_plugin.py` is the whole of it; `nix build --file .
+pytest-phase` proves it against a guest.
+
+An async generator fixture's setup and teardown are two separate portal
+calls, so an anyio task group held open across its `yield` does not
+work.
 
 ## VCS
 

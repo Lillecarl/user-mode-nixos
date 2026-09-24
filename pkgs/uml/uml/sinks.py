@@ -143,7 +143,7 @@ class Junit:
         self._events: list[Event] = []
 
     def emit(self, event: Event) -> None:
-        if event.kind is Kind.PHASE_FINISHED:
+        if event.kind in (Kind.PHASE_FINISHED, Kind.CASE):
             self._events.append(event)
 
     def close(self) -> None:

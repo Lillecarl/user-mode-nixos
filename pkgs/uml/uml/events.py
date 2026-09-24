@@ -66,6 +66,10 @@ class Kind(StrEnum):
     and `[uml] [test] ...` helps nobody. `grep '[test]'` keeps working,
     which AGENTS.md has told people to do since the beginning."""
 
+    CASE = "case"
+    """One pytest test's outcome, inside a pytest phase. `text` is the
+    node id; `data` carries `outcome`, `when`, and `error` or `reason`."""
+
     JOURNAL = "journal"
     """One journal entry from a guest, streamed while it runs. `data`
     carries `unit`, `identifier`, `priority` and `pid`, so one service
@@ -134,6 +138,10 @@ def render(event: Event) -> str:
         return f"[{event.machine}] {source}: {event.text}"
     if event.kind in (Kind.PHASE_STARTED, Kind.PHASE_FINISHED):
         return f"[phase] {event.text}"
+    if event.kind is Kind.CASE:
+        outcome = str(event.data.get("outcome", "")).upper()
+        took = f" ({event.seconds:.2f}s)" if event.seconds else ""
+        return f"[case] {outcome} {event.text}{took}"
     if event.kind is Kind.RPC and event.machine:
         return f"[{event.machine}] $ {event.text}"
     if event.kind is Kind.ERROR:
@@ -162,17 +170,38 @@ def junit(events: Iterable[Event], name: str = "uml") -> str:
     A skipped phase is `<skipped>` and a deselected one is left out
     entirely: a report that lists phases nobody asked for as "skipped"
     makes every selective run look half-broken in a CI dashboard.
+
+    A pytest phase is its tests, one `<testcase>` each, classed under
+    the phase. The phase's own row is left out unless it failed with no
+    failing test to show for it -- a collection that found nothing.
     """
+    kept = [e for e in events if e.kind in (Kind.PHASE_FINISHED, Kind.CASE)]
+    with_cases = {e.phase for e in kept if e.kind is Kind.CASE}
+    failing_cases = {
+        e.phase
+        for e in kept
+        if e.kind is Kind.CASE and e.data.get("outcome") in ("failed", "error")
+    }
     cases: list[str] = []
     failures = 0
     skipped = 0
     seconds = 0.0
-    for event in events:
-        if event.kind is not Kind.PHASE_FINISHED:
-            continue
-        state = event.data.get("state", "")
-        if state == "deselected":
-            continue
+    for event in kept:
+        if event.kind is Kind.CASE:
+            outcome = event.data.get("outcome", "")
+            state = "failed" if outcome in ("failed", "error") else outcome
+            classname = f"{name}.{event.phase}"
+            case_name = event.text
+        else:
+            state = event.data.get("state", "")
+            if state == "deselected":
+                continue
+            if event.phase in with_cases and not (
+                state == "failed" and event.phase not in failing_cases
+            ):
+                continue
+            classname = name
+            case_name = event.phase or ""
         took = event.seconds or 0.0
         seconds += took
         body = ""
@@ -182,7 +211,9 @@ def junit(events: Iterable[Event], name: str = "uml") -> str:
             # The first line in the attribute and the whole thing in the
             # body. A dashboard shows the attribute in a table cell, and
             # a traceback in a table cell helps nobody.
-            summary = error.splitlines()[0] if error else "failed"
+            summary = event.data.get("message") or (
+                error.splitlines()[0] if error else "failed"
+            )
             body = (
                 f'<failure message="{_xml_escape(summary)}">'
                 f"{_xml_escape(error)}</failure>"
@@ -194,8 +225,8 @@ def junit(events: Iterable[Event], name: str = "uml") -> str:
                 f'"{_xml_escape(event.data.get("reason", "a phase it needs failed"))}"/>'
             )
         cases.append(
-            f'  <testcase classname="{_xml_escape(name)}"'
-            f' name="{_xml_escape(event.phase or "")}"'
+            f'  <testcase classname="{_xml_escape(classname)}"'
+            f' name="{_xml_escape(case_name)}"'
             f' time="{took:.3f}">{body}</testcase>'
         )
 

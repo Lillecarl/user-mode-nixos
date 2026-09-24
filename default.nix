@@ -627,6 +627,83 @@ let
         '';
 
     /*
+      Is a pytest phase pytest, against real guests?
+
+      `tests/cases` uses what a test author reaches for: a guest as a
+      fixture, an async fixture with a teardown, parametrize, a skip, and
+      one assertion that fails on purpose. The phase fails, so this reads
+      the attempt.
+
+      The claims: each test is a JUnit case of its own, the failure
+      message is pytest's rewritten assertion, the fixture's teardown ran
+      on the guest, and a journal entry and a command both name the test
+      that caused them.
+    */
+    pytest-phase =
+      let
+        run = mkSession {
+          name = "pytest";
+          nodes.one = { };
+          phases.cases = {
+            pytest.tests = ./tests/cases;
+            after = [ "boot" ];
+          };
+        };
+      in
+      pkgs.runCommand "uml-check-pytest-phase"
+        {
+          nativeBuildInputs = [
+            pkgs.jq
+            pkgs.libxml2
+          ];
+          passthru = { inherit run; };
+        }
+        ''
+          a=${run.attempt}
+          jq -r '.phases[] | "\(.name)\t\(.state)"' $a/phases.json
+          fail() { echo "$*" >&2; exit 1; }
+
+          [ "$(jq -r '.phases[] | select(.name == "cases") | .state' $a/phases.json)" = failed ] \
+            || fail "a phase with a failing test did not fail"
+          echo "ok: the failing test failed the phase"
+
+          n=$(xmllint --xpath 'count(//testcase[@classname="pytest.cases"])' $a/junit.xml)
+          [ "$n" = 8 ] || fail "junit has $n cases under pytest.cases, expected 8"
+          echo "ok: 8 JUnit cases, one per test"
+
+          xmllint --xpath 'string(//testcase[contains(@name,"test_fails_on_purpose")]/failure/@message)' \
+            $a/junit.xml | tee message
+          grep -q "assert '2' == '3'" message || fail "the failure is not pytest's rewritten assertion"
+          echo "ok: the failure message is the rewritten assertion"
+
+          test -f $a/artifacts/one/fixture-teardown || fail "the async fixture's teardown never ran"
+          echo "ok: the fixture's teardown ran on the guest"
+
+          case=$(jq -r 'select(.kind == "journal" and .text == "from-a-test") | .data.case' $a/events.jsonl)
+          case "$case" in
+            *::test_the_journal_names_the_test) echo "ok: the journal entry names $case" ;;
+            *) fail "the journal entry names '$case'" ;;
+          esac
+
+          jq -e 'select(.kind == "rpc" and .text == "hostname" and (.data.case | endswith("::test_hostname")))' \
+            $a/events.jsonl > /dev/null || fail "the command does not name its test"
+          echo "ok: and so does the command"
+
+          # Logged by a test that returned at once. Without the phase's
+          # settle it was lost to the teardown -- measured, before settle.
+          jq -e 'select(.kind == "journal" and .text == "logged-and-left" and .phase == "cases")' \
+            $a/events.jsonl > /dev/null || fail "a line logged as a test returned was lost"
+          echo "ok: a line logged on the way out still reached the phase"
+
+          if jq -e 'select(.kind == "journal" and .data.identifier == "uml-settle")' $a/events.jsonl > /dev/null; then
+            fail "the settle marker leaked into the events"
+          fi
+          echo "ok: and the runner's own marker stayed out of them"
+
+          touch $out
+        '';
+
+    /*
       Can a guest host a userspace filesystem?
 
       The question a build sandbox cannot answer for itself: its /dev has

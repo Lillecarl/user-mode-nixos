@@ -16,7 +16,17 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+
+class PytestSpec(BaseModel):
+    """A pytest run as a phase. See `uml/pytest_plugin.py`."""
+
+    tests: Path
+    """A test file or a directory of them, `conftest.py` included."""
+
+    args: list[str] = Field(default_factory=list)
+    """Given to pytest after the runner's own. `-k`, `-x`, `-m`."""
 
 
 class PhaseSpec(BaseModel):
@@ -25,11 +35,21 @@ class PhaseSpec(BaseModel):
     The list arrives sorted: `lib.toposort` runs during evaluation, so a
     cycle is an evaluation error and never reaches this.  `after` is kept
     anyway, because it is what says which phases a failure takes with it.
+
+    Exactly one of `script` and `pytest`. Nix asserts it too; this is
+    for a spec that did not come from Nix.
     """
 
     name: str
-    script: Path
+    script: Path | None = None
+    pytest: PytestSpec | None = None
     after: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _one_kind(self) -> PhaseSpec:
+        if (self.script is None) == (self.pytest is None):
+            raise ValueError(f"phase {self.name} needs exactly one of script and pytest")
+        return self
 
     always: bool = False
     """Run even when something in `after` failed.

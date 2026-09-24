@@ -218,7 +218,7 @@ let
     ghanix = sandboxBootstrap;
     steps = [
       (steps.build {
-        name = "The session: phase rules, knobs, --only, recipes, stream";
+        name = "The session: phase rules, knobs, --only, recipes, stream, pytest";
         attrs = [
           "phase-rules"
           "knobs"
@@ -226,6 +226,7 @@ let
           "recipes"
           "impure"
           "stream"
+          "pytest-phase"
         ];
         timeoutMinutes = 20;
       })
