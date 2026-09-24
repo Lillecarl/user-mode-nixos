@@ -248,6 +248,22 @@ in
       );
     };
 
+    pythonPath = mkOption {
+      type = types.listOf types.path;
+      default = [ ];
+      example = lib.literalExpression "[ ./tests/lib ]";
+      description = ''
+        Directories every phase script can import from, and that pyright
+        reads when it checks them.
+
+        A phase script is copied into the store on its own, so a helper
+        module beside it is not beside it any more. Name the directory
+        that holds the helpers here instead. Explicit on purpose: copying
+        whatever directory a script sits in would copy a whole repository
+        for a script at its root.
+      '';
+    };
+
     settings = mkOption {
       type = types.attrs;
       default = { };

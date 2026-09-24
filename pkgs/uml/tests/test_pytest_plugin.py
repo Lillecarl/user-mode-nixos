@@ -213,6 +213,33 @@ class TestAFailingRun:
 
 
 @pytest.mark.anyio
+class TestImports:
+    async def test_a_test_imports_a_helper_beside_it(self, tmp_path: Path):
+        """`--import-mode=importlib` puts nothing on sys.path by itself."""
+        sink = Collect()
+        session = session_for(tmp_path, sink)
+        tests = write_tests(tmp_path, "from kube_helpers import ANSWER\n\ndef test_it():\n    assert ANSWER == 42\n")
+        (tests / "kube_helpers.py").write_text("ANSWER = 42\n")
+        await session._pytest("cases", PytestSpec(tests=tests))
+        assert [e.data["outcome"] for e in sink.of(Kind.CASE)] == ["passed"]
+
+    async def test_a_phase_script_imports_from_python_path(self, tmp_path: Path):
+        lib = tmp_path / "lib"
+        lib.mkdir()
+        (lib / "shared_helpers.py").write_text("def greet() -> str:\n    return 'hi'\n")
+        script = tmp_path / "phase.py"
+        script.write_text("from shared_helpers import greet\nasync def test(vms):\n    print(greet())\n")
+        sink = Collect()
+        session = Session(
+            Spec(machines=[], phases=[], pythonPath=[lib]), tmp_path / "out", sink=sink
+        )
+        session.vms = Machines(one=Machine("one"))  # ty: ignore[invalid-argument-type]
+        session.state = {"phase": PhaseState.PENDING}
+        assert await session.run(PhaseSpec(name="phase", script=script)) is PhaseState.PASSED
+        assert [e.text for e in sink.of(Kind.OUTPUT)] == ["hi"]
+
+
+@pytest.mark.anyio
 class TestAStoppedPhase:
     async def test_it_is_interrupted_not_running(self, tmp_path: Path):
         """Measured through `uml-mcp stop`: `phases.json` said `running`

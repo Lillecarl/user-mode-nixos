@@ -96,6 +96,9 @@ class Spec(BaseModel):
 
     phases: list[PhaseSpec] = Field(default_factory=list)
     settings: dict = Field(default_factory=dict)
+
+    pythonPath: list[Path] = Field(default_factory=list)  # noqa: N815 -- Nix writes it, so Nix spells it
+    """Directories every phase script can import from."""
     knobs: dict[str, Knob] = Field(default_factory=dict)
 
     kernel: Path | None = None

@@ -47,6 +47,9 @@ rec {
       extraPackages ? [ ],
       strict ? false,
       ignore ? [ ],
+      # Directories of helper modules the scripts import; `mkSession`'s
+      # `pythonPath`.
+      extraPaths ? [ ],
     }:
     let
       # `session` brings pytest with it, so a pytest phase's tests and
@@ -69,6 +72,7 @@ rec {
         # `await vms.node.succeed(123)` and a call to a method that does
         # not exist both passed.
         reportMissingParameterType = "error";
+        extraPaths = map (path: "${path}") extraPaths;
       }
       // rules;
     in
@@ -538,6 +542,7 @@ rec {
           scripts = map (
             phase: if phase.pytest != null then phase.pytest.tests else phase.script
           ) checkedConfig.ordered;
+          extraPaths = checkedConfig.pythonPath;
           inherit (typing) extraPackages strict ignore;
         }}";
 
@@ -546,6 +551,7 @@ rec {
           toolchainFor backend first
           // {
             inherit (checkedConfig) name settings;
+            pythonPath = map (path: "${path}") checkedConfig.pythonPath;
             knobs = checkedConfig.resolved;
             phases = map (
               phase:

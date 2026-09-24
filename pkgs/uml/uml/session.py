@@ -134,6 +134,11 @@ class Session:
         self._draining = anyio.Lock()
         self._settled: set[str] = set()
         self._junit_seen: set[tuple[Path, int]] = set()
+        # Process-wide, like `_capture`: one session per process, which
+        # the CLI and the MCP server's child processes both are.
+        for path in reversed(spec.pythonPath):
+            if str(path) not in sys.path:
+                sys.path.insert(0, str(path))
 
     # ── events ─────────────────────────────────────────────────────
 
@@ -468,11 +473,18 @@ class Session:
         """One pytest run, in a worker thread, against these guests."""
         if self.vms is None:
             raise SessionError("pytest before boot")
-        async with BlockingPortal() as portal:
-            plugin = Plugin(self, name, portal)
-            plugins = [plugin, machine_fixtures(self.vms)]
-            args = arguments(str(spec.tests), [*spec.args, *self.pytest_args])
-            code = await anyio.to_thread.run_sync(_pytest_main, args, plugins)
+        # `--import-mode=importlib` puts nothing on `sys.path`, so a test
+        # could not import a helper module beside it without this.
+        here = spec.tests if spec.tests.is_dir() else spec.tests.parent
+        sys.path.insert(0, str(here))
+        try:
+            async with BlockingPortal() as portal:
+                plugin = Plugin(self, name, portal)
+                plugins = [plugin, machine_fixtures(self.vms)]
+                args = arguments(str(spec.tests), [*spec.args, *self.pytest_args])
+                code = await anyio.to_thread.run_sync(_pytest_main, args, plugins)
+        finally:
+            sys.path.remove(str(here))
         if code == pytest.ExitCode.NO_TESTS_COLLECTED:
             # A phase that tested nothing is a selection that matched
             # nothing, and a green run would hide the typo.
