@@ -15,6 +15,7 @@ was documented and rejected.
 from __future__ import annotations
 
 import argparse
+import shlex
 import sys
 from collections.abc import Collection
 from pathlib import Path
@@ -134,7 +135,11 @@ def parse(argv: list[str] | None = None) -> argparse.Namespace:
         "arg",
         nargs="?",
         default="",
-        help="exec: Python, or - for stdin. inject: a file with `test(vms)`. run: a phase",
+        help=(
+            "exec: Python, or - for stdin. inject: a file with `test(vms)`."
+            " pytest: a test file or directory, pytest's arguments after --."
+            " run: a phase"
+        ),
     )
     args = parser.parse_args(argv)
     args.pytest_args = extra
@@ -392,6 +397,9 @@ async def _schedule(
 async def ctl(args: argparse.Namespace) -> int:
     """One request to a paused run; its output, its value, its error."""
     arg = sys.stdin.read() if args.arg == "-" else args.arg
+    if args.op == Op.PYTEST:
+        # `uml ctl --out o pytest ./tests -- -k x`, as `uml run` takes them.
+        arg = shlex.join([arg, *args.pytest_args])
     socket = args.out / SOCKET
     try:
         reply = await request(socket, Op(args.op), arg)

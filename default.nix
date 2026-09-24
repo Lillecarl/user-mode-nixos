@@ -965,6 +965,16 @@ let
           grep -q "wrote it" injected || fail "inject did not run the file"
           echo "ok: a file from outside the store ran against the guest"
 
+          mkdir tree
+          echo 'async def test_host(one): assert (await one.succeed("hostname")).strip() == "one"' \
+            > tree/test_by_hand.py
+          ctl pytest tree | tee by-hand
+          grep -qx "1 passed" by-hand || fail "pytest by hand did not pass against the guest"
+          echo 'async def test_host(one): assert (await one.succeed("hostname")).strip() == "edited"' \
+            > tree/test_by_hand.py
+          if ctl pytest tree -- -k host; then fail "pytest by hand ran the old test after an edit"; fi
+          echo "ok: pytest ran a working tree's test, then its edit, against the paused guest"
+
           ctl continue
           wait "$pid" || { cat run.log; fail "the run failed after continue"; }
           echo "ok: continue finished the run"
@@ -978,6 +988,11 @@ let
           jq -e 'select(.kind == "note" and .data.op == "exec")' "$o/events.jsonl" > /dev/null \
             || fail "the exec is not recorded in the events"
           echo "ok: and events.jsonl records what was done by hand"
+          [ "$(cat "$o/status")" = 0 ] || fail "a failing test sent by hand failed the run"
+          if grep -q test_by_hand "$o/junit.xml"; then fail "a test sent by hand is in junit.xml"; fi
+          jq -e 'select(.kind == "case" and .data.by_hand and .data.outcome == "failed")' \
+            "$o/events.jsonl" > /dev/null || fail "the by-hand case is not in the events"
+          echo "ok: and its cases are events, outside the verdict and junit.xml"
           test ! -e "$o/control.sock" || fail "the socket outlived the run"
 
           touch $out

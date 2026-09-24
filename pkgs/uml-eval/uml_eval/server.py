@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import signal
 import subprocess
 import sys
@@ -58,10 +59,12 @@ Runs NixOS guests under user-mode-nixos and lets you reach into them.
 pauses on the first failing phase with the guests still up. While paused,
 `exec` runs Python against the live guests (top-level await; `vms`,
 `session` and each guest by name are in scope, and names persist between
-calls), `inject` runs a local file's `async def test(vms)`, `run_phase`
-runs a declared phase, and `resume` continues. `events` queries the run's
-event stream: filter by kind (journal, case, phase_finished, rpc, output,
-error), machine, unit, phase or case.
+calls), `inject` runs a local file's `async def test(vms)`, `run_pytest`
+runs local pytest tests, `run_phase` runs a declared phase, and `resume`
+continues. `inject` and `run_pytest` read the file each time, so the loop
+for a failing test is: edit it, send it again, against the same guests.
+`events` queries the run's event stream: filter by kind (journal, case,
+phase_finished, rpc, output, error), machine, unit, phase or case.
 
 Events arrive as <channel source="uml" run="..." event="progress|paused|failed|finished|exited" ...>.
 A `progress` event marks a phase starting or passing; say one line about
@@ -400,6 +403,16 @@ def build(runs_holder: list[Runs]) -> FastMCP:
         """Run a local file's `async def test(vms)` in the paused run, read
         fresh from disk, so an edit takes effect by injecting it again."""
         return _reply(await request(runs().get(run).socket, Op.INJECT, os.path.abspath(path)))
+
+    @server.tool()
+    async def run_pytest(run: str, path: str, args: list[str] | None = None) -> dict[str, Any]:
+        """Run pytest on a local test file or directory against the paused
+        guests, read fresh from disk: edit a test and run it again without
+        rebuilding the setup. `args` go to pytest (`["-k", "etcd"]`). The
+        cases are events marked by_hand and do not count toward the run's
+        verdict."""
+        arg = shlex.join([os.path.abspath(path), *(args or [])])
+        return _reply(await request(runs().get(run).socket, Op.PYTEST, arg))
 
     @server.tool()
     async def run_phase(run: str, phase: str) -> dict[str, Any]:

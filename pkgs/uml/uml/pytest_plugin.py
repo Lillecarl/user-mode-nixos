@@ -101,17 +101,22 @@ def _in_loop(portal: BlockingPortal, func: Callable[..., Any]) -> Callable[..., 
 class Plugin:
     """The hooks that tie one pytest run to one session."""
 
-    def __init__(self, session: Session, phase: str, portal: BlockingPortal) -> None:
+    def __init__(
+        self, session: Session, phase: str, portal: BlockingPortal, *, by_hand: bool = False
+    ) -> None:
         self.session = session
         self.phase = phase
         self.portal = portal
+        self.marks: dict[str, Any] = {"by_hand": True} if by_hand else {}
         self.outcomes: Counter[str] = Counter()
 
     def _emit(self, kind: Kind, text: str, **fields: Any) -> None:
         # On the loop, never from this thread: the sinks write files and
         # the follower writes the same files from the loop.
         self.portal.call(
-            functools.partial(self.session.emit, kind, text, phase=self.phase, **fields)
+            functools.partial(
+                self.session.emit, kind, text, phase=self.phase, **self.marks, **fields
+            )
         )
 
     # ── running async code on the session's loop ───────────────────

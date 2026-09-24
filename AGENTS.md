@@ -55,12 +55,20 @@ uml ctl --out ./o state
 uml ctl --out ./o exec 'await one.succeed("systemctl --failed")'
 uml ctl --out ./o exec - < snippet.py         # top-level await; names persist
 uml ctl --out ./o inject ./scratch.py         # a file's test(vms), from the working tree
+uml ctl --out ./o pytest ./tests/chaos -- -k etcd   # pytest from the working tree
 uml ctl --out ./o run check                   # a declared phase
 uml ctl --out ./o continue
 ```
 
 In scope for `exec`: `session`, `vms`, each guest by name, `anyio`.
-`exec`, `inject` and `run` are refused unless the run is paused. Every
+`exec`, `inject`, `pytest` and `run` are refused unless the run is paused.
+
+`pytest` is the loop for a pytest phase: edit a test, send it again,
+against guests a long setup already built. It takes only its own
+arguments, and its cases are `case` events marked `data.by_hand`, left
+out of `status` and `junit.xml`. Each pytest run drops the modules it
+loaded from its tests directory when it ends; pytest's importlib mode
+would otherwise hand the next run the old module. Every
 operation and its output is an event. The socket is `<out>/control.sock`,
 mode 0600, and exists only when a breakpoint was asked for.
 `uml/control.py` is the whole of it; `nix build --file . breakpoint`
@@ -83,8 +91,8 @@ the kernel's status.
 ## The MCP server
 
 `.mcp.json` registers `uml-mcp` as `uml`. Its tools are `start`,
-`state`, `exec`, `inject`, `run_phase`, `resume`, `stop`, `events` and
-`runs`. A run started by `start` is a child process with
+`state`, `exec`, `inject`, `run_pytest`, `run_phase`, `resume`, `stop`,
+`events` and `runs`. A run started by `start` is a child process with
 `--break-on-failure`, never the server itself: MCP's stdio is the
 server's stdout, and a session prints to stdout.
 

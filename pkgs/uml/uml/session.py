@@ -550,8 +550,14 @@ class Session:
         await self.drain()
         self.case = None
 
-    async def _pytest(self, name: str, spec: PytestSpec, vms: Machines) -> None:
-        """One pytest run, in a worker thread, against these guests."""
+    async def _pytest(
+        self, name: str, spec: PytestSpec, vms: Machines, *, by_hand: bool = False
+    ) -> str:
+        """One pytest run, in a worker thread, against these guests.
+
+        `by_hand` is a run sent to a paused session, not a phase: it takes
+        only its own arguments, and its cases stay out of junit.xml.
+        """
         # `--import-mode=importlib` puts nothing on `sys.path`, so a test
         # could not import a helper module beside it without this.
         here = spec.tests if spec.tests.is_dir() else spec.tests.parent
@@ -559,9 +565,10 @@ class Session:
         imported = set(sys.modules)
         try:
             async with BlockingPortal() as portal:
-                plugin = Plugin(self, name, portal)
+                plugin = Plugin(self, name, portal, by_hand=by_hand)
                 plugins = [plugin, machine_fixtures(vms)]
-                args = arguments(str(spec.tests), [*spec.args, *self.pytest_args])
+                extra = spec.args if by_hand else [*spec.args, *self.pytest_args]
+                args = arguments(str(spec.tests), extra)
                 code = await anyio.to_thread.run_sync(_pytest_main, args, plugins)
         finally:
             sys.path.remove(str(here))
@@ -581,6 +588,7 @@ class Session:
                 plugin.summary() if plugin.outcomes else f"pytest exited {code}"
             )
         self.emit(Kind.NOTE, plugin.summary(), phase=name)
+        return plugin.summary()
 
     def view(self, phase: PhaseSpec) -> Machines:
         """The guests `phase` declared, as the `vms` its script is given.

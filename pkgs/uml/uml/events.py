@@ -175,7 +175,14 @@ def junit(events: Iterable[Event], name: str = "uml") -> str:
     the phase. The phase's own row is left out unless it failed with no
     failing test to show for it -- a collection that found nothing.
     """
-    kept = [e for e in events if e.kind in (Kind.PHASE_FINISHED, Kind.CASE)]
+    # A pytest run sent to a paused session by hand is exploring, and the
+    # run's verdict does not count it. Its failures here would contradict
+    # `status`.
+    kept = [
+        e
+        for e in events
+        if e.kind in (Kind.PHASE_FINISHED, Kind.CASE) and not e.data.get("by_hand")
+    ]
     with_cases = {e.phase for e in kept if e.kind is Kind.CASE}
     failing_cases = {
         e.phase

@@ -7,6 +7,8 @@ that owns it, the way a real one does.
 """
 
 import asyncio
+import json
+import shlex
 import sys
 from pathlib import Path
 from textwrap import dedent
@@ -15,6 +17,7 @@ import anyio
 import pytest
 from uml_runner import Machines
 
+from uml.control import Controller
 from uml.events import Event, Kind, junit
 from uml.phases import PhaseState
 from uml.session import CasesFailed, Session
@@ -304,6 +307,53 @@ class TestRunningAgain:
         (tests / "scenario_helpers.py").write_text("ANSWER = 2\n")
         with pytest.raises(CasesFailed):
             await session._pytest("cases", PytestSpec(tests=tests), session.vms)
+
+
+def paused(session: Session) -> Controller:
+    control = Controller(session)
+    control._resume = anyio.Event()
+    return control
+
+
+def ask(op: str, arg: str) -> bytes:
+    return json.dumps({"op": op, "arg": arg}).encode()
+
+
+@pytest.mark.anyio
+class TestPytestByHand:
+    """`uml ctl pytest`: a working tree's tests against a paused run."""
+
+    async def test_edit_and_send_again(self, tmp_path: Path):
+        tests = write_tests(tmp_path, "async def test_it(one):\n    assert await one.succeed('x') == 'one'\n")
+        sink = Collect()
+        control = paused(session_for(tmp_path, sink))
+        reply = await control.handle(ask("pytest", str(tests)))
+        assert (reply.ok, reply.result) == (True, "1 passed")
+        (tests / "test_guest.py").write_text("def test_it():\n    assert 'edited' == 'x'\n")
+        reply = await control.handle(ask("pytest", shlex.join([str(tests), "-k", "test_it"])))
+        assert not reply.ok
+        assert reply.result == "failed"
+
+    async def test_its_cases_stay_out_of_the_verdict(self, tmp_path: Path):
+        tests = write_tests(tmp_path, "def test_no():\n    assert False\n")
+        sink = Collect()
+        control = paused(session_for(tmp_path, sink))
+        await control.handle(ask("pytest", str(tests)))
+        [case] = sink.of(Kind.CASE)
+        assert case.data["by_hand"] is True
+        assert case.phase == "pytest:guest"
+        assert "<testcase " not in junit(sink.events, "run"), "an exploration counted in junit.xml"
+
+    async def test_only_its_own_arguments(self, tmp_path: Path):
+        """`uml run ... -- -k x` selects in the declared phases, not here."""
+        tests = write_tests(tmp_path, "def test_a():\n    pass\n")
+        control = paused(session_for(tmp_path, Collect(), "-k", "nothing_matches"))
+        assert (await control.handle(ask("pytest", str(tests)))).ok
+
+    async def test_a_missing_path_is_named(self, tmp_path: Path):
+        control = paused(session_for(tmp_path, Collect()))
+        reply = await control.handle(ask("pytest", str(tmp_path / "nope")))
+        assert "no tests at" in (reply.error or "")
 
 
 INTERLEAVED = """

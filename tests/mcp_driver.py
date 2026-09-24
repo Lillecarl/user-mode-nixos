@@ -11,6 +11,8 @@ Claude Code extension. What this reads is what Claude Code reads.
 import asyncio
 import json
 import sys
+import tempfile
+from pathlib import Path
 from typing import Any
 
 CHANNEL = "notifications/claude/channel"
@@ -107,6 +109,21 @@ async def main(server: str, spec: str) -> None:
     if not failed:
         fail(f"events found no failed case: {cases}")
     print(f"ok: events found the failed case: {failed[0]['text']}", flush=True)
+
+    # A test from a working tree, against the paused guest; then an edit
+    # to it, sent again. The second answer must be the edit's.
+    tree = Path(tempfile.mkdtemp()) / "by_hand"
+    tree.mkdir()
+    test = tree / "test_by_hand.py"
+    test.write_text("async def test_host(one):\n    assert (await one.succeed('hostname')).strip() == 'one'\n")
+    reply = await client.tool("run_pytest", run=run, path=str(tree))
+    if not reply["ok"] or reply["result"] != "1 passed":
+        fail(f"run_pytest did not pass against the guest: {reply}")
+    test.write_text("async def test_host(one):\n    assert (await one.succeed('hostname')).strip() == 'edited'\n")
+    reply = await client.tool("run_pytest", run=run, path=str(tree), args=["-k", "host"])
+    if reply["ok"]:
+        fail(f"run_pytest ran the old test after an edit: {reply}")
+    print("ok: run_pytest ran a local test, then its edit, against the paused guest", flush=True)
 
     await client.tool("resume", run=run)
     finished = await asyncio.wait_for(client.until("finished"), 300)

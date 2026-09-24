@@ -4,11 +4,13 @@ Changing a phase in Nix costs an evaluation and a new store path, and
 changing a guest costs a new image. So the fast loop does neither: the
 run pauses at a breakpoint with the guests up, and Python is sent into
 it. `exec` runs code with top-level `await`, `inject` runs a file from
-the working tree, `run` runs a declared phase, `continue` resumes.
+the working tree, `pytest` runs tests from it, `run` runs a declared
+phase, `continue` resumes.
 
     uml run --spec s --out o --break check
     uml ctl --out o exec 'await one.succeed("systemctl --failed")'
     uml ctl --out o inject ./scratch.py
+    uml ctl --out o pytest ./tests/chaos -- -k etcd
     uml ctl --out o continue
 
 The operations are the MCP server's tools as well; it is one more
@@ -30,6 +32,7 @@ import inspect
 import io
 import json
 import os
+import shlex
 import traceback
 from dataclasses import asdict, dataclass
 from enum import StrEnum
@@ -40,7 +43,8 @@ import anyio
 
 from .events import Kind, Level
 from .phases import PhaseState
-from .session import load_phase
+from .session import CasesFailed, load_phase
+from .spec import PytestSpec
 
 if TYPE_CHECKING:
     from anyio.abc import ByteStream, TaskStatus
@@ -55,6 +59,7 @@ class Op(StrEnum):
     EXEC = "exec"
     INJECT = "inject"
     RUN = "run"
+    PYTEST = "pytest"
     CONTINUE = "continue"
 
 
@@ -102,7 +107,7 @@ def parse_request(line: bytes) -> tuple[Op, str]:
     arg = raw.get("arg", "")
     if not isinstance(arg, str):
         raise ValueError("arg is a string")
-    if op in (Op.EXEC, Op.INJECT, Op.RUN) and not arg:
+    if op in (Op.EXEC, Op.INJECT, Op.RUN, Op.PYTEST) and not arg:
         raise ValueError(f"{op} needs an arg")
     return op, arg
 
@@ -259,6 +264,8 @@ class Controller:
             return self._record("exec", await self.console.execute(arg))
         if op is Op.INJECT:
             return self._record(f"inject:{Path(arg).name}", await self._inject(arg))
+        if op is Op.PYTEST:
+            return await self._pytest(arg)
         return await self._run(arg)
 
     def _record(self, source: str, reply: Reply) -> Reply:
@@ -286,6 +293,31 @@ class Controller:
         except Exception:  # noqa: BLE001 -- the injected code's failure is the reply
             return Reply(ok=False, output=output.getvalue(), error=traceback.format_exc())
         return Reply(ok=True, output=output.getvalue())
+
+    async def _pytest(self, arg: str) -> Reply:
+        """pytest from the working tree against the paused guests.
+
+        What `inject` is for a script: the loop for a pytest phase is
+        editing a test and sending it again, against guests a long setup
+        already built. `arg` is `PATH [PYTEST ARGS...]`, shell-quoted. The
+        cases are events marked `by_hand`, and the run's verdict and
+        junit.xml leave them out.
+        """
+        path, *args = shlex.split(arg)
+        tests = Path(path).expanduser().resolve()
+        if not tests.exists():
+            return Reply(ok=False, error=f"no tests at {tests}")
+        if self.session.vms is None:
+            return Reply(ok=False, error="no guests are up")
+        name = f"pytest:{tests.name}"
+        spec = PytestSpec(tests=tests, args=args)
+        try:
+            summary = await self.session._pytest(name, spec, self.session.vms, by_hand=True)
+        except CasesFailed as error:
+            return Reply(ok=False, result="failed", error=str(error))
+        except Exception:  # noqa: BLE001 -- the tests' failure to load is the reply
+            return self._record(name, Reply(ok=False, error=traceback.format_exc()))
+        return Reply(ok=True, result=summary)
 
     async def _run(self, name: str) -> Reply:
         phase = next((p for p in self.session.spec.phases if p.name == name), None)
