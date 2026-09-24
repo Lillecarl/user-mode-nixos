@@ -559,7 +559,12 @@ rec {
             phases = map (
               phase:
               {
-                inherit (phase) name after always;
+                inherit (phase)
+                  name
+                  after
+                  always
+                  nodes
+                  ;
               }
               // (
                 if phase.pytest != null then

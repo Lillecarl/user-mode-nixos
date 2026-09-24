@@ -121,8 +121,16 @@ def ready(
 
 
 def claims(phase: PhaseSpec, every: frozenset[str]) -> frozenset[str]:
-    """The guests a phase holds while it runs. No `nodes` is all of them."""
-    return frozenset(phase.nodes) if phase.nodes else every
+    """The guests a phase holds while it runs. No `nodes` is all of them.
+
+    A pytest phase holds all of them whatever its `nodes`, so it runs
+    alone. `pytest.main` is not reentrant in one process, and
+    `--capture=sys` swaps the process's stdout for each test: a script
+    phase printing beside it would have its lines filed under that test.
+    """
+    if phase.pytest is not None or not phase.nodes:
+        return every
+    return frozenset(phase.nodes)
 
 
 def launchable(
@@ -137,25 +145,15 @@ def launchable(
     is a race nobody declared. A phase without `nodes` holds every guest,
     which is how a session that declares nothing keeps running one phase
     at a time.
-
-    One pytest phase at a time, whatever its guests: `pytest.main` is not
-    reentrant in one process. Its conftests land in `sys.modules`, and
-    `--capture=sys` swaps the process's stdout for each test.
     """
     held: set[str] = set()
-    pytest = False
     for phase in running:
         held |= claims(phase, every)
-        pytest = pytest or phase.pytest is not None
     chosen: list[PhaseSpec] = []
     for phase in ready:
         wants = claims(phase, every)
         if held & wants:
             continue
-        if phase.pytest is not None:
-            if pytest:
-                continue
-            pytest = True
         held |= wants
         chosen.append(phase)
     return chosen

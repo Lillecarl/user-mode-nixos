@@ -195,16 +195,14 @@ class TestLaunchable:
         both = on("both", nodes=("unit", "parity"))
         assert names(launchable([both, SUITES[1]], [SUITES[0]], EVERY)) == ["protocol"]
 
-    def test_one_pytest_phase_at_a_time(self):
-        """pytest.main is not reentrant; disjoint guests do not change that."""
+    def test_a_pytest_phase_runs_alone(self):
+        """pytest.main is not reentrant, and its stdout capture is the
+        process's. Disjoint guests change neither."""
         a = on("a", nodes=("unit",), pytest_=True)
         b = on("b", nodes=("parity",), pytest_=True)
         assert names(launchable([a, b], [], EVERY)) == ["a"]
-        assert launchable([b], [a], EVERY) == []
-
-    def test_a_script_runs_beside_a_pytest_phase(self):
-        a = on("a", nodes=("unit",), pytest_=True)
-        assert names(launchable([SUITES[1]], [a], EVERY)) == ["protocol"]
+        assert launchable([b, SUITES[1]], [a], EVERY) == []
+        assert launchable([a], [SUITES[1]], EVERY) == []
 
     def test_the_order_given_decides_a_collision(self):
         first = on("first", nodes=("unit",))

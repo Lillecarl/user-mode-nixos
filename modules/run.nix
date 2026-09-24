@@ -46,6 +46,12 @@ let
     lib.concatMap (phase: lib.subtractLists (lib.attrNames enabled) phase.after) named
   );
 
+  # A misspelled guest would otherwise be a phase holding nothing, which
+  # runs beside everything.
+  strangers = lib.unique (
+    lib.concatMap (phase: lib.subtractLists (lib.attrNames config.nodes) phase.nodes) named
+  );
+
   # Neither is a phase that does nothing and passes; both is a guess.
   ambiguous = map (phase: phase.name) (
     lib.filter (phase: (phase.script == null) == (phase.pytest == null)) named
@@ -167,6 +173,26 @@ in
                   running it against a world that was never built gives a
                   second failure that says nothing. So name what this
                   actually needs, not what happens to come first.
+                '';
+              };
+
+              nodes = mkOption {
+                type = types.listOf types.str;
+                default = [ ];
+                example = [ "server" ];
+                description = ''
+                  The guests this phase uses. Empty is every guest.
+
+                  Phases whose guests do not overlap run at the same
+                  time once their `after` has finished; a phase holding
+                  every guest runs alone. So a session gets parallel
+                  phases by saying what each phase touches, and a
+                  session that says nothing runs one phase at a time.
+
+                  The script's `vms` holds only these guests, so a
+                  phase that reaches past its declaration fails on the
+                  name. A pytest phase always runs alone: pytest is not
+                  reentrant in one process.
                 '';
               };
 
@@ -317,6 +343,12 @@ in
           + lib.concatStringsSep ", " unknown
           + ". A phase that depends on nothing is not skipped when its"
           + " dependency fails, so this would be silent.";
+      }
+      {
+        assertion = strangers == [ ];
+        message =
+          "uml: these guests are named in a phase's `nodes` and are not in `nodes`: "
+          + lib.concatStringsSep ", " strangers;
       }
       {
         assertion = ambiguous == [ ];
