@@ -16,10 +16,26 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 
-class PytestSpec(BaseModel):
+class SpecError(ValueError):
+    """The spec cannot be run by this runner."""
+
+
+class Strict(BaseModel):
+    """A field this runner does not know is an error, not something to drop.
+
+    Measured on nixkube: a spec from a newer `lib.nix` carried
+    `pythonPath`, an older runner ignored the field, and a phase then
+    failed on an import that the field existed to make work. Nothing
+    said the two were out of step.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class PytestSpec(Strict):
     """A pytest run as a phase. See `uml/pytest_plugin.py`."""
 
     tests: Path
@@ -29,7 +45,7 @@ class PytestSpec(BaseModel):
     """Given to pytest after the runner's own. `-k`, `-x`, `-m`."""
 
 
-class PhaseSpec(BaseModel):
+class PhaseSpec(Strict):
     """One unit of work, declared in Nix and ordered there.
 
     The list arrives sorted: `lib.toposort` runs during evaluation, so a
@@ -65,7 +81,7 @@ class PhaseSpec(BaseModel):
     """
 
 
-class Knob(BaseModel):
+class Knob(Strict):
     """One declared steer, already resolved.
 
     Nix resolves it, because Nix is where it can change what is *built* —
@@ -82,8 +98,14 @@ class Knob(BaseModel):
     env: str
 
 
-class Spec(BaseModel):
+class Spec(Strict):
     """A whole run, as evaluating the module system produced it."""
+
+    uml: Path | None = None
+    """The `uml` package that wrote this spec's library, whose runner is
+    the one that knows every field in it. A front door that did not build
+    the spec -- `uml-mcp` given a spec path -- runs this one rather than
+    its own."""
 
     name: str = "uml"
     """What the run is called. Nix knows it, so nothing has to guess it
@@ -110,7 +132,22 @@ class Spec(BaseModel):
 
     @classmethod
     def read(cls, path: Path) -> Spec:
-        return cls.model_validate(json.loads(path.read_text()))
+        raw = json.loads(path.read_text())
+        try:
+            return cls.model_validate(raw)
+        except ValidationError as error:
+            unknown = [
+                ".".join(str(part) for part in item["loc"])
+                for item in error.errors()
+                if item["type"] == "extra_forbidden"
+            ]
+            if not unknown:
+                raise
+            raise SpecError(
+                f"the spec has fields this runner does not know: {', '.join(unknown)}."
+                " A newer user-mode-nixos wrote it; run it with the `uml` it"
+                f" names, {raw.get('uml') or '(none named)'}"
+            ) from None
 
     def toolchain(self) -> dict:
         """The toolchain fields, as `uml_runner.Toolchain` wants them.

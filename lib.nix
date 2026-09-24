@@ -551,6 +551,9 @@ rec {
           toolchainFor backend first
           // {
             inherit (checkedConfig) name settings;
+            # The runner that knows every field below. No cycle: the
+            # package does not depend on any spec.
+            uml = "${session}";
             pythonPath = map (path: "${path}") checkedConfig.pythonPath;
             knobs = checkedConfig.resolved;
             phases = map (

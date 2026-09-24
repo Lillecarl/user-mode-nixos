@@ -3,11 +3,10 @@
     uml-eval run pytest-phase --out ./out -- -k hostname
     uml-eval phases recipes --file ~/Code/myproject
 
-The same `uml run` as `.run`, with the evaluation and the build moved
+`nix run --file . <attr>.run` with the evaluation and the build moved
 inside it: nanopynix evaluates `--file`, selects the attribute, builds
-its `.run` (which pulls in the spec and the phase type check) and hands
-the spec to `uml`. There is no `nix build` first and no store path to
-paste.
+its `.run` (which pulls in the spec and the phase type check) and execs
+it. There is no `nix build` first and no store path to paste.
 
 **A separate package from `uml`, on purpose.** nanopynix links Nix, and
 `uml` is what every sandboxed check runs. A sandboxed check must not
@@ -21,6 +20,7 @@ environment the same way here as there.
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
 import time
@@ -30,7 +30,6 @@ from pathlib import Path
 import anyio
 import nanopynix
 from nanopynix.exceptions import NixError
-from uml import cli as uml_cli
 
 
 @dataclass(frozen=True)
@@ -90,12 +89,14 @@ def parse(argv: list[str]) -> Request:
     return Request(args.command, args.file, attr, [*rest, *tail])
 
 
-async def resolve(file: Path, attr: list[str]) -> str:
-    """Evaluate, build what the run needs, and return its spec's path.
+async def resolve(file: Path, attr: list[str], command: str) -> str:
+    """Evaluate, build the attribute's `.run` or `.phases`, and return
+    the program in it.
 
-    `.run` is built rather than `.spec` alone: its text names the type
-    check of every phase script, so building it is what runs the check,
-    exactly as it does for `nix run --file . <attr>.run`.
+    That program, and not this package's `uml`, is what runs: it carries
+    the `uml` of the library that was evaluated, which knows every field
+    of the spec. Building `.run` also runs the type check of every phase
+    script, exactly as `nix run --file . <attr>.run` does.
     """
     async with (
         nanopynix.rpc.Session() as session,
@@ -109,8 +110,9 @@ async def resolve(file: Path, attr: list[str]) -> str:
         # the name of the check runs the session it checks.
         if not await target.has_attr("spec") and await target.has_attr("session"):
             target = target.attr("session")
-        await target.attr("run").realise_string()
-        return await target.attr("spec").realise_string()
+        built = Path(await target.attr(command).realise_string())
+    [program] = sorted((built / "bin").iterdir())
+    return str(program)
 
 
 ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
@@ -145,12 +147,16 @@ def main(argv: list[str] | None = None) -> None:
     started = time.monotonic()
     say(f"evaluating {'.'.join(request.attr)} from {entry(request.file)}")
     try:
-        spec = anyio.run(resolve, request.file, request.attr)
+        program = anyio.run(resolve, request.file, request.attr, request.command)
     except NixError as error:
         say(f"evaluation failed: {explain(str(error))}")
         raise SystemExit(1) from None
     say(f"evaluated and built in {time.monotonic() - started:.1f}s")
-    uml_cli.main([request.command, "--spec", spec, *request.rest])
+    # Exec'd, not called: the program is the one the evaluated library
+    # built, with its own `uml`. Calling this package's `uml` instead ran
+    # a spec from a newer lib.nix with an older runner, and a phase failed
+    # on an import the newer field existed to make work.
+    os.execv(program, [program, *request.rest])
 
 
 if __name__ == "__main__":

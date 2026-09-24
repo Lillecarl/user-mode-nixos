@@ -149,15 +149,19 @@ def run_argv(
     only: list[str],
     offline: bool,
     pytest_args: list[str],
+    runner: Path | None = None,
 ) -> list[str]:
     """The child's command line. By attribute through `uml-eval`, which
-    evaluates first; by spec straight to `uml`."""
+    evaluates first; by spec straight to the `uml` the spec names."""
     if (attr is None) == (spec is None):
         raise ValueError("give exactly one of attr and spec")
     bin_dir = Path(sys.executable).parent
     if attr is not None:
         split_attr(attr)
         head = [str(bin_dir / "uml-eval"), "run", attr, "--file", file]
+    elif runner is not None:
+        # The spec's own `uml`, which knows every field in it.
+        head = [str(runner / "bin" / "uml"), "run", "--spec", str(spec)]
     else:
         head = [sys.executable, "-m", "uml.cli", "run", "--spec", str(spec)]
     argv = [*head, "--out", str(out)]
@@ -269,12 +273,13 @@ async def _stop(run: Run) -> None:
     run.process.kill()
 
 
-def _spec_name(spec: Path) -> str:
-    """The run's own name. A spec's file name is a store hash."""
+def _spec(spec: Path) -> dict[str, Any]:
+    """The fields of a spec this server reads: its name, since the file
+    name is a store hash, and the `uml` that knows the rest."""
     try:
-        return str(json.loads(spec.read_text()).get("name", "run"))
+        return json.loads(spec.read_text())
     except (OSError, json.JSONDecodeError):
-        return "run"
+        return {}
 
 
 def _read(path: Path) -> str:
@@ -335,7 +340,8 @@ def build(runs_holder: list[Runs]) -> FastMCP:
         (`UML_<NAME>`), or `UMBRELLA_DEV` to build against a working copy.
         Events arrive on the uml channel; `state` and `events` answer
         meanwhile."""
-        name = (attr or _spec_name(Path(str(spec)))).replace(".", "-")
+        written = _spec(Path(str(spec))) if spec is not None else {}
+        name = (attr or str(written.get("name", "run"))).replace(".", "-")
         out = Path(tempfile.mkdtemp(prefix=f"uml-{name}-"))
         argv = run_argv(
             out=out,
@@ -347,6 +353,7 @@ def build(runs_holder: list[Runs]) -> FastMCP:
             only=only or [],
             offline=offline,
             pytest_args=pytest_args or [],
+            runner=Path(written["uml"]) if written.get("uml") else None,
         )
         run = await runs().start(argv, out, env or {})
         return {"run": run.id, "out": str(out)}

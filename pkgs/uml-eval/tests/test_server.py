@@ -143,6 +143,23 @@ class TestRunArgv:
         assert argv[:5] == [sys.executable, "-m", "uml.cli", "run", "--spec"]
         assert argv[-2:] == ["--only", "cases"]
 
+    def test_by_spec_with_the_runner_it_names(self, tmp_path: Path):
+        """A spec from a newer lib.nix, run with this package's `uml`,
+        lost its `pythonPath` without a word. Measured on nixkube."""
+        argv = run_argv(
+            out=tmp_path,
+            attr=None,
+            spec="/nix/store/x-spec.json",
+            file=".",
+            breaks=[],
+            break_on_failure=False,
+            only=[],
+            offline=False,
+            pytest_args=[],
+            runner=Path("/nix/store/y-uml"),
+        )
+        assert argv[:4] == ["/nix/store/y-uml/bin/uml", "run", "--spec", "/nix/store/x-spec.json"]
+
     @pytest.mark.parametrize(("attr", "spec"), [(None, None), ("a", "b")])
     def test_exactly_one_of_attr_and_spec(self, attr, spec, tmp_path: Path):
         with pytest.raises(ValueError):

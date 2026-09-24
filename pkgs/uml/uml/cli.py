@@ -28,7 +28,7 @@ from .events import Kind, Level
 from .phases import PhaseState, summarise
 from .sinks import Broadcast, ConsoleFiles, JsonLines, Junit, Log, Terminal
 from .session import Session, SessionError
-from .spec import Spec
+from .spec import Spec, SpecError
 
 
 
@@ -329,17 +329,16 @@ async def phases(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> None:
     args = parse(argv)
-    if args.command == "phases":
-        raise SystemExit(anyio.run(phases, args))
     if args.command == "ctl":
         raise SystemExit(anyio.run(ctl, args))
-
-    args.out.mkdir(parents=True, exist_ok=True)
     try:
+        if args.command == "phases":
+            raise SystemExit(anyio.run(phases, args))
+        args.out.mkdir(parents=True, exist_ok=True)
         raise SystemExit(anyio.run(run, args))
     except KeyboardInterrupt:
         raise SystemExit(130) from None
-    except SessionError as error:
+    except (SessionError, SpecError) as error:
         print(f"[uml] {error}", file=sys.stderr, flush=True)
         raise SystemExit(1) from None
 
