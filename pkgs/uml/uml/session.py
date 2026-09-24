@@ -502,7 +502,6 @@ class Session:
         """Run one phase, and record what its outcome means for the rest."""
         if self.vms is None:
             raise SessionError("run before boot")
-        test = load_phase(phase.script) if phase.script is not None else None
         await self.drain()
         self.state[phase.name] = PhaseState.RUNNING
         self.running = phase.name
@@ -513,7 +512,11 @@ class Session:
         try:
             if phase.pytest is not None:
                 await self._pytest(phase.name, phase.pytest)
-            elif test is not None:
+            elif phase.script is not None:
+                # Loaded inside the `try`: a script that does not import
+                # is this phase failing. Outside it, an ImportError took
+                # the whole drive down with no failed phase and no pause.
+                test = load_phase(phase.script)
                 with self._capture(phase.name):
                     await test(self.vms)
         except Exception as error:

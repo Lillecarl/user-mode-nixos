@@ -27,6 +27,8 @@ class Machine:
         self.name = name
         self.loop = asyncio.get_running_loop()
         self.said: list[str] = []
+        # What a failed phase replays; a real Machine keeps its console here.
+        self._history: list[str] = []
 
     async def succeed(self, command: str) -> str:
         if asyncio.get_running_loop() is not self.loop:
@@ -237,6 +239,21 @@ class TestImports:
         session.state = {"phase": PhaseState.PENDING}
         assert await session.run(PhaseSpec(name="phase", script=script)) is PhaseState.PASSED
         assert [e.text for e in sink.of(Kind.OUTPUT)] == ["hi"]
+
+
+@pytest.mark.anyio
+class TestAScriptThatDoesNotImport:
+    async def test_is_a_failed_phase_not_a_crash(self, tmp_path: Path):
+        """Measured on nixkube: a missing helper module escaped `run` as
+        an ExceptionGroup, and the drive died with every later phase
+        still pending."""
+        script = tmp_path / "phase.py"
+        script.write_text("import no_such_helper\nasync def test(vms):\n    pass\n")
+        sink = Collect()
+        session = session_for(tmp_path, sink)
+        session.state = {"phase": PhaseState.PENDING}
+        assert await session.run(PhaseSpec(name="phase", script=script)) is PhaseState.FAILED
+        assert "no_such_helper" in session.errors["phase"]
 
 
 @pytest.mark.anyio
