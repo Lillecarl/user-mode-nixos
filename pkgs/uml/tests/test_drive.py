@@ -218,6 +218,23 @@ class TestBreakpoints:
             assert "only while paused" in (reply.error or "")
             release.set()
 
+    async def test_a_deep_output_directory_still_pauses(self, tmp_path: Path):
+        """`<out>/control.sock` is longer than `sun_path` under a deep `--out`.
+
+        Measured: a scratch directory of 95 characters failed the drive with
+        `OSError: AF_UNIX path too long`, and no breakpoint was reachable.
+        """
+        deep = tmp_path / ("d" * 60) / ("e" * 60)
+        deep.mkdir(parents=True)
+        session = FakeSession(out=deep)
+        socket = deep / SOCKET
+        assert len(str(socket)) > 108
+        async with anyio.create_task_group() as group:
+            group.start_soon(lambda: drive(session, breaks=["one"]))
+            await until_paused(socket)
+            assert (await request(socket, Op.CONTINUE)).ok
+        assert session.ran == ["one"]
+
     async def test_no_socket_without_a_breakpoint(self, tmp_path: Path):
         session = FakeSession(out=tmp_path)
         await drive(session)

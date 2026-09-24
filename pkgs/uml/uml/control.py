@@ -47,6 +47,8 @@ from .session import CasesFailed, load_phase
 from .spec import PytestSpec
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from anyio.abc import ByteStream, TaskStatus
 
     from .session import Session
@@ -156,6 +158,24 @@ async def _run(code: Any, namespace: dict[str, Any]) -> Any:
     return value
 
 
+@contextlib.contextmanager
+def reachable(path: Path) -> Iterator[str]:
+    """A name for the socket at `path` that fits in `sun_path`, 108 bytes.
+
+    `--out` can be deeper than that. `/proc/self/fd/<directory>/<name>` is
+    the same file under a short name, and is needed only to bind and to
+    connect: unlink and chmod take any length.
+    """
+    if len(os.fsencode(path)) < 100:
+        yield str(path)
+        return
+    directory = os.open(path.parent, os.O_PATH | os.O_DIRECTORY)
+    try:
+        yield f"/proc/self/fd/{directory}/{path.name}"
+    finally:
+        os.close(directory)
+
+
 async def _receive_line(stream: ByteStream) -> bytes:
     buffer = b""
     while b"\n" not in buffer:
@@ -200,7 +220,8 @@ class Controller:
         """
         self.session.out.mkdir(parents=True, exist_ok=True)
         self.path.unlink(missing_ok=True)
-        listener = await anyio.create_unix_listener(self.path)
+        with reachable(self.path) as name:
+            listener = await anyio.create_unix_listener(name)
         os.chmod(self.path, 0o600)
         task_status.started()
         try:
@@ -340,7 +361,9 @@ class Controller:
 
 async def request(socket: Path, op: Op, arg: str = "") -> Reply:
     """One request, one reply. What `uml ctl` and a test both use."""
-    async with await anyio.connect_unix(socket) as stream:
+    with reachable(socket) as name:
+        connected = await anyio.connect_unix(name)
+    async with connected as stream:
         await stream.send(json.dumps({"op": str(op), "arg": arg}).encode() + b"\n")
         line = await _receive_line(stream)
     if not line:
