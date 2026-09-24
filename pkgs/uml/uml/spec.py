@@ -61,6 +61,10 @@ class PhaseSpec(Strict):
     pytest: PytestSpec | None = None
     after: list[str] = Field(default_factory=list)
 
+    nodes: list[str] = Field(default_factory=list)
+    """The guests this phase uses; empty is every guest. Two phases whose
+    guests do not overlap run at the same time. See `phases.launchable`."""
+
     @model_validator(mode="after")
     def _one_kind(self) -> PhaseSpec:
         if (self.script is None) == (self.pytest is None):

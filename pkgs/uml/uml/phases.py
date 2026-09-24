@@ -97,6 +97,70 @@ def runnable(
     ]
 
 
+UNFINISHED = frozenset({PhaseState.PENDING, PhaseState.RUNNING})
+
+
+def ready(
+    phases: Iterable[PhaseSpec], state: dict[str, PhaseState]
+) -> list[PhaseSpec]:
+    """Pending phases whose every `after` has an answer, in the order given.
+
+    Any answer, not only a pass. A failure has already marked what it
+    takes with it `SKIPPED`, so a phase still pending here is one the
+    failure does not reach -- an `always` phase, or one after a
+    deselected phase that `--only` left out.
+    """
+    return [
+        phase
+        for phase in runnable(phases, state)
+        if all(
+            state.get(name, PhaseState.PENDING) not in UNFINISHED
+            for name in phase.after
+        )
+    ]
+
+
+def claims(phase: PhaseSpec, every: frozenset[str]) -> frozenset[str]:
+    """The guests a phase holds while it runs. No `nodes` is all of them."""
+    return frozenset(phase.nodes) if phase.nodes else every
+
+
+def launchable(
+    ready: Iterable[PhaseSpec],
+    running: Iterable[PhaseSpec],
+    every: frozenset[str],
+) -> list[PhaseSpec]:
+    """What may start now beside `running`, taken in order.
+
+    Two phases share a guest never: a phase's commands and the guest's
+    state are its own while it runs, so a second phase on the same guest
+    is a race nobody declared. A phase without `nodes` holds every guest,
+    which is how a session that declares nothing keeps running one phase
+    at a time.
+
+    One pytest phase at a time, whatever its guests: `pytest.main` is not
+    reentrant in one process. Its conftests land in `sys.modules`, and
+    `--capture=sys` swaps the process's stdout for each test.
+    """
+    held: set[str] = set()
+    pytest = False
+    for phase in running:
+        held |= claims(phase, every)
+        pytest = pytest or phase.pytest is not None
+    chosen: list[PhaseSpec] = []
+    for phase in ready:
+        wants = claims(phase, every)
+        if held & wants:
+            continue
+        if phase.pytest is not None:
+            if pytest:
+                continue
+            pytest = True
+        held |= wants
+        chosen.append(phase)
+    return chosen
+
+
 def passed(state: dict[str, PhaseState]) -> bool:
     """Did the run succeed?
 

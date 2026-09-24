@@ -13,7 +13,9 @@ import pytest
 from uml.phases import (
     PhaseState,
     dependents,
+    launchable,
     passed,
+    ready,
     runnable,
     skipped_by,
     summarise,
@@ -128,6 +130,86 @@ class TestRunnable:
     def test_the_order_given_is_the_order_returned(self):
         """Nix sorted them. Re-sorting here would be a second opinion."""
         assert [p.name for p in runnable(CHAIN, {})] == [p.name for p in CHAIN]
+
+
+def on(name: str, *after: str, nodes: tuple[str, ...] = (), pytest_: bool = False) -> PhaseSpec:
+    kind: dict = (
+        {"pytest": {"tests": Path("/dev/null/t")}}
+        if pytest_
+        else {"script": Path(f"/dev/null/{name}.py")}
+    )
+    return PhaseSpec(name=name, after=list(after), nodes=list(nodes), **kind)
+
+
+EVERY = frozenset({"unit", "protocol", "parity"})
+PREPARE = on("prepare")
+SUITES = [on(name, "prepare", nodes=(name,)) for name in ("unit", "protocol", "parity")]
+LEAKS = on("leaks", "unit", "protocol", "parity")
+PYNIXD = [PREPARE, *SUITES, LEAKS]
+
+
+def names(phases: list[PhaseSpec]) -> list[str]:
+    return [phase.name for phase in phases]
+
+
+class TestReady:
+    def test_a_phase_waits_for_its_after(self):
+        assert names(ready(PYNIXD, {})) == ["prepare"]
+
+    def test_every_independent_phase_is_ready_at_once(self):
+        assert names(ready(PYNIXD, {"prepare": PhaseState.PASSED})) == ["unit", "protocol", "parity"]
+
+    def test_a_running_dependency_is_not_an_answer(self):
+        state = {"prepare": PhaseState.PASSED, "unit": PhaseState.RUNNING, "protocol": PhaseState.PASSED}
+        assert "leaks" not in names(ready(PYNIXD, state))
+
+    def test_a_failed_dependency_is_an_answer(self):
+        """For what the failure left pending: an `always` phase here."""
+        state = {
+            "prepare": PhaseState.PASSED,
+            "unit": PhaseState.FAILED,
+            "protocol": PhaseState.PASSED,
+            "parity": PhaseState.PASSED,
+        }
+        assert names(ready(PYNIXD, state)) == ["leaks"]
+
+    def test_a_deselected_dependency_is_an_answer(self):
+        """`--only unit` runs `unit` though `prepare` never ran."""
+        state = dict.fromkeys(names(PYNIXD), PhaseState.DESELECTED) | {"unit": PhaseState.PENDING}
+        assert names(ready(PYNIXD, state)) == ["unit"]
+
+
+class TestLaunchable:
+    def test_disjoint_guests_run_together(self):
+        assert names(launchable(SUITES, [], EVERY)) == ["unit", "protocol", "parity"]
+
+    def test_a_phase_without_nodes_holds_every_guest(self):
+        """Why a session that declares nothing still runs one phase at a time."""
+        assert names(launchable([PREPARE, *SUITES], [], EVERY)) == ["prepare"]
+        assert launchable(SUITES, [PREPARE], EVERY) == []
+
+    def test_nothing_starts_beside_an_all_guest_phase(self):
+        assert launchable([LEAKS], [SUITES[0]], EVERY) == []
+
+    def test_a_shared_guest_waits(self):
+        both = on("both", nodes=("unit", "parity"))
+        assert names(launchable([both, SUITES[1]], [SUITES[0]], EVERY)) == ["protocol"]
+
+    def test_one_pytest_phase_at_a_time(self):
+        """pytest.main is not reentrant; disjoint guests do not change that."""
+        a = on("a", nodes=("unit",), pytest_=True)
+        b = on("b", nodes=("parity",), pytest_=True)
+        assert names(launchable([a, b], [], EVERY)) == ["a"]
+        assert launchable([b], [a], EVERY) == []
+
+    def test_a_script_runs_beside_a_pytest_phase(self):
+        a = on("a", nodes=("unit",), pytest_=True)
+        assert names(launchable([SUITES[1]], [a], EVERY)) == ["protocol"]
+
+    def test_the_order_given_decides_a_collision(self):
+        first = on("first", nodes=("unit",))
+        second = on("second", nodes=("unit",))
+        assert names(launchable([first, second], [], EVERY)) == ["first"]
 
 
 class TestPassed:
