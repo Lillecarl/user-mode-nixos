@@ -126,6 +126,13 @@
 15 pytest's importlib mode reuses `sys.modules`. Each run now drops what
 15 it loaded from its tests directory.
 15
+15 The kernel keeps its objects: `umlKernelCcache`, built by `pynix
+15 --namespaced --sandbox-path /ccache=...`, rebuilds in 31s after a
+15 one-line change against 122s cold. It needed a nanopynix fix:
+15 `--sandbox-path` replaced nix.conf's `sandbox-paths` and took
+15 `/bin/sh` with it. A QEMU guest runs VMs of its own only when it sets
+15 `nestedVirtualization`; before, `-cpu host` gave every guest KVM.
+15
 14 ## Suggestions, ranked
 14
 14 Not built yet. Each came from a run, not from a list.
@@ -137,12 +144,9 @@
 15 2. **Shard a suite across guests.** pynixd's `unit` is now the
 15    critical path, 40.7s of 40.7s. Phases generated per shard, each
 15    on its own guest, split it the way the suites are split now.
-14 3. **Kernel builds that keep their objects.** nanopynix's namespaced
-14    worker owns `sandbox-paths`, so a `ccacheStdenv` kernel can keep
-14    `/ccache` between builds without `nix.conf` on the host. For "does
-14    my patch series build as CI builds it", in minutes rather than half
-14    an hour; `--kernel` stays the inner loop.
-14 4. **KTAP to cases.** kselftest and KUnit write KTAP, not JUnit.
+15 3. **OCI images from a Dockerfile** (issue #16). Built in a guest
+15    with an uplink, since a Dockerfile fetches; outside the sandbox.
+15 4. **KTAP to cases.** kselftest and KUnit write KTAP, not JUnit.
 14    Reading it the way `junit_in` reads JUnit makes each a case.
 14 5. **Evidence out of CI.** nixkube's `test-qemu` now writes `--out
 14    ./uml-out`; an `upload-artifact` step keeps junit.xml, events.jsonl
