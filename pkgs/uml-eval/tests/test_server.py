@@ -1,0 +1,132 @@
+import json
+import sys
+from pathlib import Path
+
+import pytest
+
+from uml_eval.server import channel_event, run_argv, select
+
+
+def event(kind: str, **fields: object) -> dict:
+    return {"kind": kind, **fields}
+
+
+class TestChannelEvent:
+    def test_a_pause(self):
+        content, meta = channel_event(
+            event("note", text="paused", data={"reason": "after cases failed"}), "r1"
+        ) or ("", {})
+        assert meta == {"run": "r1", "event": "paused", "reason": "after cases failed"}
+        assert "guests are up" in content
+
+    def test_a_failed_phase(self):
+        pushed = channel_event(
+            event("phase_finished", phase="cases", data={"state": "failed", "error": "boom"}), "r1"
+        )
+        assert pushed == ("phase cases failed: boom", {"run": "r1", "event": "failed", "phase": "cases"})
+
+    def test_the_verdict(self):
+        pushed = channel_event(
+            event("run_finished", data={"passed": False, "states": {"boot": "passed", "cases": "failed"}}),
+            "r1",
+        )
+        assert pushed == (
+            "run failed: boot passed, cases failed",
+            {"run": "r1", "event": "finished", "passed": "false"},
+        )
+
+    @pytest.mark.parametrize(
+        "quiet",
+        [
+            event("journal", text="Started"),
+            event("phase_finished", data={"state": "passed"}),
+            event("note", text="control: exec", data={"op": "exec"}),
+        ],
+    )
+    def test_the_rest_stays_in_the_file(self, quiet: dict):
+        assert channel_event(quiet, "r1") is None
+
+    def test_every_meta_key_is_an_identifier(self):
+        """Claude Code drops a key with anything but letters, digits and _."""
+        for pushed in (
+            channel_event(event("note", data={"reason": "x"}), "r"),
+            channel_event(event("phase_finished", phase="p", data={"state": "failed"}), "r"),
+            channel_event(event("run_finished", data={"passed": True}), "r"),
+        ):
+            assert pushed is not None
+            assert all(key.isidentifier() for key in pushed[1])
+
+
+LINES = [
+    json.dumps(e)
+    for e in [
+        event("journal", machine="cp", text="a", data={"unit": "kubelet.service"}),
+        event("journal", machine="cp", text="b", data={"unit": "etcd.service"}),
+        event("journal", machine="w1", text="c", data={"unit": "kubelet.service"}),
+        event("case", phase="cases", text="t.py::test_x", data={"outcome": "failed"}),
+        event("rpc", machine="cp", phase="cases", text="hostname", data={"case": "t.py::test_x"}),
+    ]
+] + ["not json"]
+
+
+class TestSelect:
+    def test_one_service_on_one_machine(self):
+        found = select(LINES, kind="journal", machine="cp", unit="kubelet.service")
+        assert [e["text"] for e in found] == ["a"]
+
+    def test_by_case(self):
+        assert [e["text"] for e in select(LINES, case="test_x")] == ["hostname"]
+
+    def test_the_last_n(self):
+        assert [e["text"] for e in select(LINES, kind="journal", limit=2)] == ["b", "c"]
+
+    def test_contains(self):
+        assert [e["kind"] for e in select(LINES, contains="t.py")] == ["case"]
+
+
+class TestRunArgv:
+    def test_by_attribute_through_uml_eval(self, tmp_path: Path):
+        argv = run_argv(
+            out=tmp_path,
+            attr="pytest-phase",
+            spec=None,
+            file="/src",
+            breaks=["cases"],
+            break_on_failure=True,
+            only=[],
+            offline=True,
+            pytest_args=["-k", "x"],
+        )
+        assert argv[0].endswith("/uml-eval")
+        assert argv[1:5] == ["run", "pytest-phase", "--file", "/src"]
+        assert argv[-7:] == ["--break", "cases", "--break-on-failure", "--offline", "--", "-k", "x"]
+
+    def test_by_spec_straight_to_uml(self, tmp_path: Path):
+        argv = run_argv(
+            out=tmp_path,
+            attr=None,
+            spec="/nix/store/x-spec.json",
+            file=".",
+            breaks=[],
+            break_on_failure=False,
+            only=["cases"],
+            offline=False,
+            pytest_args=[],
+        )
+        assert argv[:5] == [sys.executable, "-m", "uml.cli", "run", "--spec"]
+        assert argv[-2:] == ["--only", "cases"]
+
+    @pytest.mark.parametrize(("attr", "spec"), [(None, None), ("a", "b")])
+    def test_exactly_one_of_attr_and_spec(self, attr, spec, tmp_path: Path):
+        with pytest.raises(ValueError):
+            run_argv(
+                out=tmp_path,
+                attr=attr,
+                spec=spec,
+                file=".",
+                breaks=[],
+                break_on_failure=True,
+                only=[],
+                offline=False,
+                pytest_args=[],
+            )

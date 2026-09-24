@@ -979,4 +979,23 @@ tests
     a consumer uses. `uml-eval.tests` holds its unit tests.
   */
   uml-eval = import ./pkgs/uml-eval { inherit pkgs sources; };
+
+  /*
+    `uml-mcp` driven the way Claude Code drives it: JSON-RPC over stdio,
+    against a run that fails a phase on purpose. The channel events --
+    paused, failed, finished -- are the claim; `exec` and `events` are
+    checked against the paused guests.
+
+    By spec, so nothing here evaluates. Not a check, for the same reason
+    `uml-eval` is not: CI would have to build nanopynix.
+  */
+  mcp-check =
+    let
+      uml-eval = import ./pkgs/uml-eval { inherit pkgs sources; };
+    in
+    pkgs.runCommand "uml-check-mcp" { nativeBuildInputs = [ pkgs.python3 ]; } ''
+      export HOME="$TMPDIR"
+      python3 ${./tests/mcp_driver.py} ${uml-eval}/bin/uml-mcp ${tests.pytest-phase.session.spec}
+      touch $out
+    '';
 }

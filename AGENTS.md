@@ -66,6 +66,25 @@ mode 0600, and exists only when a breakpoint was asked for.
 `uml/control.py` is the whole of it; `nix build --file . breakpoint`
 drives it against a guest.
 
+## The MCP server
+
+`.mcp.json` registers `uml-mcp` as `uml`. Its tools are `start`,
+`state`, `exec`, `inject`, `run_phase`, `resume`, `stop`, `events` and
+`runs`. A run started by `start` is a child process with
+`--break-on-failure`, never the server itself: MCP's stdio is the
+server's stdout, and a session prints to stdout.
+
+It pushes `<channel source="uml" run=... event="failed|paused|finished|exited">`
+into the session. Channels are a research preview, so they reach Claude
+only when started from this directory with:
+
+```sh
+claude --dangerously-load-development-channels server:uml
+```
+
+Without the flag the tools still work; poll `state`. `nix build --file .
+mcp-check` drives the server over raw JSON-RPC against a guest.
+
 ## Getting evidence out of a session
 
 `grep '\[test\]'` over a build log still works. Prefer the files:
