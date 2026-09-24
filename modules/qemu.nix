@@ -161,6 +161,44 @@ lib.mkIf (cfg.backend == "qemu") {
     linkConfig.Name = "vec1";
   };
 
+  /*
+    `/dev/kvm` in the guest, for its own virtual machines.
+
+    The runner hides `vmx` and `svm` from every other guest. Measured:
+    with `-cpu host` alone, udev loaded `kvm_amd` in a guest that asked
+    for nothing, so every QEMU guest could run VMs.
+
+    A unit and not `boot.kernelModules`: the module is per vendor, and
+    naming both fails `systemd-modules-load` for the one that does not
+    match. The host passes the flag only with nesting on, so a missing
+    flag is said here, not left to a VM that fails later with a bare "no
+    /dev/kvm".
+  */
+  systemd.services.uml-kvm = lib.mkIf cfg.nestedVirtualization {
+    description = "Load KVM for nested virtualization";
+    wantedBy = [ "multi-user.target" ];
+    before = [ "uml-agent.service" ];
+    serviceConfig = {
+      Type = "oneshot";
+      RemainAfterExit = true;
+    };
+    path = [
+      pkgs.gnugrep
+      pkgs.kmod
+    ];
+    script = ''
+      if grep -qw vmx /proc/cpuinfo; then
+        modprobe kvm_intel
+      elif grep -qw svm /proc/cpuinfo; then
+        modprobe kvm_amd
+      else
+        echo "the guest CPU has neither vmx nor svm: enable nesting on the host," \
+          "/sys/module/kvm_{intel,amd}/parameters/nested" >&2
+        exit 1
+      fi
+    '';
+  };
+
   # What the runner needs to boot this guest, named here rather than
   # worked out in Python, so a path it reads is a path Nix built.
   system.build.qemuBoot = {
@@ -168,5 +206,6 @@ lib.mkIf (cfg.backend == "qemu") {
     initrd = "${config.system.build.initialRamdisk}/${config.system.boot.loader.initrdFile}";
     toplevel = "${config.system.build.toplevel}";
     cmdline = lib.concatStringsSep " " config.boot.kernelParams;
+    nested = cfg.nestedVirtualization;
   };
 }

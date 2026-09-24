@@ -707,6 +707,27 @@ let
         '';
 
     /*
+      Can a QEMU guest run virtual machines of its own?
+
+      By hand, not in CI: a GitHub runner is itself a VM, and its KVM
+      does not nest a second time. Needs nesting on this host
+      (`/sys/module/kvm_{intel,amd}/parameters/nested`).
+    */
+    nested = mkSession {
+      name = "nested";
+      backend = "qemu";
+      nodes.nested = {
+        boot.uml.nestedVirtualization = true;
+        environment.systemPackages = [ pkgs.python3 ];
+      };
+      nodes.plain = { };
+      phases.kvm = {
+        script = ./tests/phases/nested.py;
+        after = [ "boot" ];
+      };
+    };
+
+    /*
       Do phases on disjoint guests run at once, and is everything they
       say still filed under the right phase?
 

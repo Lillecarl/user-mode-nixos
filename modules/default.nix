@@ -226,6 +226,21 @@ in
       '';
     };
 
+    nestedVirtualization = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Give the guest `/dev/kvm`, so it can run virtual machines of its
+        own. QEMU backend only.
+
+        Off, the runner hides `vmx` and `svm` from the guest's CPU. On, it
+        passes the host's through, which needs nesting on the host
+        (`/sys/module/kvm_{intel,amd}/parameters/nested`), and the guest
+        loads KVM for that vendor. Without nesting on the host, the
+        guest's `uml-kvm` unit fails with the reason.
+      '';
+    };
+
     diskSize = lib.mkOption {
       type = lib.types.ints.positive;
       default = 512;
@@ -484,6 +499,13 @@ in
           boot.uml.forward has more than one `ports = "all"` rule on the same
           address (rules with `address = null` all land on the same one).
           Give them different addresses, or fold them into a single rule.
+        '';
+      }
+      {
+        assertion = config.boot.uml.nestedVirtualization -> config.boot.uml.backend == "qemu";
+        message = ''
+          boot.uml.nestedVirtualization needs `backend = "qemu"`: a UML guest
+          has no virtual CPU to expose vmx or svm on.
         '';
       }
     ];

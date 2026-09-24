@@ -413,7 +413,10 @@ class Qemu:
         argv = [
             str(tools.qemu),
             "-machine", "q35,accel=kvm,memory-backend=guest-memory",
-            "-cpu", "host",
+            # Nested virtualization only when the guest asked: `-cpu host`
+            # alone hands every guest the host's vmx or svm, and udev
+            # then loads KVM in it. See `nestedVirtualization`.
+            "-cpu", "host" if boot.get("nested") else "host,-vmx,-svm",
             "-smp", str(spec.cpus),
             "-m", spec.memory,
             "-nodefaults", "-no-reboot", "-display", "none",
