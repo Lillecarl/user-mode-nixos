@@ -13,6 +13,5 @@
 {
   imports = [
     ./boot.nix
-    ./journal.nix
   ];
 }

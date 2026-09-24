@@ -168,7 +168,6 @@ phase needs, and the knobs it reads — so enabling it is one line, and
 overriding any part of it is an option like any other.
 
 ```nix
-uml.recipes.journal.enable = true;         # on
 uml.recipes.boot.enable = false;           # off
 phases.boot.script = ./my-own-boot.py;     # replaced
 ```
@@ -177,8 +176,10 @@ phases.boot.script = ./my-own-boot.py;     # replaced
 system and names the failed units when one does not. Forgetting that
 wait is how a test becomes flaky.
 
-`journal` writes each guest's journal into its `/artifacts` directory,
-after every other phase.
+No recipe collects the journal: every guest streams it to the host
+while it runs (`boot.uml.journal`, on by default), so it survives a
+guest that is killed, and each entry is an event in `events.jsonl`
+with its machine, unit, phase and pytest test.
 
 ### `always`: a phase that runs whatever failed
 
@@ -187,16 +188,16 @@ bother if that failed. A phase that collects evidence wants only the
 first:
 
 ```nix
-phases.journal = {
-  script = ./journal.py;
+phases.evidence = {
+  script = ./collect.py;
   after = [ "check" ];
   always = true;
 };
 ```
 
-Without it, a journal ordered after everything is skipped by the very
+Without it, evidence ordered after everything is skipped by the very
 failure it exists to explain. A failure is not passed on through such a
-phase either, so a phase after the journal still runs.
+phase either, so a phase after it still runs.
 
 ### Running with no internet
 
