@@ -207,10 +207,14 @@ class Runs:
         )
         await self.push_stream.send(SessionMessage(message=JSONRPCMessage(notification)))
 
-    async def start(self, argv: list[str], out: Path) -> Run:
+    async def start(self, argv: list[str], out: Path, env: dict[str, str]) -> Run:
         log = (out / "terminal.log").open("wb")
         process = await anyio.open_process(
-            argv, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            env={**os.environ, **env},
         )
         log.close()
         run = Run(id=out.name, out=out, process=process)
@@ -320,13 +324,17 @@ def build(runs_holder: list[Runs]) -> FastMCP:
         only: list[str] | None = None,
         offline: bool = False,
         pytest_args: list[str] | None = None,
+        env: dict[str, str] | None = None,
     ) -> dict[str, str]:
         """Start a run in the background; returns its id at once.
 
         `attr` is evaluated from `file` (a directory means its default.nix),
         or give `spec`, a spec path. `breaks` pauses before those phases;
-        `break_on_failure` pauses on a failed phase. Events arrive on the
-        uml channel; `state` and `events` answer meanwhile."""
+        `break_on_failure` pauses on a failed phase. `env` is added to the
+        run's environment, which the evaluation reads: a knob
+        (`UML_<NAME>`), or `UMBRELLA_DEV` to build against a working copy.
+        Events arrive on the uml channel; `state` and `events` answer
+        meanwhile."""
         name = (attr or _spec_name(Path(str(spec)))).replace(".", "-")
         out = Path(tempfile.mkdtemp(prefix=f"uml-{name}-"))
         argv = run_argv(
@@ -340,7 +348,7 @@ def build(runs_holder: list[Runs]) -> FastMCP:
             offline=offline,
             pytest_args=pytest_args or [],
         )
-        run = await runs().start(argv, out)
+        run = await runs().start(argv, out, env or {})
         return {"run": run.id, "out": str(out)}
 
     @server.tool()
