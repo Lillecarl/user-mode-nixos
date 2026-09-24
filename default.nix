@@ -769,6 +769,50 @@ let
         '';
 
     /*
+      Does `--kernel` boot the kernel it names?
+
+      The by-hand loop for kernel work: `make` in a tree, then boot what it
+      made, without a Nix build per change. A copy of the Nix-built kernel
+      outside the store stands in for a working tree's `linux`. Both
+      directions: the copy boots and the run passes, and a path that is not
+      a kernel fails the boot -- so what boots is the override, not the
+      spec's kernel behind it.
+    */
+    kernel-override =
+      let
+        run = mkSession {
+          name = "kernel";
+          nodes.one = { };
+        };
+      in
+      pkgs.runCommand "uml-check-kernel-override"
+        {
+          nativeBuildInputs = [ pkgs.jq ];
+          passthru.session = run;
+        }
+        ''
+          export HOME="$TMPDIR"
+          fail() { echo "$*" >&2; exit 1; }
+          cp "$(jq -r .kernel ${run.spec})" "$TMPDIR/linux"
+          chmod +x "$TMPDIR/linux"
+
+          ${lib.getExe run.run} --out "$TMPDIR/good" --kernel "$TMPDIR/linux" \
+            || fail "the run with a copied kernel failed"
+          jq -e --arg k "$TMPDIR/linux" 'select(.kind == "note" and .data.kernel == $k)' \
+            "$TMPDIR/good/events.jsonl" > /dev/null || fail "the run did not record the override"
+          echo "ok: a kernel from outside the store booted, and the run says so"
+
+          printf 'not a kernel\n' > "$TMPDIR/bogus"
+          chmod +x "$TMPDIR/bogus"
+          if ${lib.getExe run.run} --out "$TMPDIR/bad" --kernel "$TMPDIR/bogus"; then
+            fail "a run whose kernel is not a kernel passed -- the override is ignored"
+          fi
+          echo "ok: and a path that is not a kernel fails the boot"
+
+          touch $out
+        '';
+
+    /*
       Can a person reach into a paused run?
 
       The loop this is for: changing a phase costs an evaluation and a

@@ -101,8 +101,50 @@
 13 kernel to kill the guests; a pause now ends in the same shielded
 13 teardown as every other run.
 13
-13 Still open, in the order they look worth doing: the MCP server over
-13 the control socket, and pytest as the entrypoint.
+14 The MCP server has landed too, and dogfooding it on pynixd and
+14 nixkube found and fixed eight things: a Nix error with its point last,
+14 a stopped phase left `running`, JUnit from inside a guest, `vms.phase`
+14 and `vms.shared`, `pythonPath`, an import error that crashed the
+14 drive, a spec run by an older runner that dropped its fields, and a
+14 UML kernel whose death nobody noticed. `--kernel` boots a kernel from
+14 a working tree.
+14
+14 ## Suggestions, ranked
+14
+14 Not built yet. Each came from a run, not from a list.
+14
+14 1. **A warm session to come back to.** nixkube spends five minutes on
+14    boot, cluster and deploy before its first chaos scenario. A run
+14    held at a breakpoint already keeps that state; what is missing is
+14    starting a *new* chaos phase against it from the working tree --
+14    `inject` covers a script, not a pytest phase. `run_phase` with a
+14    pytest path would make "edit a scenario, run it again" seconds.
+14 2. **Independent phases in parallel.** pynixd's three suites need only
+14    `prepare` and ran one after another for 167s; on three guests they
+14    would take about as long as the slowest, 78s. The graph already
+14    says they are independent. Needs a phase to name its guest.
+14 3. **Kernel builds that keep their objects.** nanopynix's namespaced
+14    worker owns `sandbox-paths`, so a `ccacheStdenv` kernel can keep
+14    `/ccache` between builds without `nix.conf` on the host. For "does
+14    my patch series build as CI builds it", in minutes rather than half
+14    an hour; `--kernel` stays the inner loop.
+14 4. **KTAP to cases.** kselftest and KUnit write KTAP, not JUnit.
+14    Reading it the way `junit_in` reads JUnit makes each a case.
+14 5. **Evidence out of CI.** nixkube's `test-qemu` now writes `--out
+14    ./uml-out`; an `upload-artifact` step keeps junit.xml, events.jsonl
+14    and every console on a failure, and a JUnit reporter shows the
+14    chaos scenarios as tests.
+14 6. **gdb as a tool.** A UML kernel is a process: the pid is known
+14    (`Machine._guest_pid`). For QEMU, `-s` behind an option. An MCP
+14    tool that answers the attach command.
+14 7. **Exact per-test journal attribution, opt-in.** `settle` per
+14    pytest test costs one command per guest per test; worth it for a
+14    suite where "which test logged this" is the question.
+14 8. **Retire `mkTest`.** This repository's own tests and nixkube's
+14    `ciTest` still use it. Every feature above is session-only.
+14
+14 Still open from before: pytest as the entrypoint, and why pynixd's
+14 suites panic a UML guest in `munmap` (issue #8).
 9
 1 ## The goal
 1

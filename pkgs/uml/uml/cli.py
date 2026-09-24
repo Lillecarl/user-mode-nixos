@@ -77,6 +77,16 @@ def parse(argv: list[str] | None = None) -> argparse.Namespace:
         help="pause before this phase, with the guests up; repeatable. `uml ctl` reaches in",
     )
     run.add_argument(
+        "--kernel",
+        type=Path,
+        metavar="PATH",
+        help=(
+            "boot this kernel instead of the one Nix built: `linux` from a UML"
+            " tree, a bzImage for QEMU (virtio built in). For iterating on a"
+            " kernel without a Nix build per change; never the check's kernel"
+        ),
+    )
+    run.add_argument(
         "--break-on-failure",
         action="store_true",
         help="pause when a phase fails, with the guests up and the state intact",
@@ -183,7 +193,12 @@ async def run(args: argparse.Namespace) -> int:
     spec = Spec.read(args.spec)
     sink = sinks_for(args, spec.name)
     session = Session(
-        spec, args.out, offline=args.offline, sink=sink, pytest_args=args.pytest_args
+        spec,
+        args.out,
+        offline=args.offline,
+        sink=sink,
+        pytest_args=args.pytest_args,
+        kernel=args.kernel.resolve() if args.kernel else None,
     )
     session.emit(Kind.RUN_STARTED, f"output in {args.out}")
     announce(session)

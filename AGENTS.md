@@ -66,6 +66,20 @@ mode 0600, and exists only when a breakpoint was asked for.
 `uml/control.py` is the whole of it; `nix build --file . breakpoint`
 drives it against a guest.
 
+## Iterating on a kernel
+
+`--kernel PATH` boots a kernel from your own tree instead of the one Nix
+built: `linux` from `make ARCH=um`, or a bzImage for QEMU with virtio
+built in (the guest's modules match Nix's kernel, not yours). It is by
+hand only, and the run records that it is not the check's kernel. `nix
+build --file . kernel-override` proves both directions: a copy boots,
+and a file that is not a kernel fails the boot at once.
+
+That last half found a bug: the UML bridge never watched its kernel
+child, so a kernel that failed to start, panicked or powered off left
+the runner waiting out its whole boot timeout. The bridge now exits with
+the kernel's status.
+
 ## The MCP server
 
 `.mcp.json` registers `uml-mcp` as `uml`. Its tools are `start`,

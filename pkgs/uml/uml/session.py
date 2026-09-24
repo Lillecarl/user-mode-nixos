@@ -91,6 +91,25 @@ def load_phase(script: Path) -> Callable[[Machines], Awaitable[None]]:
     return test
 
 
+def with_kernel(
+    toolchain: dict[str, str], machines: list[dict[str, Any]], kernel: Path
+) -> tuple[dict[str, str], list[dict[str, Any]]]:
+    """The toolchain and machines, booting `kernel` instead of Nix's.
+
+    UML reads its kernel from the toolchain; QEMU from each machine's
+    `boot`. Both are swapped, so the caller need not know which backend
+    it has. Pure, and only ever reached from `--kernel`, by hand: the
+    check keeps the kernel Nix built.
+    """
+    swapped = {**toolchain, "kernel": str(kernel)} if "kernel" in toolchain else dict(toolchain)
+    return swapped, [
+        {**machine, "boot": {**machine["boot"], "kernel": str(kernel)}}
+        if isinstance(machine.get("boot"), dict)
+        else machine
+        for machine in machines
+    ]
+
+
 class Session:
     """One run, from evaluation to teardown, driven a step at a time."""
 
@@ -102,8 +121,11 @@ class Session:
         offline: bool = False,
         sink: Sink | None = None,
         pytest_args: list[str] | None = None,
+        kernel: Path | None = None,
     ) -> None:
         self.spec = spec
+        # A kernel from a working tree, by hand. See `with_kernel`.
+        self.kernel = kernel
         self.out = out
         self.offline = offline
         self.sink = sink
@@ -251,8 +273,17 @@ class Session:
         """Bring every guest up and wait for its agent."""
         if self._booted:
             raise SessionError("already booted")
-        tools = Toolchain.from_json(self.spec.toolchain())
-        specs = [MachineSpec.from_json(m) for m in self.spec.machines]
+        toolchain, machines = self.spec.toolchain(), self.spec.machines
+        if self.kernel is not None:
+            toolchain, machines = with_kernel(toolchain, machines, self.kernel)
+            self.emit(
+                Kind.NOTE,
+                f"booting {self.kernel}, not the kernel Nix built; this is not the check",
+                level=Level.ERROR,
+                kernel=str(self.kernel),
+            )
+        tools = Toolchain.from_json(toolchain)
+        specs = [MachineSpec.from_json(m) for m in machines]
 
         segments: dict[str, list[str]] = defaultdict(list)
         for one in specs:

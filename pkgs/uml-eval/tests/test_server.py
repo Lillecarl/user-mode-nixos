@@ -172,6 +172,23 @@ class TestRunArgv:
         )
         assert argv[:4] == ["/nix/store/y-uml/bin/uml", "run", "--spec", "/nix/store/x-spec.json"]
 
+    def test_a_kernel_from_a_working_tree(self, tmp_path: Path):
+        argv = run_argv(
+            out=tmp_path,
+            attr="x",
+            spec=None,
+            file=".",
+            breaks=[],
+            break_on_failure=True,
+            only=[],
+            offline=False,
+            pytest_args=["-k", "y"],
+            kernel="/home/me/linux/linux",
+        )
+        # Before `--`: after it, the flag would go to pytest.
+        assert argv[argv.index("--kernel") + 1] == "/home/me/linux/linux"
+        assert argv.index("--kernel") < argv.index("--")
+
     @pytest.mark.parametrize(("attr", "spec"), [(None, None), ("a", "b")])
     def test_exactly_one_of_attr_and_spec(self, attr, spec, tmp_path: Path):
         with pytest.raises(ValueError):

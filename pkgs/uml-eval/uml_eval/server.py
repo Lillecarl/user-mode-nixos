@@ -163,6 +163,7 @@ def run_argv(
     offline: bool,
     pytest_args: list[str],
     runner: Path | None = None,
+    kernel: str | None = None,
 ) -> list[str]:
     """The child's command line. By attribute through `uml-eval`, which
     evaluates first; by spec straight to the `uml` the spec names."""
@@ -186,6 +187,8 @@ def run_argv(
         argv.append("--break-on-failure")
     if offline:
         argv.append("--offline")
+    if kernel is not None:
+        argv += ["--kernel", kernel]
     if pytest_args:
         argv += ["--", *pytest_args]
     return argv
@@ -343,6 +346,7 @@ def build(runs_holder: list[Runs]) -> FastMCP:
         offline: bool = False,
         pytest_args: list[str] | None = None,
         env: dict[str, str] | None = None,
+        kernel: str | None = None,
     ) -> dict[str, str]:
         """Start a run in the background; returns its id at once.
 
@@ -351,6 +355,8 @@ def build(runs_holder: list[Runs]) -> FastMCP:
         `break_on_failure` pauses on a failed phase. `env` is added to the
         run's environment, which the evaluation reads: a knob
         (`UML_<NAME>`), or `UMBRELLA_DEV` to build against a working copy.
+        `kernel` boots a kernel from a working tree instead of Nix's:
+        `linux` from a UML build, or a bzImage with virtio built in.
         Events arrive on the uml channel; `state` and `events` answer
         meanwhile."""
         written = _spec(Path(str(spec))) if spec is not None else {}
@@ -367,6 +373,7 @@ def build(runs_holder: list[Runs]) -> FastMCP:
             offline=offline,
             pytest_args=pytest_args or [],
             runner=Path(written["uml"]) if written.get("uml") else None,
+            kernel=os.path.abspath(kernel) if kernel else None,
         )
         run = await runs().start(argv, out, env or {})
         return {"run": run.id, "out": str(out)}
