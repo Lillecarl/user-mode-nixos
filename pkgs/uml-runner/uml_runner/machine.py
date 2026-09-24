@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import contextlib
 import os
 import re
 import shutil
@@ -156,6 +157,16 @@ def _killpg(pid: int, sig: int) -> None:
         os.killpg(os.getpgid(pid), sig)
     except (ProcessLookupError, PermissionError):
         pass
+
+
+def _running(pid: int) -> bool:
+    """*pid* exists and is not a zombie waiting to be reaped."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return False
+    # The state follows the command name, which may itself hold ") ".
+    return stat.rpartition(")")[2].split()[0] not in ("Z", "X")
 
 
 class Machine:
@@ -327,7 +338,9 @@ class Machine:
 
     async def shutdown(self) -> None:
         """Ask the guest to power off, then make sure nothing is left."""
-        if self._conn is not None and not self._conn.closed:
+        # `alive` first: a dead guest's agent does not refuse, it hangs,
+        # and the request below waited out its full timeout after `crash`.
+        if self._conn is not None and not self._conn.closed and self.alive():
             try:
                 await asyncio.wait_for(self.execute("systemctl poweroff"), timeout=15)
             except (MachineError, OSError, EOFError, asyncio.TimeoutError):
@@ -396,6 +409,50 @@ class Machine:
         if self._process is None or self._process.returncode is not None:
             return
         _killpg(self._process.pid, sig)
+
+    def _guest_pid(self) -> int | None:
+        """The guest's own process: the kernel under UML, QEMU itself."""
+        if self._process is None:
+            return None
+        if self._pid_file is None:
+            return self._process.pid
+        try:
+            return int(self._pid_file.read_text().strip())
+        except (OSError, ValueError):
+            return None
+
+    def alive(self) -> bool:
+        """Is the guest's process still running? Asks the host, not the
+        agent: a dead guest's agent does not answer, it hangs."""
+        pid = self._guest_pid()
+        return pid is not None and _running(pid)
+
+    async def crash(self) -> None:
+        """Kill the guest outright, the way a power cut would.
+
+        SIGKILL: no shutdown, nothing flushed, no chance to say goodbye.
+        For a test of what survives a dead node. `shutdown` afterwards is
+        still safe and still needed.
+
+        The kernel's pid as well as the group, because under UML the
+        spawned process is the bridge, and killing its group alone left
+        the kernel answering RPC in one run of two.
+        """
+        if self._process is None:
+            raise MachineError(f"[{self.name}] not started")
+        pid = self._guest_pid()
+        self._signal(signal.SIGKILL)
+        if pid is not None:
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(pid, signal.SIGKILL)
+        await self._process.wait()
+        # Polled: under UML the kernel is not our child, so there is
+        # nothing to wait on.
+        for _ in range(50):
+            if not self.alive():
+                return
+            await asyncio.sleep(0.1)
+        raise MachineError(f"[{self.name}] pid {pid} survived SIGKILL")
 
     async def wait(self, timeout: float | None = 90) -> int:
         """Wait for the UML process to exit; returns its exit code."""
