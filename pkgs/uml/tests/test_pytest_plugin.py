@@ -268,6 +268,44 @@ class TestAScriptThatDoesNotImport:
         assert "no_such_helper" in session.errors["phase"]
 
 
+@pytest.mark.anyio
+class TestRunningAgain:
+    """"Edit a test, run it again" against the same guests, in one process."""
+
+    async def test_an_edit_is_what_runs(self, tmp_path: Path):
+        """pytest's importlib mode hands back a module already in
+        `sys.modules` under the same name, so the second run would be the
+        first run's code."""
+        tests = write_tests(tmp_path, "def test_it():\n    assert 1 == 1\n")
+        session = session_for(tmp_path, Collect())
+        await session._pytest("cases", PytestSpec(tests=tests), session.vms)
+        (tests / "test_guest.py").write_text("def test_it():\n    assert 1 == 2\n")
+        with pytest.raises(CasesFailed):
+            await session._pytest("cases", PytestSpec(tests=tests), session.vms)
+
+    async def test_a_same_named_file_elsewhere_is_not_the_first(self, tmp_path: Path):
+        """The store's `test_chaos.py` ran as the phase; the working tree's
+        `test_chaos.py` is what the edit is in."""
+        store, tree = tmp_path / "store", tmp_path / "tree"
+        store.mkdir()
+        tree.mkdir()
+        (store / "test_chaos.py").write_text("def test_it():\n    assert True\n")
+        (tree / "test_chaos.py").write_text("def test_it():\n    assert False, 'the edit'\n")
+        session = session_for(tmp_path, Collect())
+        await session._pytest("chaos", PytestSpec(tests=store), session.vms)
+        with pytest.raises(CasesFailed):
+            await session._pytest("chaos", PytestSpec(tests=tree), session.vms)
+
+    async def test_a_helper_beside_the_tests_is_reread(self, tmp_path: Path):
+        tests = write_tests(tmp_path, "from scenario_helpers import ANSWER\n\ndef test_it():\n    assert ANSWER == 1\n")
+        (tests / "scenario_helpers.py").write_text("ANSWER = 1\n")
+        session = session_for(tmp_path, Collect())
+        await session._pytest("cases", PytestSpec(tests=tests), session.vms)
+        (tests / "scenario_helpers.py").write_text("ANSWER = 2\n")
+        with pytest.raises(CasesFailed):
+            await session._pytest("cases", PytestSpec(tests=tests), session.vms)
+
+
 INTERLEAVED = """
 import anyio
 

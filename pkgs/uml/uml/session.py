@@ -34,6 +34,7 @@ import time
 import traceback
 from collections import defaultdict
 from contextvars import ContextVar
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import anyio
@@ -50,7 +51,6 @@ from .pytest_plugin import Plugin, arguments, machine_fixtures
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Collection
-    from pathlib import Path
 
     from .sinks import Sink
     from .spec import PhaseSpec, PytestSpec, Spec
@@ -89,6 +89,15 @@ def _pytest_main(args: list[str], plugins: list[object]) -> int:
     # The tests are in the store, which is read-only.
     sys.dont_write_bytecode = True
     return int(pytest.main(args, plugins=plugins))
+
+
+def _forget(names: set[str], under: Path) -> None:
+    """Drop the modules among `names` that were loaded from `under`."""
+    root = under.resolve()
+    for name in names:
+        file = getattr(sys.modules.get(name), "__file__", None)
+        if file is not None and Path(file).resolve().is_relative_to(root):
+            del sys.modules[name]
 
 
 def load_phase(script: Path) -> Callable[[Machines], Awaitable[None]]:
@@ -547,6 +556,7 @@ class Session:
         # could not import a helper module beside it without this.
         here = spec.tests if spec.tests.is_dir() else spec.tests.parent
         sys.path.insert(0, str(here))
+        imported = set(sys.modules)
         try:
             async with BlockingPortal() as portal:
                 plugin = Plugin(self, name, portal)
@@ -555,6 +565,10 @@ class Session:
                 code = await anyio.to_thread.run_sync(_pytest_main, args, plugins)
         finally:
             sys.path.remove(str(here))
+            # pytest's importlib mode hands back a module already in
+            # `sys.modules`, and so does a plain import of a helper. So
+            # a second run of an edited file would be the first run's code.
+            _forget(set(sys.modules) - imported, here)
         if code == pytest.ExitCode.NO_TESTS_COLLECTED:
             # A phase that tested nothing is a selection that matched
             # nothing, and a green run would hide the typo.
