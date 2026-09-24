@@ -133,6 +133,13 @@
 15 `/bin/sh` with it. A QEMU guest runs VMs of its own only when it sets
 15 `nestedVirtualization`; before, `-cpu host` gave every guest KVM.
 15
+15 One run holds UML and QEMU guests together (`mixed`). pynixd is the
+15 first consumer: `tests.daemon` puts pynixd in place of a guest's Nix
+15 daemon, on UML, and runs a local build, `ssh-ng://` and `--builders`
+15 against it and against nix-daemon on QEMU, comparing every answer.
+15 Written against paused guests over MCP. UML runs pynixd's suites with
+15 no #8 panic, for 1253 MiB of host memory against QEMU's 2256.
+15
 14 ## Suggestions, ranked
 14
 14 Not built yet. Each came from a run, not from a list.
