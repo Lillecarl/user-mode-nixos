@@ -178,6 +178,7 @@ fn main() {
 
     let mut buf = vec![0u8; 65536];
     let mut framed = vec![0u8; 65540];
+    let mut status = 0;
 
     loop {
         if SHUTDOWN.load(Ordering::SeqCst) {
@@ -208,6 +209,27 @@ fn main() {
             }
             Ok(WaitStatus::Signaled(_, sig, _)) => {
                 eprintln!("passt killed by {}; the guest has no uplink", sig);
+                break;
+            }
+            _ => {}
+        }
+
+        // And the kernel, for the same reason: this process holds its end
+        // of the socketpair too, so no EOF says it is gone. Measured with
+        // `uml run --kernel` naming a file that is not a kernel: the exec
+        // failed, the bridge ran on, and the runner -- whose child is this
+        // bridge -- waited out its whole boot timeout for a guest that
+        // never existed. A panic or a poweroff is the same case later on.
+        // Exiting with the kernel's status is what tells the runner.
+        match waitpid(uml_pid, Some(WaitPidFlag::WNOHANG)) {
+            Ok(WaitStatus::Exited(_, code)) => {
+                eprintln!("the kernel exited ({})", code);
+                status = code;
+                break;
+            }
+            Ok(WaitStatus::Signaled(_, sig, _)) => {
+                eprintln!("the kernel was killed by {}", sig);
+                status = 128 + sig as i32;
                 break;
             }
             _ => {}
@@ -272,4 +294,5 @@ fn main() {
     // Kill children so nothing leaks.
     let _ = kill(passt_pid, Signal::SIGKILL);
     let _ = kill(uml_pid, Signal::SIGKILL);
+    exit(status);
 }
