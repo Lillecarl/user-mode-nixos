@@ -62,11 +62,23 @@ class TestChannelEvent:
             {"run": "r1", "event": "finished", "passed": "false"},
         )
 
+    def test_progress_at_each_phase_boundary(self):
+        assert channel_event(event("phase_started", phase="deploy"), "r1") == (
+            "phase deploy started",
+            {"run": "r1", "event": "progress", "phase": "deploy", "state": "started"},
+        )
+        assert channel_event(
+            event("phase_finished", phase="deploy", seconds=12.4, data={"state": "passed"}), "r1"
+        ) == (
+            "phase deploy passed in 12s",
+            {"run": "r1", "event": "progress", "phase": "deploy", "state": "passed"},
+        )
+
     @pytest.mark.parametrize(
         "quiet",
         [
             event("journal", text="Started"),
-            event("phase_finished", data={"state": "passed"}),
+            event("phase_finished", data={"state": "skipped"}),
             event("note", text="control: exec", data={"op": "exec"}),
         ],
     )

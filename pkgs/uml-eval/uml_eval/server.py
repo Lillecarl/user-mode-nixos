@@ -63,7 +63,9 @@ runs a declared phase, and `resume` continues. `events` queries the run's
 event stream: filter by kind (journal, case, phase_finished, rpc, output,
 error), machine, unit, phase or case.
 
-Events arrive as <channel source="uml" run="..." event="paused|failed|finished|exited" ...>.
+Events arrive as <channel source="uml" run="..." event="progress|paused|failed|finished|exited" ...>.
+A `progress` event marks a phase starting or passing; say one line about
+it so the person watching sees the run move, and do nothing else.
 On `paused`, look with `events` and `exec` before you `resume` -- the
 guests go down when the run ends. `stop` ends a run early and still
 tears the guests down.
@@ -90,6 +92,17 @@ def channel_event(event: dict[str, Any], run: str) -> tuple[str, dict[str, str]]
     if kind == "note" and "reason" in data:
         meta |= {"event": "paused", "reason": str(data["reason"])}
         return f"paused {data['reason']}; the guests are up until the run is resumed or stopped", meta
+    # Progress, so a run of many minutes is not silent until it ends:
+    # measured, a nixkube run showed the user nothing for its first
+    # quarter of an hour. One event per phase boundary, not per line.
+    if kind == "phase_started":
+        phase = str(event.get("phase", ""))
+        meta |= {"event": "progress", "phase": phase, "state": "started"}
+        return f"phase {phase} started", meta
+    if kind == "phase_finished" and data.get("state") == "passed":
+        phase = str(event.get("phase", ""))
+        meta |= {"event": "progress", "phase": phase, "state": "passed"}
+        return f"phase {phase} passed in {event.get('seconds', 0):.0f}s", meta
     if kind == "phase_finished" and data.get("state") == "failed":
         phase = str(event.get("phase", ""))
         meta |= {"event": "failed", "phase": phase}
