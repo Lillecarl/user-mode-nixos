@@ -7,6 +7,7 @@ that owns it, the way a real one does.
 """
 
 import asyncio
+import sys
 from pathlib import Path
 from textwrap import dedent
 
@@ -37,6 +38,17 @@ class Machine:
         return self.name
 
 
+def fake_vms(*names: str) -> Machines:
+    """What `Session.boot` would have set, on fake machines."""
+    vms = Machines((name, Machine(name)) for name in names)  # ty: ignore[invalid-argument-type]
+    vms.settings = {}
+    vms.artifacts = Path("/nonexistent")
+    vms.knobs = {}
+    vms.shared = {}
+    vms.phase = None
+    return vms
+
+
 class Collect:
     def __init__(self) -> None:
         self.events: list[Event] = []
@@ -58,7 +70,7 @@ def session_for(tmp_path: Path, sink: Collect, *pytest_args: str) -> Session:
         sink=sink,
         pytest_args=list(pytest_args),
     )
-    session.vms = Machines(one=Machine("one"))  # ty: ignore[invalid-argument-type]
+    session.vms = fake_vms("one")
     return session
 
 
@@ -107,7 +119,7 @@ class TestAGoodRun:
     async def test_every_case_is_an_event(self, tmp_path: Path):
         sink = Collect()
         session = session_for(tmp_path, sink)
-        await session._pytest("cases", PytestSpec(tests=write_tests(tmp_path, GOOD)))
+        await session._pytest("cases", PytestSpec(tests=write_tests(tmp_path, GOOD)), session.vms)
         outcomes = {e.text.split("::")[-1]: e.data["outcome"] for e in sink.of(Kind.CASE)}
         assert outcomes == {
             "test_a_guest_is_a_fixture": "passed",
@@ -121,7 +133,7 @@ class TestAGoodRun:
     async def test_the_machine_was_used_on_its_own_loop(self, tmp_path: Path):
         sink = Collect()
         session = session_for(tmp_path, sink)
-        await session._pytest("cases", PytestSpec(tests=write_tests(tmp_path, GOOD)))
+        await session._pytest("cases", PytestSpec(tests=write_tests(tmp_path, GOOD)), session.vms)
         said = session.vms["one"].said  # ty: ignore[unresolved-attribute, possibly-unbound-attribute]
         assert "hostname" in said
         # The async generator fixture's teardown ran, after its setup.
@@ -130,7 +142,7 @@ class TestAGoodRun:
     async def test_a_print_is_output_naming_its_case(self, tmp_path: Path):
         sink = Collect()
         session = session_for(tmp_path, sink)
-        await session._pytest("cases", PytestSpec(tests=write_tests(tmp_path, GOOD)))
+        await session._pytest("cases", PytestSpec(tests=write_tests(tmp_path, GOOD)), session.vms)
         said = [e for e in sink.of(Kind.OUTPUT) if "says hello" in e.text]
         assert [e.data["case"].split("::")[-1] for e in said] == [
             "test_parametrized[1]",
@@ -140,14 +152,14 @@ class TestAGoodRun:
     async def test_no_test_is_left_running(self, tmp_path: Path):
         sink = Collect()
         session = session_for(tmp_path, sink)
-        await session._pytest("cases", PytestSpec(tests=write_tests(tmp_path, GOOD)))
+        await session._pytest("cases", PytestSpec(tests=write_tests(tmp_path, GOOD)), session.vms)
         assert session.case is None
 
     async def test_junit_has_one_case_per_test_and_no_phase_row(self, tmp_path: Path):
         sink = Collect()
         session = session_for(tmp_path, sink)
-        session.running = "cases"
-        await session._pytest("cases", PytestSpec(tests=write_tests(tmp_path, GOOD)))
+        session.running = {"one": "cases"}
+        await session._pytest("cases", PytestSpec(tests=write_tests(tmp_path, GOOD)), session.vms)
         finished = Event(
             at=0, kind=Kind.PHASE_FINISHED, level=30, text="", phase="cases",  # ty: ignore[invalid-argument-type]
             data={"state": "passed"},
@@ -173,21 +185,21 @@ class TestAFailingRun:
         sink = Collect()
         session = session_for(tmp_path, sink)
         with pytest.raises(CasesFailed, match="1 failed, 1 passed"):
-            await session._pytest("cases", PytestSpec(tests=write_tests(tmp_path, BAD)))
+            await session._pytest("cases", PytestSpec(tests=write_tests(tmp_path, BAD)), session.vms)
 
     async def test_the_assertion_is_rewritten(self, tmp_path: Path):
         """What pytest is for: the values, not `AssertionError`."""
         sink = Collect()
         session = session_for(tmp_path, sink)
         with pytest.raises(CasesFailed):
-            await session._pytest("cases", PytestSpec(tests=write_tests(tmp_path, BAD)))
+            await session._pytest("cases", PytestSpec(tests=write_tests(tmp_path, BAD)), session.vms)
         failed = [e for e in sink.of(Kind.CASE) if e.data["outcome"] == "failed"]
         assert failed[0].data["message"] == "assert (1 + 1) == 3"
 
     async def test_selection_reaches_pytest(self, tmp_path: Path):
         sink = Collect()
         session = session_for(tmp_path, sink, "-k", "fine")
-        await session._pytest("cases", PytestSpec(tests=write_tests(tmp_path, BAD)))
+        await session._pytest("cases", PytestSpec(tests=write_tests(tmp_path, BAD)), session.vms)
         assert [e.data["outcome"] for e in sink.of(Kind.CASE)] == ["passed"]
 
     async def test_a_selection_that_matches_nothing_fails(self, tmp_path: Path):
@@ -195,20 +207,20 @@ class TestAFailingRun:
         sink = Collect()
         session = session_for(tmp_path, sink, "-k", "no_such_test")
         with pytest.raises(CasesFailed, match="no tests were collected"):
-            await session._pytest("cases", PytestSpec(tests=write_tests(tmp_path, BAD)))
+            await session._pytest("cases", PytestSpec(tests=write_tests(tmp_path, BAD)), session.vms)
 
     async def test_arguments_pytest_rejects_are_named(self, tmp_path: Path):
         sink = Collect()
         session = session_for(tmp_path, sink, "-k", "bad((")
         with pytest.raises(CasesFailed, match="rejected its arguments.*bad"):
-            await session._pytest("cases", PytestSpec(tests=write_tests(tmp_path, BAD)))
+            await session._pytest("cases", PytestSpec(tests=write_tests(tmp_path, BAD)), session.vms)
 
     async def test_a_module_that_does_not_import(self, tmp_path: Path):
         sink = Collect()
         session = session_for(tmp_path, sink)
         tests = write_tests(tmp_path, "import no_such_module\n")
         with pytest.raises(CasesFailed):
-            await session._pytest("cases", PytestSpec(tests=tests))
+            await session._pytest("cases", PytestSpec(tests=tests), session.vms)
         [case] = sink.of(Kind.CASE)
         assert case.data["outcome"] == "error"
         assert "no_such_module" in case.data["error"]
@@ -222,7 +234,7 @@ class TestImports:
         session = session_for(tmp_path, sink)
         tests = write_tests(tmp_path, "from kube_helpers import ANSWER\n\ndef test_it():\n    assert ANSWER == 42\n")
         (tests / "kube_helpers.py").write_text("ANSWER = 42\n")
-        await session._pytest("cases", PytestSpec(tests=tests))
+        await session._pytest("cases", PytestSpec(tests=tests), session.vms)
         assert [e.data["outcome"] for e in sink.of(Kind.CASE)] == ["passed"]
 
     async def test_a_phase_script_imports_from_python_path(self, tmp_path: Path):
@@ -235,7 +247,7 @@ class TestImports:
         session = Session(
             Spec(machines=[], phases=[], pythonPath=[lib]), tmp_path / "out", sink=sink
         )
-        session.vms = Machines(one=Machine("one"))  # ty: ignore[invalid-argument-type]
+        session.vms = fake_vms("one")
         session.state = {"phase": PhaseState.PENDING}
         assert await session.run(PhaseSpec(name="phase", script=script)) is PhaseState.PASSED
         assert [e.text for e in sink.of(Kind.OUTPUT)] == ["hi"]
@@ -254,6 +266,67 @@ class TestAScriptThatDoesNotImport:
         session.state = {"phase": PhaseState.PENDING}
         assert await session.run(PhaseSpec(name="phase", script=script)) is PhaseState.FAILED
         assert "no_such_helper" in session.errors["phase"]
+
+
+INTERLEAVED = """
+import anyio
+
+async def test(vms):
+    name = vms.phase
+    for n in range(3):
+        print(f"{name} {n}")
+        await anyio.sleep(0.01)
+"""
+
+
+@pytest.mark.anyio
+class TestPhasesAtOnce:
+    """Two phases on disjoint guests, in one task group, as `drive` runs them."""
+
+    async def test_each_line_is_filed_under_its_own_phase(self, tmp_path: Path):
+        """`redirect_stdout` per phase restored the terminal when the
+        first phase ended, under the other one still printing."""
+        script = tmp_path / "interleaved.py"
+        script.write_text(INTERLEAVED)
+        sink = Collect()
+        session = session_for(tmp_path, sink)
+        session.vms = fake_vms("a", "b")
+        a = PhaseSpec(name="first", script=script, nodes=["a"])
+        b = PhaseSpec(name="second", script=script, nodes=["b"])
+        session.state = {"first": PhaseState.PENDING, "second": PhaseState.PENDING}
+        stdout = sys.stdout
+        async with anyio.create_task_group() as group:
+            group.start_soon(session.run, a)
+            group.start_soon(session.run, b)
+        said = [(e.phase, e.text) for e in sink.of(Kind.OUTPUT)]
+        assert sorted(said) == sorted(
+            [("first", f"first {n}") for n in range(3)] + [("second", f"second {n}") for n in range(3)]
+        )
+        assert [text for _, text in said][:2] != ["first 0", "first 1"], "the two did not overlap"
+        assert sys.stdout is stdout
+        assert session.running == {}
+
+    async def test_a_phase_sees_only_the_guests_it_declared(self, tmp_path: Path):
+        script = tmp_path / "reach.py"
+        script.write_text("async def test(vms):\n    vms.shared['saw'] = sorted(vms)\n    vms.b\n")
+        sink = Collect()
+        session = session_for(tmp_path, sink)
+        session.vms = fake_vms("a", "b")
+        session.state = {"reach": PhaseState.PENDING}
+        state = await session.run(PhaseSpec(name="reach", script=script, nodes=["a"]))
+        assert state is PhaseState.FAILED
+        assert "no machine 'b'" in session.errors["reach"]
+        assert session.vms.shared["saw"] == ["a"], "`shared` is the session's own dict"
+
+    async def test_a_phase_without_nodes_sees_every_guest(self, tmp_path: Path):
+        script = tmp_path / "all.py"
+        script.write_text("async def test(vms):\n    vms.shared['saw'] = (vms.phase, sorted(vms))\n")
+        session = session_for(tmp_path, Collect())
+        session.vms = fake_vms("a", "b")
+        session.state = {"all": PhaseState.PENDING}
+        await session.run(PhaseSpec(name="all", script=script))
+        assert session.vms.shared["saw"] == ("all", ["a", "b"])
+        assert session.vms.phase is None, "the session's own `vms` names no phase"
 
 
 @pytest.mark.anyio

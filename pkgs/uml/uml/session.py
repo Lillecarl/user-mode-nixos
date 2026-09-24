@@ -33,6 +33,7 @@ import sys
 import time
 import traceback
 from collections import defaultdict
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
 import anyio
@@ -48,7 +49,7 @@ from .phases import PhaseState, passed, runnable, skipped_by
 from .pytest_plugin import Plugin, arguments, machine_fixtures
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Collection
     from pathlib import Path
 
     from .sinks import Sink
@@ -57,6 +58,27 @@ if TYPE_CHECKING:
 
 class SessionError(RuntimeError):
     """The session could not do what was asked."""
+
+
+_PRINTING: ContextVar[str | None] = ContextVar("uml_printing", default=None)
+"""The phase whose task is printing. See `Session._capture`."""
+
+
+class _Lines:
+    """`sys.stdout` while phases run: each line an event of its phase."""
+
+    def __init__(self, emit: Callable[..., None]) -> None:
+        self.emit = emit
+
+    def write(self, text: str) -> int:
+        phase = _PRINTING.get()
+        for line in text.splitlines():
+            if line.strip():
+                self.emit(Kind.OUTPUT, line, phase=phase)
+        return len(text)
+
+    def flush(self) -> None:
+        pass
 
 
 class CasesFailed(RuntimeError):
@@ -140,10 +162,14 @@ class Session:
             phase.name: PhaseState.PENDING for phase in spec.phases
         }
         self.errors: dict[str, str] = {}
-        # Which phase is running, so a command carries the phase it
-        # belonged to. "What did `cluster` spend its time on" is then a
-        # question `events.jsonl` answers on its own.
-        self.running: str | None = None
+        # Which phase holds each guest, so a command or a journal entry
+        # carries the phase it belonged to. By guest because two phases
+        # on disjoint guests run at once, and a guest is only ever held by
+        # one. "What did `cluster` spend its time on" is then a question
+        # `events.jsonl` answers on its own.
+        self.running: dict[str, str] = {}
+        self._captures = 0
+        self._stdout: Any = None
         self.vms: Machines | None = None
         # Its own, not `report.RUN`. A process may hold several sessions
         # and their timings are not one run's.
@@ -201,7 +227,7 @@ class Session:
             level=Level.DETAIL,
             machine=machine,
             seconds=seconds,
-            phase=self.running,
+            phase=self.running.get(machine),
             **self._in_case(),
         )
 
@@ -219,26 +245,28 @@ class Session:
         phase it came from. That is more than the old `tee` managed: the
         line is attributed, not just kept.
 
-        **`redirect_stdout` is process-wide.** Fine for a CLI, which
-        holds one session. An MCP server holding several at once needs
-        each in its own process, or something finer than this.
+        **`sys.stdout` is process-wide**, and phases on disjoint guests
+        run at once. So the first capture installs one writer and the
+        last one out restores the real stdout, and the writer asks a
+        context variable which phase is printing: each phase is its own
+        task, and a task has its own context. `redirect_stdout` per phase
+        would restore the terminal when the first of two phases ended,
+        under the other one still printing.
         """
-        emit = self.emit
-
-        class Lines:
-            def write(self, text: str) -> int:
-                for line in text.splitlines():
-                    if line.strip():
-                        emit(Kind.OUTPUT, line, phase=phase)
-                return len(text)
-
-            def flush(self) -> None:
-                pass
-
-        with contextlib.redirect_stdout(Lines()):  # ty: ignore[invalid-argument-type]
+        token = _PRINTING.set(phase)
+        if self._captures == 0:
+            self._stdout = sys.stdout
+            sys.stdout = _Lines(self.emit)
+        self._captures += 1
+        try:
             yield
+        finally:
+            self._captures -= 1
+            if self._captures == 0:
+                sys.stdout = self._stdout
+            _PRINTING.reset(token)
 
-    def _replay(self, lines: int = 20) -> None:
+    def _replay(self, lines: int = 20, nodes: Collection[str] | None = None) -> None:
         """The end of each guest's console, at error level.
 
         This is what makes a quiet default safe. The console is off the
@@ -253,6 +281,8 @@ class Session:
         if self.vms is None:
             return
         for name, vm in self.vms.items():
+            if nodes is not None and name not in nodes:
+                continue
             tail = [line for line in list(vm._history)[-lines:] if line]
             if not tail:
                 continue
@@ -375,13 +405,19 @@ class Session:
                         entry.message,
                         level=journal.level(entry),
                         machine=name,
-                        phase=self.running,
+                        phase=self.running.get(name),
                         **entry.data(),
                         **self._in_case(),
                     )
 
-    async def settle(self, timeout: float = 2.0) -> None:
+    async def settle(
+        self, timeout: float = 2.0, nodes: Collection[str] | None = None
+    ) -> None:
         """Wait until each guest's journal has reached the host.
+
+        Only `nodes` when given: a phase settles its own guests, and a
+        token sent to a guest another phase holds is a command in the
+        middle of that phase.
 
         A test that logs and returns is done before journald has handed
         the line on, and a teardown straight after loses it: measured,
@@ -398,6 +434,8 @@ class Session:
         tokens: set[str] = set()
         with anyio.move_on_after(timeout):
             for name, tail in self._journals.items():
+                if nodes is not None and name not in nodes:
+                    continue
                 vm = self.vms.get(name)
                 if vm is None or not tail.streaming or not vm.alive():
                     continue
@@ -415,14 +453,17 @@ class Session:
                 await anyio.sleep(0.02)
         await self.drain()
 
-    def _cases_from_guests(self, phase: str) -> None:
+    def _cases_from_guests(self, phase: str, nodes: Collection[str] | None = None) -> None:
         """Every JUnit file a guest wrote during this phase, as cases.
 
         See `junit_in`. Keyed on the file and its mtime, so a suite that
         rewrites `unit.xml` in a later phase is read again, and a file
-        read once is not read twice.
+        read once is not read twice. Only `nodes` when given, so a file
+        another phase is still writing is not read half-written.
         """
         for path in sorted(self.artifacts.glob(f"*/{junit_in.DIRECTORY}/*.xml")):
+            if nodes is not None and path.parent.parent.name not in nodes:
+                continue
             try:
                 key = (path, path.stat().st_mtime_ns)
             except OSError:
@@ -500,10 +541,8 @@ class Session:
         await self.drain()
         self.case = None
 
-    async def _pytest(self, name: str, spec: PytestSpec) -> None:
+    async def _pytest(self, name: str, spec: PytestSpec, vms: Machines) -> None:
         """One pytest run, in a worker thread, against these guests."""
-        if self.vms is None:
-            raise SessionError("pytest before boot")
         # `--import-mode=importlib` puts nothing on `sys.path`, so a test
         # could not import a helper module beside it without this.
         here = spec.tests if spec.tests.is_dir() else spec.tests.parent
@@ -511,7 +550,7 @@ class Session:
         try:
             async with BlockingPortal() as portal:
                 plugin = Plugin(self, name, portal)
-                plugins = [plugin, machine_fixtures(self.vms)]
+                plugins = [plugin, machine_fixtures(vms)]
                 args = arguments(str(spec.tests), [*spec.args, *self.pytest_args])
                 code = await anyio.to_thread.run_sync(_pytest_main, args, plugins)
         finally:
@@ -529,31 +568,56 @@ class Session:
             )
         self.emit(Kind.NOTE, plugin.summary(), phase=name)
 
-    async def run(self, phase: PhaseSpec) -> PhaseState:
-        """Run one phase, and record what its outcome means for the rest."""
+    def view(self, phase: PhaseSpec) -> Machines:
+        """The guests `phase` declared, as the `vms` its script is given.
+
+        Its own object, because two phases run at once and each has its
+        own `phase`. Everything else is shared by reference: `shared` is
+        how one phase leaves a finding for the next. A phase that reaches
+        a guest it did not declare fails on the name, which is the whole
+        check that `nodes` is true.
+        """
         if self.vms is None:
             raise SessionError("run before boot")
+        wanted = phase.nodes or list(self.vms)
+        vms = Machines((name, self.vms[name]) for name in wanted)
+        vms.settings = self.vms.settings
+        vms.artifacts = self.vms.artifacts
+        vms.knobs = self.vms.knobs
+        vms.shared = self.vms.shared
+        # One script may serve several phases, told apart by this.
+        vms.phase = phase.name
+        return vms
+
+    async def run(self, phase: PhaseSpec) -> PhaseState:
+        """Run one phase, and record what its outcome means for the rest.
+
+        Reentrant for phases on disjoint guests: everything it touches
+        per phase is keyed by the phase or by its guests. Which phases
+        may overlap is `phases.launchable`'s answer, not this method's.
+        """
+        vms = self.view(phase)
+        nodes = list(vms)
         await self.drain()
         self.state[phase.name] = PhaseState.RUNNING
-        self.running = phase.name
-        # One script may serve several phases, told apart by this.
-        self.vms.phase = phase.name
-        self.emit(Kind.PHASE_STARTED, phase.name, phase=phase.name)
+        for name in nodes:
+            self.running[name] = phase.name
+        self.emit(Kind.PHASE_STARTED, phase.name, phase=phase.name, nodes=nodes)
         started = time.monotonic()
         try:
             if phase.pytest is not None:
-                await self._pytest(phase.name, phase.pytest)
+                await self._pytest(phase.name, phase.pytest, vms)
             elif phase.script is not None:
                 # Loaded inside the `try`: a script that does not import
                 # is this phase failing. Outside it, an ImportError took
                 # the whole drive down with no failed phase and no pause.
                 test = load_phase(phase.script)
                 with self._capture(phase.name):
-                    await test(self.vms)
+                    await test(vms)
         except Exception as error:
             took = time.monotonic() - started
-            await self.settle()
-            self._cases_from_guests(phase.name)
+            await self.settle(nodes=nodes)
+            self._cases_from_guests(phase.name, nodes)
             self._record(phase, started)
             self.state[phase.name] = PhaseState.FAILED
             self.errors[phase.name] = f"{type(error).__name__}: {error}"
@@ -576,7 +640,7 @@ class Session:
                     level=Level.ERROR,
                     phase=phase.name,
                 )
-            self._replay()
+            self._replay(nodes=nodes)
             for name in skipped_by(phase.name, self.spec.phases):
                 if self.state.get(name) is PhaseState.PENDING:
                     self.state[name] = PhaseState.SKIPPED
@@ -587,7 +651,7 @@ class Session:
                         state=str(PhaseState.SKIPPED),
                         reason=f"{phase.name} failed",
                     )
-            self.running = None
+            self._release(nodes)
             return PhaseState.FAILED
         except BaseException:
             # Cancelled: the run is being stopped. Recorded, then passed
@@ -602,12 +666,12 @@ class Session:
                 state=str(PhaseState.INTERRUPTED),
                 error="the run was stopped while this phase ran",
             )
-            self.running = None
+            self._release(nodes)
             raise
         took = time.monotonic() - started
-        await self.settle()
-        self._cases_from_guests(phase.name)
-        self.running = None
+        await self.settle(nodes=nodes)
+        self._cases_from_guests(phase.name, nodes)
+        self._release(nodes)
         self._record(phase, started)
         self.state[phase.name] = PhaseState.PASSED
         self.emit(
@@ -618,6 +682,10 @@ class Session:
             state=str(PhaseState.PASSED),
         )
         return PhaseState.PASSED
+
+    def _release(self, nodes: list[str]) -> None:
+        for name in nodes:
+            self.running.pop(name, None)
 
     def _record(self, phase: PhaseSpec, started: float) -> None:
         """A phase is a span in the timings as well as a row in the state.
