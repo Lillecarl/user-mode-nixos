@@ -24,6 +24,7 @@ from pathlib import Path
 import anyio
 from uml_runner import MachineError
 
+from . import monitor
 from .control import SOCKET, Controller, Op, request
 from .events import Kind, Level
 from .phases import PhaseState, launchable, ready, summarise
@@ -141,6 +142,16 @@ def parse(argv: list[str] | None = None) -> argparse.Namespace:
             " run: a phase"
         ),
     )
+    watch = sub.add_parser(
+        "monitor",
+        help="print a run's events, one line each, until its verdict",
+        description=(
+            "Follow a run that uml-mcp started. Exit 0 if it passed, 1 if it"
+            " failed, 2 if it exited without a verdict, 3 if the stream ended early."
+        ),
+    )
+    watch.add_argument("target", help="the run's --out directory, or its id")
+    watch.add_argument("--json", action="store_true", help="each event as a JSON object")
     args = parser.parse_args(argv)
     args.pytest_args = extra
     return args
@@ -430,6 +441,18 @@ def main(argv: list[str] | None = None) -> None:
     args = parse(argv)
     if args.command == "ctl":
         raise SystemExit(anyio.run(ctl, args))
+    if args.command == "monitor":
+        socket = monitor.locate(args.target)
+        try:
+            raise SystemExit(anyio.run(lambda: monitor.follow(socket, as_json=args.json)))
+        except (FileNotFoundError, ConnectionRefusedError) as error:
+            # No socket, or nobody behind it: the server that started the
+            # run is gone. What the run wrote is still on the disk.
+            print(f"[uml] cannot follow {socket}: {error}", file=sys.stderr, flush=True)
+            print(f"[uml] read {socket.parent / 'events.jsonl'} instead", file=sys.stderr, flush=True)
+            raise SystemExit(3) from None
+        except KeyboardInterrupt:
+            raise SystemExit(130) from None
     try:
         if args.command == "phases":
             raise SystemExit(anyio.run(phases, args))
