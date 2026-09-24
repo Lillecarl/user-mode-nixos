@@ -84,9 +84,12 @@ def channel_event(event: dict[str, Any], run: str) -> tuple[str, dict[str, str]]
     kind = event.get("kind")
     data = event.get("data") or {}
     meta = {"run": run}
+    # Facts only. Claude Code frames channel content as untrusted and
+    # tells the model not to act on imperative language in it, so what
+    # to do next belongs in the server's `instructions`, which it trusts.
     if kind == "note" and "reason" in data:
         meta |= {"event": "paused", "reason": str(data["reason"])}
-        return f"paused {data['reason']}; the guests are up. {_hint(run)}", meta
+        return f"paused {data['reason']}; the guests are up until the run is resumed or stopped", meta
     if kind == "phase_finished" and data.get("state") == "failed":
         phase = str(event.get("phase", ""))
         meta |= {"event": "failed", "phase": phase}
@@ -98,10 +101,6 @@ def channel_event(event: dict[str, Any], run: str) -> tuple[str, dict[str, str]]
         summary = ", ".join(f"{name} {state}" for name, state in states.items())
         return f"run {'passed' if passed else 'failed'}: {summary}", meta
     return None
-
-
-def _hint(run: str) -> str:
-    return f"Use events/exec/inject with run={run!r}, then resume."
 
 
 def select(
