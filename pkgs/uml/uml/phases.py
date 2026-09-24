@@ -37,6 +37,11 @@ class PhaseState(StrEnum):
     """Its dependency failed, so nobody knows what it would have done.
     A run holding one of these did not pass."""
 
+    INTERRUPTED = "interrupted"
+    """It was running when the run was stopped -- ^C, or `stop` from the
+    MCP server. Without this it stayed `running` in `phases.json` for
+    good, which reads as a run still in progress."""
+
     DESELECTED = "deselected"
     """The caller asked for other phases by name.
 

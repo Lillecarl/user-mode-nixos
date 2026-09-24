@@ -196,6 +196,9 @@ def junit(events: Iterable[Event], name: str = "uml") -> str:
             state = event.data.get("state", "")
             if state == "deselected":
                 continue
+            if state == "interrupted":
+                # A dashboard has no third outcome, and "passed" would lie.
+                state = "failed"
             if event.phase in with_cases and not (
                 state == "failed" and event.phase not in failing_cases
             ):

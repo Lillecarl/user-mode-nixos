@@ -10,12 +10,14 @@ import asyncio
 from pathlib import Path
 from textwrap import dedent
 
+import anyio
 import pytest
 from uml_runner import Machines
 
 from uml.events import Event, Kind, junit
+from uml.phases import PhaseState
 from uml.session import CasesFailed, Session
-from uml.spec import PytestSpec, Spec
+from uml.spec import PhaseSpec, PytestSpec, Spec
 
 
 class Machine:
@@ -208,3 +210,23 @@ class TestAFailingRun:
         [case] = sink.of(Kind.CASE)
         assert case.data["outcome"] == "error"
         assert "no_such_module" in case.data["error"]
+
+
+@pytest.mark.anyio
+class TestAStoppedPhase:
+    async def test_it_is_interrupted_not_running(self, tmp_path: Path):
+        """Measured through `uml-mcp stop`: `phases.json` said `running`
+        for a run that had ended."""
+        script = tmp_path / "slow.py"
+        script.write_text("import anyio\nasync def test(vms):\n    await anyio.sleep_forever()\n")
+        sink = Collect()
+        session = session_for(tmp_path, sink)
+        phase = PhaseSpec(name="slow", script=script)
+        session.state = {"slow": PhaseState.PENDING}
+        async with anyio.create_task_group() as group:
+            group.start_soon(session.run, phase)
+            await anyio.sleep(0.1)
+            group.cancel_scope.cancel()
+        assert session.state["slow"] is PhaseState.INTERRUPTED
+        [finished] = sink.of(Kind.PHASE_FINISHED)
+        assert finished.data["state"] == "interrupted"

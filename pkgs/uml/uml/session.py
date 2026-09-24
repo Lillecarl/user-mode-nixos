@@ -484,6 +484,21 @@ class Session:
                     )
             self.running = None
             return PhaseState.FAILED
+        except BaseException:
+            # Cancelled: the run is being stopped. Recorded, then passed
+            # on, because a stop must not be swallowed here.
+            self.state[phase.name] = PhaseState.INTERRUPTED
+            self.emit(
+                Kind.PHASE_FINISHED,
+                f"{phase.name} interrupted",
+                level=Level.ERROR,
+                phase=phase.name,
+                seconds=time.monotonic() - started,
+                state=str(PhaseState.INTERRUPTED),
+                error="the run was stopped while this phase ran",
+            )
+            self.running = None
+            raise
         took = time.monotonic() - started
         await self.settle()
         self.running = None
