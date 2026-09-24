@@ -238,6 +238,32 @@ in
   };
 
   /*
+    Before the agent, so the stream is running by the time the host sees
+    "ready" and sends its first command. `--boot` carries everything
+    logged before this unit started.
+
+    `--output-fields` keeps an entry to what a reader filters on; the
+    cursor and timestamps journalctl always adds come along anyway.
+  */
+  systemd.services.uml-journal = lib.mkIf cfg.journal {
+    description = "Stream the journal to the host";
+    wantedBy = [ "multi-user.target" ];
+    before = [ "uml-agent.service" ];
+    after = [ "systemd-journald.service" ];
+    unitConfig.RequiresMountsFor = "/artifacts";
+    serviceConfig = {
+      ExecStart = lib.escapeShellArgs [
+        "${config.systemd.package}/bin/journalctl"
+        "--follow"
+        "--boot"
+        "--output=json"
+        "--output-fields=MESSAGE,PRIORITY,_SYSTEMD_UNIT,SYSLOG_IDENTIFIER,_PID,_TRANSPORT"
+      ];
+      StandardOutput = "truncate:/artifacts/journal.jsonl";
+    };
+  };
+
+  /*
     No unit for the Nix database.
 
     There was one, and it loaded a registration at every boot.  The

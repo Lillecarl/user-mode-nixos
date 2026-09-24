@@ -39,6 +39,22 @@ An event carries `machine`, `phase` and `seconds` as fields, so a
 question about timing or about one guest is `jq` and not a regex. The
 `log` file holds the same run unfiltered, for reading.
 
+Every guest streams its journal while it runs (`boot.uml.journal`, on by
+default). Each entry becomes a `journal` event with `data.unit`,
+`data.identifier` and `data.priority`, attributed to the phase that was
+running:
+
+```sh
+jq -r 'select(.kind=="journal" and .machine=="cp" and .data.unit=="kubelet.service") | .text' result/events.jsonl
+jq -c 'select(.kind=="journal" and .data.priority <= 3)' result/events.jsonl   # every error, every guest
+```
+
+It goes through `/artifacts/journal.jsonl`, not the agent's RPC.
+hostfs and virtiofs are write-through (measured, `default.nix` `incr`),
+so an entry is on the host's disk when journald has it, and a guest
+killed with SIGKILL keeps everything it logged — `nix build --file .
+stream` proves that with `vm.crash()`.
+
 **Do not add a `print` to the runner.** `Session.emit` is the one way in,
 and everything downstream — terminal, log, JSONL, per-guest files, JUnit
 — follows from it. A phase script may `print` freely; that is captured

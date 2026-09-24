@@ -66,6 +66,11 @@ class Kind(StrEnum):
     and `[uml] [test] ...` helps nobody. `grep '[test]'` keeps working,
     which AGENTS.md has told people to do since the beginning."""
 
+    JOURNAL = "journal"
+    """One journal entry from a guest, streamed while it runs. `data`
+    carries `unit`, `identifier`, `priority` and `pid`, so one service
+    on one machine is a `jq` select, not a regex."""
+
     NOTE = "note"
     """The runner talking about itself."""
 
@@ -124,6 +129,9 @@ def render(event: Event) -> str:
     """
     if event.kind is Kind.CONSOLE and event.machine:
         return f"[{event.machine}] {event.text}"
+    if event.kind is Kind.JOURNAL and event.machine:
+        source = event.data.get("unit") or event.data.get("identifier") or "journal"
+        return f"[{event.machine}] {source}: {event.text}"
     if event.kind in (Kind.PHASE_STARTED, Kind.PHASE_FINISHED):
         return f"[phase] {event.text}"
     if event.kind is Kind.RPC and event.machine:

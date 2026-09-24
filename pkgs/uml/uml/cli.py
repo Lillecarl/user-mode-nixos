@@ -186,7 +186,20 @@ async def drive(session: Session, *, hold: bool = False) -> None:
     Separate from `run` so it can be driven with something other than a
     command line -- which is what an MCP server does, and what the test
     for the teardown path does.
+
+    The guests' journals stream beside it for the whole drive, a held
+    one included: a guest left up after a failure keeps logging, and
+    that is often what explains the failure.
     """
+    async with anyio.create_task_group() as group:
+        group.start_soon(session.follow)
+        try:
+            await _sequence(session, hold=hold)
+        finally:
+            group.cancel_scope.cancel()
+
+
+async def _sequence(session: Session, *, hold: bool) -> None:
     held = False
     try:
         # Inside the `try`, not before it. `_start_all` lets every guest
@@ -210,6 +223,9 @@ async def drive(session: Session, *, hold: bool = False) -> None:
         session.emit(Kind.ERROR, f"no guests: {error}", level=Level.ERROR)
         session._replay()
     finally:
+        # So `events.jsonl` has the guests' last words before its verdict.
+        with anyio.CancelScope(shield=True):
+            await session.drain()
         # Written before the hold, not after: a held session is stopped
         # with a signal, and nothing after `sleep_forever` runs.
         session.write_output()

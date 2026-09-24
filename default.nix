@@ -558,6 +558,75 @@ let
         '';
 
     /*
+      Does a guest's journal survive the guest?
+
+      A unit logs a line, the phase waits until the line is in the
+      host-side file while the guest still runs, and then kills the guest
+      with SIGKILL -- no shutdown, nothing flushed. The line must be in
+      `events.jsonl` afterwards as an event that carries the machine, the
+      unit and the phase. That is the question an agent asks with `jq`,
+      and the failure it has to answer for is the spectacular kind.
+    */
+    stream =
+      let
+        run = mkSession {
+          name = "stream";
+          nodes.one = { };
+          phases.crash = {
+            script = ./tests/phases/crash.py;
+            after = [ "boot" ];
+          };
+        };
+      in
+      pkgs.runCommand "uml-check-stream"
+        {
+          nativeBuildInputs = [ pkgs.jq ];
+          passthru = { inherit run; };
+        }
+        ''
+          events=${run.attempt}/events.jsonl
+          jq -r '.phases[] | "\(.name)\t\(.state)"' ${run.attempt}/phases.json
+
+          found=$(jq -c 'select(.kind == "journal"
+                                and .machine == "one"
+                                and .data.unit == "probe.service"
+                                and .text == "streamed-before-the-crash")' "$events")
+          if [ -z "$found" ]; then
+            echo "the line is not in events.jsonl as a journal event from probe.service" >&2
+            jq -c 'select(.kind == "journal")' "$events" | tail -20 >&2
+            exit 1
+          fi
+          echo "ok: $found"
+
+          if [ "$(echo "$found" | jq -r .phase)" != "crash" ]; then
+            echo "the entry is not attributed to the phase that caused it" >&2
+            exit 1
+          fi
+          echo "ok: attributed to the phase that logged it"
+
+          grep -q streamed-before-the-crash ${run.attempt}/artifacts/one/journal.jsonl \
+            || { echo "the raw journal on the host lost the line" >&2; exit 1; }
+          echo "ok: and the raw stream is in the artifacts"
+
+          # A guest that shut down cleanly would have had time to flush,
+          # and then this check proves nothing about a crash.
+          if grep -qE 'Reached target.*Power-Off|reboot: ' ${run.attempt}/console/one.log; then
+            echo "the guest shut down cleanly; crash() did not kill it" >&2
+            exit 1
+          fi
+          if jq -e 'select(.kind == "rpc" and .text == "systemctl poweroff")' "$events" > /dev/null; then
+            echo "teardown asked a dead guest to power off" >&2
+            exit 1
+          fi
+          echo "ok: and the guest died without a shutdown"
+
+          n=$(jq -s 'map(select(.kind == "journal")) | length' "$events")
+          echo "ok: $n journal entries streamed in all"
+
+          touch $out
+        '';
+
+    /*
       Can a guest host a userspace filesystem?
 
       The question a build sandbox cannot answer for itself: its /dev has

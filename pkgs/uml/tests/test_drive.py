@@ -9,6 +9,7 @@ somebody notices.
 
 from pathlib import Path
 
+import anyio
 import pytest
 from uml_runner import MachineError
 
@@ -28,6 +29,7 @@ class FakeSession:
         self.torn_down = False
         self.wrote = False
         self.said: list[str] = []
+        self.following: bool | None = None
 
     def emit(self, kind, text: str, **_kwargs) -> None:
         self.said.append(f"{kind}:{text}")
@@ -53,9 +55,20 @@ class FakeSession:
 
     def write_output(self) -> None:
         self.wrote = True
+        self.said.append("write")
 
     async def teardown(self) -> None:
         self.torn_down = True
+
+    async def drain(self) -> None:
+        self.said.append("drain")
+
+    async def follow(self) -> None:
+        self.following = True
+        try:
+            await anyio.sleep_forever()
+        finally:
+            self.following = False
 
 
 @pytest.mark.anyio
@@ -96,6 +109,30 @@ class TestTeardownAlwaysHappens:
         session = FakeSession(boot_error=MachineError("no"))
         await drive(session)
         assert "replay" in session.said
+
+
+@pytest.mark.anyio
+class TestTheJournalFollower:
+    async def test_it_stops_when_the_drive_ends(self):
+        """`follow` never returns by itself, so a drive that forgot to
+        cancel it would never return either."""
+        session = FakeSession()
+        with anyio.fail_after(5):
+            await drive(session)
+        assert session.following is False
+
+    async def test_it_stops_when_the_boot_failed(self):
+        session = FakeSession(boot_error=MachineError("no"))
+        with anyio.fail_after(5):
+            await drive(session)
+        assert session.following is False
+
+    async def test_the_last_entries_come_before_the_verdict(self):
+        """A reader of `events.jsonl` stops at `run_finished`. A guest's
+        last words after it are words nobody reads."""
+        session = FakeSession()
+        await drive(session)
+        assert session.said.index("drain") < session.said.index("write")
 
 
 @pytest.mark.anyio

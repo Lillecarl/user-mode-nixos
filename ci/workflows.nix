@@ -218,13 +218,14 @@ let
     ghanix = sandboxBootstrap;
     steps = [
       (steps.build {
-        name = "The session: phase rules, knobs, --only, recipes";
+        name = "The session: phase rules, knobs, --only, recipes, stream";
         attrs = [
           "phase-rules"
           "knobs"
           "only-rules"
           "recipes"
           "impure"
+          "stream"
         ];
         timeoutMinutes = 20;
       })

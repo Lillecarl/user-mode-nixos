@@ -39,6 +39,7 @@ from uml_runner import Machine, Machines, MachineSpec, Toolchain
 from uml_runner.net import build_lans
 from uml_runner.report import Report
 
+from . import journal
 from .events import Event, Kind, Level
 from .phases import PhaseState, passed, runnable, skipped_by
 
@@ -107,6 +108,10 @@ class Session:
         self.report = Report()
         self._lans: list[Any] = []
         self._booted = False
+        self._journals: dict[str, journal.Tail] = {}
+        # `follow` and a phase boundary both drain, and a Tail read twice
+        # at once hands the same lines to both.
+        self._draining = anyio.Lock()
 
     # ── events ─────────────────────────────────────────────────────
 
@@ -232,6 +237,13 @@ class Session:
 
         self.emit(Kind.BOOT, f"booting {', '.join(one.name for one in specs)}")
         self.artifacts.mkdir(parents=True, exist_ok=True)
+        self._journals = {}
+        for one in specs:
+            path = self._guest_artifacts(one.name) / journal.FILE
+            # A second run into the same `--out` would otherwise follow the
+            # last run's journal as if this guest had written it.
+            path.unlink(missing_ok=True)
+            self._journals[one.name] = journal.Tail(path)
         vms = Machines(
             (
                 one.name,
@@ -279,11 +291,50 @@ class Session:
         self._booted = True
         return vms
 
+    async def drain(self) -> None:
+        """Emit every journal entry the guests have written since last asked.
+
+        Attributed to the running phase. That is exact to within
+        journald's own latency because a phase boundary drains too: what
+        is read while a phase runs was written after it started.
+        """
+        async with self._draining:
+            for name, tail in self._journals.items():
+                for line in await tail.read():
+                    entry = journal.parse(line)
+                    if entry is None:
+                        continue
+                    self.emit(
+                        Kind.JOURNAL,
+                        entry.message,
+                        level=journal.level(entry),
+                        machine=name,
+                        phase=self.running,
+                        **entry.data(),
+                    )
+
+    async def follow(self, interval: float = 0.25) -> None:
+        """Stream the guests' journals into the events, until cancelled.
+
+        Run beside the phases by whatever drives the session -- `drive`
+        in a task group, an MCP server in a task of its own. The session
+        holds no task of its own, so it has no lifetime to get wrong.
+        """
+        try:
+            while True:
+                await self.drain()
+                await anyio.sleep(interval)
+        finally:
+            # What the guests wrote on the way down.
+            with anyio.CancelScope(shield=True):
+                await self.drain()
+
     async def run(self, phase: PhaseSpec) -> PhaseState:
         """Run one phase, and record what its outcome means for the rest."""
         if self.vms is None:
             raise SessionError("run before boot")
         test = load_phase(phase.script)
+        await self.drain()
         self.state[phase.name] = PhaseState.RUNNING
         self.running = phase.name
         self.emit(Kind.PHASE_STARTED, phase.name, phase=phase.name)
@@ -293,6 +344,7 @@ class Session:
                 await test(self.vms)
         except Exception as error:
             took = time.monotonic() - started
+            await self.drain()
             self._record(phase, started)
             self.state[phase.name] = PhaseState.FAILED
             self.errors[phase.name] = f"{type(error).__name__}: {error}"
@@ -325,6 +377,7 @@ class Session:
             self.running = None
             return PhaseState.FAILED
         took = time.monotonic() - started
+        await self.drain()
         self.running = None
         self._record(phase, started)
         self.state[phase.name] = PhaseState.PASSED

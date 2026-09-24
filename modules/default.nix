@@ -260,6 +260,21 @@ in
       '';
     };
 
+    journal = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        Stream this guest's journal to `/artifacts/journal.jsonl` while
+        it runs, one JSON object per entry.
+
+        The host follows the file and turns each entry into an event
+        that carries the machine and the unit. hostfs and virtiofs are
+        both write-through, so an entry is on the host's disk as soon as
+        journald has it -- a guest that is killed keeps everything it
+        logged up to that moment.
+      '';
+    };
+
     sshPort = lib.mkOption {
       type = lib.types.port;
       default = 4325;
