@@ -19,6 +19,7 @@ Three pieces, each for a fact measured before it was written:
 
 from __future__ import annotations
 
+import json
 import os
 import pwd
 import selectors
@@ -144,7 +145,11 @@ def oci_config(
         ),
         _fs("tmpfs", "/dev/shm", "nosuid", "noexec", "nodev", "mode=1777"),
         _fs("mqueue", "/dev/mqueue", "nosuid", "noexec", "nodev"),
-        _fs("sysfs", "/sys", "nosuid", "noexec", "nodev"),
+        # Read-only, which is what keeps udevd from starting: its unit has
+        # `ConditionPathIsReadWrite=/sys`. A udevd in a user namespace gets
+        # no uevents, so every link stayed "pending" and networkd never
+        # configured vec0 (measured).
+        _fs("sysfs", "/sys", "nosuid", "noexec", "nodev", "ro"),
         _fs("cgroup", "/sys/fs/cgroup", "nosuid", "noexec", "nodev", "rw"),
         _fs("tmpfs", "/run", "nosuid", "nodev", "mode=755"),
         _fs("tmpfs", "/tmp", "nosuid", "nodev", "mode=1777"),
@@ -361,9 +366,38 @@ def _relay(master: int, crun: subprocess.Popen) -> None:
         out.flush()
 
 
+def _uplink(crun: list[str], name: str, log: Path, pasta: list[str]) -> subprocess.Popen:
+    """Start pasta in the guest's namespaces: ``vec0``, as passt gives the
+    other backends, with its DHCP, its DNS and its forwards.
+
+    pasta joins by the init's pid, so this waits for crun to have one. It
+    fails at start or not at all -- a port it cannot bind is fatal -- so a
+    dead pasta a moment later is reported with its log.
+    """
+    pid = json.loads(
+        subprocess.run([*crun, "state", name], capture_output=True, text=True, check=True).stdout
+    )["pid"]
+    with log.open("wb") as handle:
+        proc = subprocess.Popen(
+            [*pasta, str(pid)],
+            stdout=handle,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+            preexec_fn=_die_with_parent,
+        )
+    time.sleep(0.05)
+    if proc.poll() is not None:
+        tail = "\n".join(log.read_text(errors="replace").splitlines()[-20:])
+        raise RuntimeError(f"pasta exited ({proc.returncode}) instead of serving the uplink:\n{tail}")
+    return proc
+
+
 def main(argv: list[str] | None = None) -> int:
-    """``python -m uml_runner.crun_launch CRUN STATE BUNDLE NAME``."""
-    crun_bin, state, bundle, name = argv or sys.argv[1:]
+    """``python -m uml_runner.crun_launch CRUN STATE BUNDLE NAME [LOG PASTA...]``.
+
+    With LOG and a pasta command line, the guest gets an uplink.
+    """
+    crun_bin, state, bundle, name, *uplink = argv or sys.argv[1:]
     crun = [crun_bin, "--root", state, "--cgroup-manager=disabled"]
 
     # A short directory: a sockaddr_un holds 108 bytes, and a bundle under
@@ -391,6 +425,7 @@ def main(argv: list[str] | None = None) -> int:
 
     listener.settimeout(0.5)
     master: int | None = None
+    pasta: subprocess.Popen | None = None
     try:
         while master is None and proc.poll() is None:
             try:
@@ -400,6 +435,14 @@ def main(argv: list[str] | None = None) -> int:
             _, fds, _, _ = socket.recv_fds(conn, 1024, 1)
             conn.close()
             master = fds[0]
+        if master is not None and uplink:
+            try:
+                pasta = _uplink(crun, name, Path(uplink[0]), uplink[1:])
+            except (RuntimeError, subprocess.CalledProcessError) as error:
+                # On the console, which is where Machine looks for why a
+                # guest did not come up.
+                print(f"uml-crun: {error}", flush=True)
+                return 1
         if master is not None:
             _relay(master, proc)
         return proc.wait()
@@ -410,5 +453,8 @@ def main(argv: list[str] | None = None) -> int:
         if proc.poll() is None:
             stop(signal.SIGTERM, None)
             proc.wait()
+        if pasta is not None and pasta.poll() is None:
+            pasta.kill()
+            pasta.wait()
         subprocess.run([*crun, "delete", "--force", name], capture_output=True)
 

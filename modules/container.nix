@@ -23,6 +23,9 @@ lib.mkIf (cfg.backend == "container") {
   # the agent listens on a socket in it.
   boot.uml.agentDevice = "unix:/run/host/agent/sock";
 
+  # isContainer's login prompt, on the console the runner reads.
+  systemd.services.console-getty.enable = false;
+
   # A container cannot mount these, and systemd reports the failure as a
   # degraded system (measured).
   systemd.suppressedSystemUnits = [

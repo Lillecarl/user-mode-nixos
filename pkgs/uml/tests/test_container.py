@@ -6,6 +6,7 @@ what a mistake in the pure half looks like before anything runs.
 
 from pathlib import Path
 
+from uml_runner.backend import Container
 from uml_runner.container import (
     AGENT_DIR,
     CAPABILITIES,
@@ -81,6 +82,12 @@ class TestOciConfig:
         assert store["source"] == "/nix/store"
         assert "ro" in store["options"]
 
+    def test_sysfs_is_read_only(self):
+        """Writable, it starts udevd, which gets no uevents in a user
+        namespace, and networkd then never configures vec0."""
+        sysfs = next(m for m in config()["mounts"] if m["destination"] == "/sys")
+        assert "ro" in sysfs["options"]
+
     def test_the_cgroup_is_writable(self):
         cgroup = next(m for m in config()["mounts"] if m["destination"] == "/sys/fs/cgroup")
         assert "rw" in cgroup["options"]
@@ -88,6 +95,22 @@ class TestOciConfig:
     def test_artifacts_only_when_given(self):
         assert "/artifacts" in destinations(config())
         assert "/artifacts" not in destinations(config(artifacts=None))
+
+
+class TestPastaForwards:
+    """pasta forwards more than passt by default; a guest must not."""
+
+    def test_no_loopback_splice_and_no_scanned_udp(self):
+        args = Container._pasta_forwards(["--tcp-ports", "127.0.0.2/4325"])
+        assert args[:2] == ["--tcp-ports", "127.0.0.2/4325"]
+        assert args[2:] == ["--tcp-ns", "none", "--udp-ns", "none", "--udp-ports", "none"]
+
+    def test_a_udp_rule_is_kept(self):
+        args = Container._pasta_forwards(
+            ["--tcp-ports", "127.0.0.2/4325", "--udp-ports", "127.0.0.2/53"]
+        )
+        assert args.count("--udp-ports") == 1
+        assert "none" not in args[args.index("--udp-ports") + 1]
 
 
 class TestSubordinate:

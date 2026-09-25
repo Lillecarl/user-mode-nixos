@@ -129,8 +129,8 @@ in
         then multiprocessor and much faster. `container` runs the system
         under rootless crun on the host's own kernel: no kernel boot, but
         no kernel of its own either, and the host needs user namespaces,
-        subordinate ids and a writable cgroup. It has no LAN or uplink
-        yet.
+        subordinate ids and a writable cgroup. It has an uplink and
+        forwards, through pasta, and no LAN yet.
 
         The guest is the same NixOS configuration either way, and so is
         the test script. What changes is the kernel and how `/nix`

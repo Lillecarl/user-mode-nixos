@@ -7,6 +7,8 @@ needs the subordinate ids: with root alone mapped it fails at the GROUP
 step.
 """
 
+import socket
+
 from uml_runner import Machines
 
 
@@ -27,3 +29,19 @@ async def test(vms: Machines) -> None:
     if who.strip() != "65534":
         raise AssertionError(f"nobody runs as {who.strip()}")
     print("[test] systemd is up, nothing failed, and nobody is 65534")
+
+    # The uplink: pasta's DHCP gives vec0 the address passt gives the
+    # other backends, and its DNS forwarder answers.
+    await one.succeed(
+        "for i in $(seq 50); do ip -4 -o addr show vec0 | grep -q inet && exit 0; sleep 0.2; done; exit 1"
+    )
+    print(f"[test] vec0: {(await one.succeed('ip -4 -o addr show vec0')).split()[3]}")
+    await one.succeed("getent hosts localhost")
+
+    # A forward: the host reaches the guest's sshd through pasta.
+    host, _, port = one.reachable(4325)[0].rpartition(":")
+    with socket.create_connection((host, int(port)), timeout=10) as conn:
+        banner = conn.recv(64)
+    if not banner.startswith(b"SSH-"):
+        raise AssertionError(f"{host}:{port} answered {banner!r}, not sshd")
+    print(f"[test] the host reaches sshd at {host}:{port}")

@@ -298,15 +298,19 @@ systemd-run --user --scope -p Delegate=yes nix run --file . uml-eval -- run cont
 ```
 
 - `modules/container.nix`: `boot.isContainer`, a root template directory
-  the runner copies, `/nix/store` bound read-only. No LAN, uplink,
-  forwards or memory control yet; a LAN refuses at launch.
+  the runner copies, `/nix/store` bound read-only. No LAN or memory
+  control yet; a LAN refuses at launch.
+- Uplink: the launcher starts pasta on the init's pid once crun has one,
+  as `vec0` with passt's arguments; `_pasta_forwards` turns off what pasta
+  forwards beyond passt. `/sys` is read-only so udevd stays off: in a
+  user namespace it gets no uevents and networkd waited on it for ever.
 - The agent listens on `unix:/run/host/agent/sock`; `Launch.agent_path`
   makes `Machine` connect after the ready line.
 - `uml_runner.crun_launch` relays the pty crun hands over the console
   socket; crun will not write it to a pipe. EIO on the master is systemd
   re-opening the console, not the end.
-- Lifetime chain: runner → launcher → crun (`die_with_parent`) → init
-  (`setpriv --pdeathsig KILL`). SIGKILL of the runner leaves nothing
+- Lifetime chain: runner → launcher → crun and pasta (`die_with_parent`)
+  → init (`setpriv --pdeathsig KILL`). SIGKILL of the runner leaves nothing
   (measured). Keep every link when touching it.
 
 A QEMU guest gets `-cpu host` minus `vmx` and `svm`, so it cannot run

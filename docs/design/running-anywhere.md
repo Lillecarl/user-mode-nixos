@@ -1025,9 +1025,15 @@
 17 behind: 14 guest processes before, none after. Without a delegated
 17 cgroup the run refuses at once and names the fix.
 17
-17 Not built yet, in order: the LAN and the uplink, a writable store, the
-17 re-exec under a delegated scope, and the sandboxed check with
-17 `uid-range`.
+17 Not built yet, in order: the LAN, a writable store, the re-exec under
+17 a delegated scope, and the sandboxed check with `uid-range`.
+17
+17 The uplink is built: pasta joins the guest's namespaces by the init's
+17 pid and gives it `vec0`, with passt's addressing, DNS and forwards.
+17 One trap cost a run. With `/sys` writable, udevd starts in the
+17 container, gets no uevents in a user namespace, and networkd leaves
+17 every link "pending" for ever. `/sys` is now read-only, as nspawn and
+17 podman have it, which is udevd's own condition for not starting.
 1
 1 ## What "any machine" means
 1

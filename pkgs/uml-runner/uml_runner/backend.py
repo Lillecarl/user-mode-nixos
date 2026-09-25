@@ -675,8 +675,9 @@ class Container:
     """A guest as a rootless container: no kernel boot, the host's own.
 
     Needs what :func:`uml_runner.container.probe` checks, and says which of
-    it is missing before anything starts. No LAN, no uplink and no memory
-    control yet.
+    it is missing before anything starts. The uplink and the forwards are
+    pasta's, joined to the guest's namespaces by the launcher. No LAN and
+    no memory control yet.
     """
 
     name = "container"
@@ -740,6 +741,15 @@ class Container:
                 str(state),
                 str(bundle),
                 f"uml-{spec.name}-{os.getpid()}",
+                # The uplink: pasta joins the guest's namespaces once crun
+                # has an init, with passt's arguments and forwards.
+                str(rundir / "passt.log"),
+                str(tools.passt.with_name("pasta")),
+                "--foreground",
+                "--ns-ifname",
+                "vec0",
+                *forward.uplink_args(machine.offline),
+                *self._pasta_forwards(forward.to_args(machine.forward)),
             ],
             pass_fds=(),
             # A Nix-wrapped program carries its imports in the script, not
@@ -748,6 +758,21 @@ class Container:
             agent_path=agent_dir / "sock",
             cleanup=cleanup,
         )
+
+
+    @staticmethod
+    def _pasta_forwards(args: list[str]) -> list[str]:
+        """*args*, plus what makes pasta forward only what passt would.
+
+        pasta forwards more by default: UDP ports it scans for, and the
+        guest's loopback to the host's. passt does neither, so a guest
+        that could reach the host's loopback here could not under UML.
+        """
+        extra = ["--tcp-ns", "none", "--udp-ns", "none"]
+        for flag in ("--tcp-ports", "--udp-ports"):
+            if flag not in args:
+                extra += [flag, "none"]
+        return [*args, *extra]
 
 
 BACKENDS = {backend.name: backend() for backend in (Uml, Qemu, Container)}
