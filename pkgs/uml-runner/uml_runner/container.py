@@ -153,7 +153,25 @@ def oci_config(
         _fs("cgroup", "/sys/fs/cgroup", "nosuid", "noexec", "nodev", "rw"),
         _fs("tmpfs", "/run", "nosuid", "nodev", "mode=755"),
         _fs("tmpfs", "/tmp", "nosuid", "nodev", "mode=1777"),
-        _bind(f"{store}/store", "/nix/store", "ro"),
+        # The host's store below, the guest's writes above. `userxattr`
+        # because an unprivileged overlay may not use trusted.* xattrs.
+        #
+        # /nix/store and not all of /nix, as the other backends have it.
+        # Unprivileged, `lowerdir=/nix` fails with EINVAL where the host's
+        # /nix/store is a mount of its own, and `lowerdir=/nix/store`
+        # works (measured with unshare). One mount for all of /nix is for
+        # a kubelet `subPath`, and a container guest runs no kubelet.
+        {
+            "destination": "/nix/store",
+            "type": "overlay",
+            "source": "overlay",
+            "options": [
+                f"lowerdir={store}/store",
+                f"upperdir={rootfs}/.nix-upper",
+                f"workdir={rootfs}/.nix-work",
+                "userxattr",
+            ],
+        },
         _bind(str(agent_dir), AGENT_DIR, "rw"),
     ]
     if artifacts is not None:
@@ -569,6 +587,11 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             _, fds, _, _ = socket.recv_fds(conn, 1024, 1)
             conn.close()
+            if not fds:
+                # crun connected and failed before it had a pty to send.
+                # Its own error is already on stdout; its exit is the
+                # status.
+                continue
             master = fds[0]
         if master is not None and (uplink or args.lan_fd is not None):
             try:

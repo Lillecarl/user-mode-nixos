@@ -298,8 +298,9 @@ the parent-death signal. Plain `uml-eval run container` and MCP `start`
 both work.
 
 - `modules/container.nix`: `boot.isContainer`, a root template directory
-  the runner copies, `/nix/store` bound read-only. No memory control
-  yet.
+  the runner copies, an overlay over the host's `/nix/store` (not all of
+  `/nix`: unprivileged, that lower fails with EINVAL). A guest adds to
+  its store and builds in its own Nix sandbox. No memory control yet.
 - LAN: `crun_launch tap` joins the guest's user and net namespaces (a
   process of its own: setns into a userns needs one thread), makes
   `vec1` and copies frames to the segment fd. `nix build`-free proof:

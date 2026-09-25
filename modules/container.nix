@@ -1,8 +1,8 @@
 # The guest, when the backend is a container.
 #
 # No kernel and no disk: the runner starts this system's init under crun,
-# as the user who started the run, with the host's /nix/store bound in
-# read-only. See uml_runner/container.py and Area 8 of
+# as the user who started the run, with an overlay over the host's
+# /nix/store. See uml_runner/container.py and Area 8 of
 # docs/design/running-anywhere.md.
 {
   config,
@@ -38,14 +38,11 @@ lib.mkIf (cfg.backend == "container") {
 
     A directory and not a disk image: a container's root is a directory on
     the host. It holds only what must exist before the init runs; the
-    store is the host's.
-
-    The store is read-only for now, as in nixpkgs' nspawn containers. The
-    other backends put a writable overlay over it; overlayfs in a user
-    namespace is not measured here yet.
+    store is the host's, under an overlay whose upper and work
+    directories are the two here, so a guest writes to its own store.
   */
   system.build.umlRootImage = pkgs.runCommand "container-root" { } ''
-    mkdir -p $out/{etc,var,root,home,artifacts,nix/store,nix/var}
+    mkdir -p $out/{etc,var,root,home,artifacts,nix/store,nix/var,.nix-upper,.nix-work}
     # Without it nix-daemon.socket is skipped silently -- see image.nix.
     mkdir -p $out/nix-state/nix/daemon-socket
     ${lib.optionalString cfg.nixDatabase.enable ''

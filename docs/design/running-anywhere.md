@@ -1025,8 +1025,16 @@
 17 behind: 14 guest processes before, none after. Without a delegated
 17 cgroup the run refuses at once and names the fix.
 17
-17 Not built yet, in order: a writable store, and the sandboxed check
-17 with `uid-range`.
+17 Not built yet: the sandboxed check with `uid-range`, and memory
+17 control.
+17
+17 The writable store is built: an overlay over the host's `/nix/store`,
+17 its upper layer in the run's root. A guest adds a path and runs a
+17 sandboxed `nix-build`, and the host's store gets neither. Not all of
+17 `/nix`, as the other backends have it: unprivileged, `lowerdir=/nix`
+17 fails with EINVAL where the host's store is a mount of its own, and
+17 `lowerdir=/nix/store` works (measured with unshare). The single mount
+17 exists for a kubelet `subPath`, and a container guest runs no kubelet.
 17
 17 The delegated scope is built. When its own cgroup is not writable,
 17 the runner starts the launcher under `systemd-run --user --scope -p

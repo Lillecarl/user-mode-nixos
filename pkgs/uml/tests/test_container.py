@@ -77,10 +77,15 @@ class TestOciConfig:
         order = destinations(config())
         assert order.index(AGENT_DIR) > order.index("/run")
 
-    def test_the_store_is_the_hosts_read_only(self):
-        store = next(m for m in config()["mounts"] if m["destination"] == "/nix/store")
-        assert store["source"] == "/nix/store"
-        assert "ro" in store["options"]
+    def test_the_store_is_an_overlay_over_the_hosts(self):
+        """Writes stay in the run. Not all of /nix: unprivileged, that
+        lower fails where the host's store is a mount of its own."""
+        nix = [m for m in config()["mounts"] if m["destination"].startswith("/nix")]
+        assert [m["destination"] for m in nix] == ["/nix/store"]
+        assert nix[0]["type"] == "overlay"
+        assert "lowerdir=/nix/store" in nix[0]["options"]
+        assert "upperdir=/run/r/root/.nix-upper" in nix[0]["options"]
+        assert "userxattr" in nix[0]["options"]
 
     def test_sysfs_is_read_only(self):
         """Writable, it starts udevd, which gets no uevents in a user

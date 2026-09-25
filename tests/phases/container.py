@@ -8,6 +8,7 @@ step.
 """
 
 import socket
+from pathlib import Path
 
 from uml_runner import Machines
 
@@ -37,6 +38,29 @@ async def test(vms: Machines) -> None:
     )
     print(f"[test] vec0: {(await one.succeed('ip -4 -o addr show vec0')).split()[3]}")
     await one.succeed("getent hosts localhost")
+
+    # A writable store: the guest adds a path, and the host's store does
+    # not get it.
+    added = (await one.succeed("echo from-the-guest > /tmp/f && nix-store --add /tmp/f 2>/dev/null")).strip()
+    await one.succeed(f"test -e {added} && nix-store --verify-path {added}")
+    if Path(added).exists():
+        raise AssertionError(f"{added} reached the host's store")
+    print(f"[test] the guest added {added} to its own store")
+
+    # A build in the guest's own Nix sandbox: a user namespace inside the
+    # container's, which the host allows (measured before building this).
+    built = (
+        await one.succeed(
+            "nix-build --no-out-link --option sandbox true -E "
+            "'derivation { name = \"in-the-guest\"; system = builtins.currentSystem;"
+            " builder = \"/bin/sh\"; args = [ \"-c\" \"echo built > $out\" ]; }'"
+            # The agent returns stderr after stdout; the path is stdout.
+            " 2>/dev/null"
+        )
+    ).strip()
+    if (await one.succeed(f"cat {built}")).strip() != "built":
+        raise AssertionError(f"{built} does not hold what the builder wrote")
+    print(f"[test] the guest built {built} in its own sandbox")
 
     # A forward: the host reaches the guest's sshd through pasta.
     host, _, port = one.reachable(4325)[0].rpartition(":")
