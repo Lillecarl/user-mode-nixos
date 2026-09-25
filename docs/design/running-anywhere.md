@@ -892,6 +892,111 @@
 2 use to reach an API server. Keeping passt and cutting only the uplink
 2 keeps the forwards. The second is probably what is wanted, and it is more
 2 work.
+16
+16 ## Area 8 — a guest as a container
+16
+16 Many tests need no kernel of their own: a service, a CLI, a pytest
+16 suite. A container runs the same NixOS system with no kernel boot,
+16 native speed, and the host's page cache. UML stays for what needs a
+16 kernel: modules, sysctls outside a namespace, block devices, reboots,
+16 kubelet. So this is a third `boot.uml.backend`, `container`, chosen per
+16 node like the other two. A test script does not know which it got.
+16
+16 **Measured.** A NixOS system with `boot.isContainer = true` boots under
+16 rootless crun as uid 1000, with no root and no daemon: 1.39 s of
+16 userspace to `multi-user.target`. A `User=nobody` service runs. The
+16 only failures are the debugfs and tracefs mounts, which a container
+16 module masks. Measured on 2026-09-25; the crun config is in issue
+16 #17.
+16
+16 ### Runtime
+16
+16 Recommended: **crun, directly.** An OCI runtime with no daemon. Nix
+16 builds it, and Nix renders its `config.json` the way it renders the UML
+16 and QEMU command lines today. `--cgroup-manager=disabled` keeps the
+16 container in the runner's own cgroup, and systemd inside manages it.
+16
+16 The others, and why not first:
+16
+16 - **systemd-nspawn.** nixpkgs' test driver already runs guests with it
+16   (`NspawnMachine`, `nixos/lib/testing/run.nix`). It needs root, so in
+16   the sandbox it needs the `uid-range` feature. It is the source to copy
+16   sandbox details from: `--private-users=no`, `/proc` and `/sys` bound
+16   to `/run/host`, and a notify socket for readiness. Unprivileged nspawn
+16   through `systemd-nsresourced` exists in recent systemd; not measured.
+16 - **CRI** (containerd, CRI-O). A daemon, root, and an image pipeline.
+16   It answers a different question: a guest as a pod on a cluster. The
+16   store could reach the pod through nixkube's CSI driver. Worth an area
+16   of its own later; not a local backend.
+16 - **podman.** A CLI over crun. Its value is `pasta`, the same passt this
+16   repository already carries, so the uplink comes for free either way.
+16
+16 ### What the host must have
+16
+16 Probed by doing each thing, not by reading configuration. The same
+16 probe ran as a build in the Nix sandbox (as `nixbld`, `uid-range` off)
+16 and on the host (uid 1000).
+16
+16 | need | sandbox | host | remedy |
+16 | --- | --- | --- | --- |
+16 | a user namespace, and one inside it | ok | ok | — |
+16 | pid namespace, `/proc`, tmpfs | ok | ok | — |
+16 | a cgroup to write in | no `/sys/fs/cgroup` | `mkdir`: permission denied | host: `systemd-run --user --scope -p Delegate=yes`; sandbox: `use-cgroups` |
+16 | a range of uids | one uid | `/etc/subuid` and setuid `newuidmap` | NixOS: `autoSubUidGidRange`; sandbox: `uid-range` |
+16 | sysfs | "Mount too revealing" | ok | sandbox: bind `/sys`, as nixpkgs does |
+16 | `/dev/net/tun`, for a LAN | absent | ok | sandbox: `/dev/net` in `extra-sandbox-paths` (nixpkgs' `devnet`) |
+16
+16 With one uid, systemd boots but the system is broken: `users`
+16 activation fails with "Failed to change ownership of /etc/shadow",
+16 devpts with "Invalid gid '3'", and every `User=` service with
+16 `216/GROUP`. So a uid range is a hard requirement, not an extra.
+16
+16 A nested user namespace works in both places. So a guest's own Nix
+16 sandbox, and a test that makes namespaces, work inside the container.
+16
+16 Consequences:
+16
+16 - **By hand, on this host, everything is present.** The one gap, the
+16   cgroup, the runner closes itself: when its own cgroup is not
+16   writable and a user systemd answers, it re-executes under a
+16   delegated scope. One dependency becomes none.
+16 - **The sandboxed check needs `uid-range`.** That feature gives the
+16   build 65536 uids and its own cgroup. `.container` asks for it in
+16   `requiredSystemFeatures`, the way `.qemu` asks for `kvm`, so Nix
+16   refuses to build it where it cannot run. This host's daemon has
+16   neither `uid-range` nor `use-cgroups` today.
+16 - **An Ubuntu 24.04 GitHub runner** blocks unprivileged user
+16   namespaces through AppArmor. Only the attempt shows it, which is why
+16   every row above is a probe and not a read. Not measured here.
+16
+16 ### Detection
+16
+16 Each backend owns a list of probes. A probe does the thing once and
+16 returns what is missing, why, and the remedy from the table. The runner
+16 runs the probes of every backend the spec uses, before it starts any
+16 guest. It reports all the missing things at once, and exits with its
+16 own status. `uml doctor` runs the same list with no spec, for every
+16 backend.
+16
+16 This follows `BackendError` in `backend.py`, but earlier: today a
+16 missing `/dev/kvm` shows as a failed launch. The sandbox results above
+16 are the negative control. A probe that passes where the table says it
+16 fails is wrong.
+16
+16 ### Two parts of the runner that change
+16
+16 - **The agent channel.** A container has no serial line. The runner
+16   binds `<rundir>/agent/` into the container after the `/run` tmpfs,
+16   and the agent listens on a unix socket there.
+16   `UML_AGENT_DEVICE` names a socket as well as a tty. `AGENT_READY`
+16   still appears on the console, which is crun's stdout, so
+16   `Machine._wait_for_line` does not change.
+16 - **The LAN.** A tap device in the container's network namespace works
+16   as uid 1000 (measured). Its frames go into the same segment code the
+16   other two backends use, so one run mixes containers, UML and QEMU.
+16   Not built: how the tap's file descriptor leaves the namespace. The
+16   candidate is a holder process that makes the user and network
+16   namespaces first, keeps the tap, and lets crun join both by path.
 1
 1 ## What "any machine" means
 1
@@ -955,3 +1060,4 @@
 1 - #15 output directory, and the stdout filter
 1 - #10 MCP server and interactive sessions
 1 - #11 reboots
+16 - #17 a guest as a rootless container (Area 8)
