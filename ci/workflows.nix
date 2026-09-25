@@ -140,6 +140,31 @@ let
   testJobs = lib.mapAttrs' (name: spec: lib.nameValuePair "test-${name}" (testJob name spec)) tests;
 
   /*
+    A guest as a container, in the Nix sandbox.
+
+    The derivation asks for `uid-range`: a build as root with 65536 ids
+    and a cgroup of its own, which systemd as PID 1 in the container
+    needs. The runner's daemon offers it only when told to, which is
+    ghanix's `uidRange`. No kernel and no KVM, so it waits on nothing.
+  */
+  containerJob = job {
+    id = "test-container";
+    timeoutMinutes = 20;
+    cond = selectable "test-container";
+    ghanix = lib.mkMerge [
+      sandboxBootstrap
+      { nix.install.uidRange = true; }
+    ];
+    steps = [
+      (steps.build {
+        name = "Run container: a NixOS guest under crun, in the sandbox";
+        attrs = [ "container" ];
+        timeoutMinutes = 10;
+      })
+    ];
+  };
+
+  /*
     The one test that boots a virtual machine and reaches a registry.
 
     Everything above runs in the Nix sandbox, which has no network and no
@@ -263,6 +288,7 @@ in
       sessions = sessionJob;
       kernel = kernelJob;
       test-k8s-pull = pullJob;
+      test-container = containerJob;
     }
     // testJobs;
   };
