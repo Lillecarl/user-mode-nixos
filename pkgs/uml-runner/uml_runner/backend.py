@@ -676,8 +676,9 @@ class Container:
 
     Needs what :func:`uml_runner.container.probe` checks, and says which of
     it is missing before anything starts. The uplink and the forwards are
-    pasta's, joined to the guest's namespaces by the launcher. No LAN and
-    no memory control yet.
+    pasta's, joined to the guest's namespaces by the launcher. ``vec1`` is
+    a tap relayed to the segment fd, so a segment mixes all three kinds.
+    No memory control yet.
     """
 
     name = "container"
@@ -690,8 +691,6 @@ class Container:
                 "this host cannot run a container guest:\n"
                 + "\n".join(f"  {item}" for item in missing)
             )
-        if lan_fd is not None:
-            raise BackendError(f"{spec.name}: a container guest has no LAN yet")
         if spec.image is None:
             raise BackendError(f"{spec.name}: this guest has no root template")
 
@@ -732,18 +731,26 @@ class Container:
         )
         state = rundir / "crun"
         state.mkdir()
+        lan = (
+            ["--lan-fd", str(lan_fd), "--mtu", str(spec.mtu), "--mac", spec.mac(1)]
+            if lan_fd is not None
+            else []
+        )
         return Launch(
             argv=[
                 sys.executable,
                 "-m",
                 "uml_runner.crun_launch",
-                str(tools.crun),
-                str(state),
-                str(bundle),
-                f"uml-{spec.name}-{os.getpid()}",
+                "run",
+                "--crun", str(tools.crun),
+                "--state", str(state),
+                "--bundle", str(bundle),
+                "--name", f"uml-{spec.name}-{os.getpid()}",
+                *lan,
                 # The uplink: pasta joins the guest's namespaces once crun
                 # has an init, with passt's arguments and forwards.
-                str(rundir / "passt.log"),
+                "--pasta-log", str(rundir / "passt.log"),
+                "--",
                 str(tools.passt.with_name("pasta")),
                 "--foreground",
                 "--ns-ifname",
@@ -751,7 +758,7 @@ class Container:
                 *forward.uplink_args(machine.offline),
                 *self._pasta_forwards(forward.to_args(machine.forward)),
             ],
-            pass_fds=(),
+            pass_fds=(lan_fd,) if lan_fd is not None else (),
             # A Nix-wrapped program carries its imports in the script, not
             # the environment, so the launcher gets this process's path.
             env=dict(os.environ, PYTHONPATH=os.pathsep.join(filter(None, sys.path))),

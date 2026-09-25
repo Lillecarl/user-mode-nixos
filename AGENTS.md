@@ -298,8 +298,13 @@ systemd-run --user --scope -p Delegate=yes nix run --file . uml-eval -- run cont
 ```
 
 - `modules/container.nix`: `boot.isContainer`, a root template directory
-  the runner copies, `/nix/store` bound read-only. No LAN or memory
-  control yet; a LAN refuses at launch.
+  the runner copies, `/nix/store` bound read-only. No memory control
+  yet.
+- LAN: `crun_launch tap` joins the guest's user and net namespaces (a
+  process of its own: setns into a userns needs one thread), makes
+  `vec1` and copies frames to the segment fd. `nix build`-free proof:
+  `uml-eval run container-lan` (two containers and a UML guest, jumbo
+  frames unfragmented).
 - Uplink: the launcher starts pasta on the init's pid once crun has one,
   as `vec0` with passt's arguments; `_pasta_forwards` turns off what pasta
   forwards beyond passt. `/sys` is read-only so udevd stays off: in a
@@ -309,7 +314,7 @@ systemd-run --user --scope -p Delegate=yes nix run --file . uml-eval -- run cont
 - `uml_runner.crun_launch` relays the pty crun hands over the console
   socket; crun will not write it to a pipe. EIO on the master is systemd
   re-opening the console, not the end.
-- Lifetime chain: runner → launcher → crun and pasta (`die_with_parent`)
+- Lifetime chain: runner → launcher → crun, pasta, tap (`die_with_parent`)
   → init (`setpriv --pdeathsig KILL`). SIGKILL of the runner leaves nothing
   (measured). Keep every link when touching it.
 

@@ -1025,8 +1025,16 @@
 17 behind: 14 guest processes before, none after. Without a delegated
 17 cgroup the run refuses at once and names the fix.
 17
-17 Not built yet, in order: the LAN, a writable store, the re-exec under
-17 a delegated scope, and the sandboxed check with `uid-range`.
+17 Not built yet, in order: a writable store, the re-exec under a
+17 delegated scope, and the sandboxed check with `uid-range`.
+17
+17 The LAN is built. A helper joins the guest's user and network
+17 namespaces, makes `vec1` as a tap, and copies frames to the segment
+17 fd, one frame per read each way. `uml-eval run container-lan` puts two
+17 containers and a UML guest on one segment: each reaches the others,
+17 and an 8000-byte ping crosses unfragmented. The containers booted in
+17 1.6 s, the UML guest in 7.0 s. SIGKILL of the runner took both
+17 launchers, both relays and both containers with it.
 17
 17 The uplink is built: pasta joins the guest's namespaces by the init's
 17 pid and gives it `vec0`, with passt's addressing, DNS and forwards.

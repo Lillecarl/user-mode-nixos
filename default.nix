@@ -723,6 +723,28 @@ let
       };
     };
 
+    # Two containers and a UML guest on one segment. By hand, as above.
+    container-lan = mkSession {
+      name = "container-lan";
+      nodes = lib.mapAttrs (name: value: {
+        boot.uml = {
+          backend = if name == "u" then "uml" else "container";
+          lan = {
+            network = "clan";
+            address = "${value}/24";
+          };
+        };
+      }) {
+        a = "10.56.0.1";
+        b = "10.56.0.2";
+        u = "10.56.0.3";
+      };
+      phases.reach = {
+        script = ./tests/phases/container-lan.py;
+        after = [ "boot" ];
+      };
+    };
+
     /*
       One run, both kinds of guest: a UML guest and a QEMU guest on one
       segment. UML for what is single-threaded and wants to cost the host

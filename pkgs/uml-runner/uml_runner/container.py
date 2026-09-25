@@ -366,17 +366,19 @@ def _relay(master: int, crun: subprocess.Popen) -> None:
         out.flush()
 
 
-def _uplink(crun: list[str], name: str, log: Path, pasta: list[str]) -> subprocess.Popen:
+def _init_pid(crun: list[str], name: str) -> int:
+    return json.loads(
+        subprocess.run([*crun, "state", name], capture_output=True, text=True, check=True).stdout
+    )["pid"]
+
+
+def _uplink(pid: int, log: Path, pasta: list[str]) -> subprocess.Popen:
     """Start pasta in the guest's namespaces: ``vec0``, as passt gives the
     other backends, with its DHCP, its DNS and its forwards.
 
-    pasta joins by the init's pid, so this waits for crun to have one. It
-    fails at start or not at all -- a port it cannot bind is fatal -- so a
-    dead pasta a moment later is reported with its log.
+    It fails at start or not at all -- a port it cannot bind is fatal --
+    so a dead pasta a moment later is reported with its log.
     """
-    pid = json.loads(
-        subprocess.run([*crun, "state", name], capture_output=True, text=True, check=True).stdout
-    )["pid"]
     with log.open("wb") as handle:
         proc = subprocess.Popen(
             [*pasta, str(pid)],
@@ -392,13 +394,118 @@ def _uplink(crun: list[str], name: str, log: Path, pasta: list[str]) -> subproce
     return proc
 
 
-def main(argv: list[str] | None = None) -> int:
-    """``python -m uml_runner.crun_launch CRUN STATE BUNDLE NAME [LOG PASTA...]``.
+TUNSETIFF = 0x400454CA
+SIOCSIFMTU = 0x8922
+SIOCSIFHWADDR = 0x8924
+IFF_TAP = 0x0002
+IFF_NO_PI = 0x1000
+ARPHRD_ETHER = 1
 
-    With LOG and a pasta command line, the guest gets an uplink.
+
+def _open_tap(name: str, mtu: int, mac: str) -> int:
+    import fcntl
+    import struct
+
+    tap = os.open("/dev/net/tun", os.O_RDWR)
+    fcntl.ioctl(tap, TUNSETIFF, struct.pack("16sH22x", name.encode(), IFF_TAP | IFF_NO_PI))
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as control:
+        fcntl.ioctl(control, SIOCSIFMTU, struct.pack("16si20x", name.encode(), mtu))
+        fcntl.ioctl(
+            control,
+            SIOCSIFHWADDR,
+            struct.pack("16sH6s16x", name.encode(), ARPHRD_ETHER, bytes.fromhex(mac.replace(":", ""))),
+        )
+    return tap
+
+
+def tap_relay(pid: int, lan: int, name: str, mtu: int, mac: str) -> int:
+    """Be the guest's ``vec1``: a tap in its namespaces, one frame each way.
+
+    A segment fd carries one raw frame per datagram, which is what UML's
+    ``transport=fd`` and QEMU's ``dgram`` take; a tap reads and writes one
+    frame per call. So the relay is a copy, and one segment holds guests
+    of all three kinds.
+
+    Joins the guest's user namespace first, which makes this root there:
+    creating a tap in the guest's network namespace needs CAP_NET_ADMIN in
+    the namespace that owns it. A process must be single-threaded to join
+    a user namespace, which is why this is a process of its own.
     """
-    crun_bin, state, bundle, name, *uplink = argv or sys.argv[1:]
-    crun = [crun_bin, "--root", state, "--cgroup-manager=disabled"]
+    for kind, flag in (("user", os.CLONE_NEWUSER), ("net", os.CLONE_NEWNET)):
+        ns = os.open(f"/proc/{pid}/ns/{kind}", os.O_RDONLY)
+        os.setns(ns, flag)
+        os.close(ns)
+    tap = _open_tap(name, mtu, mac)
+    selector = selectors.DefaultSelector()
+    selector.register(tap, selectors.EVENT_READ, lan)
+    selector.register(lan, selectors.EVENT_READ, tap)
+    while True:
+        for key, _ in selector.select():
+            try:
+                frame = os.read(key.fd, 65536)
+            except BlockingIOError:
+                continue
+            except OSError:
+                return 0
+            if not frame:
+                return 0
+            try:
+                os.write(key.data, frame)
+            except (BlockingIOError, OSError):
+                # A full queue drops the frame, as a wire would.
+                pass
+
+
+def _lan(pid: int, fd: int, mtu: int, mac: str) -> subprocess.Popen:
+    return subprocess.Popen(
+        [
+            sys.executable, "-m", "uml_runner.crun_launch", "tap",
+            "--pid", str(pid), "--fd", str(fd), "--mtu", str(mtu), "--mac", mac,
+        ],
+        pass_fds=(fd,),
+        start_new_session=True,
+        preexec_fn=_die_with_parent,
+    )
+
+
+def _parse(argv: list[str]):
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="uml_runner.crun_launch")
+    sub = parser.add_subparsers(dest="mode", required=True)
+    run = sub.add_parser("run")
+    run.add_argument("--crun", required=True)
+    run.add_argument("--state", required=True)
+    run.add_argument("--bundle", required=True)
+    run.add_argument("--name", required=True)
+    run.add_argument("--lan-fd", type=int)
+    run.add_argument("--mtu", type=int, default=1500)
+    run.add_argument("--mac")
+    run.add_argument("--pasta-log")
+    run.add_argument("pasta", nargs=argparse.REMAINDER)
+    tap = sub.add_parser("tap")
+    tap.add_argument("--pid", type=int, required=True)
+    tap.add_argument("--fd", type=int, required=True)
+    tap.add_argument("--mtu", type=int, required=True)
+    tap.add_argument("--mac", required=True)
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    """``python -m uml_runner.crun_launch run|tap ...``.
+
+    ``run`` starts the guest and relays its console; with ``--pasta-log``
+    and a pasta command line after ``--`` it gets an uplink, and with
+    ``--lan-fd`` a ``vec1`` on that segment. ``tap`` is the ``vec1`` relay.
+    """
+    args = _parse(sys.argv[1:] if argv is None else argv)
+    if args.mode == "tap":
+        return tap_relay(args.pid, args.fd, "vec1", args.mtu, args.mac)
+
+    name = args.name
+    bundle = args.bundle
+    uplink = [args.pasta_log, *[a for a in args.pasta if a != "--"]] if args.pasta_log else []
+    crun = [args.crun, "--root", args.state, "--cgroup-manager=disabled"]
 
     # A short directory: a sockaddr_un holds 108 bytes, and a bundle under
     # a long TMPDIR does not fit.
@@ -425,7 +532,7 @@ def main(argv: list[str] | None = None) -> int:
 
     listener.settimeout(0.5)
     master: int | None = None
-    pasta: subprocess.Popen | None = None
+    helpers: list[subprocess.Popen] = []
     try:
         while master is None and proc.poll() is None:
             try:
@@ -435,9 +542,13 @@ def main(argv: list[str] | None = None) -> int:
             _, fds, _, _ = socket.recv_fds(conn, 1024, 1)
             conn.close()
             master = fds[0]
-        if master is not None and uplink:
+        if master is not None and (uplink or args.lan_fd is not None):
             try:
-                pasta = _uplink(crun, name, Path(uplink[0]), uplink[1:])
+                pid = _init_pid(crun, name)
+                if uplink:
+                    helpers.append(_uplink(pid, Path(uplink[0]), uplink[1:]))
+                if args.lan_fd is not None:
+                    helpers.append(_lan(pid, args.lan_fd, args.mtu, args.mac))
             except (RuntimeError, subprocess.CalledProcessError) as error:
                 # On the console, which is where Machine looks for why a
                 # guest did not come up.
@@ -453,8 +564,9 @@ def main(argv: list[str] | None = None) -> int:
         if proc.poll() is None:
             stop(signal.SIGTERM, None)
             proc.wait()
-        if pasta is not None and pasta.poll() is None:
-            pasta.kill()
-            pasta.wait()
+        for helper in helpers:
+            if helper.poll() is None:
+                helper.kill()
+                helper.wait()
         subprocess.run([*crun, "delete", "--force", name], capture_output=True)
 
