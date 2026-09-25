@@ -23,17 +23,21 @@ bridge is not in the picture and the runner starts passt directly.
 
 from __future__ import annotations
 
+import json
 import mmap
 import os
+import pwd
+import shutil
 import signal
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import forward, mconsole, qmp
+from . import container, forward, mconsole, qmp
 
 
 class BackendError(Exception):
@@ -238,6 +242,9 @@ class Launch:
     cleanup: list[Path] = field(default_factory=list)
     """Directories the backend made outside the run directory, removed when
     the guest is torn down."""
+    agent_path: Path | None = None
+    """A socket to connect to for the agent, once it says it is ready, for
+    a backend with no serial line to carry the socketpair."""
 
 
 class Uml:
@@ -664,7 +671,86 @@ class Qemu:
         return qemu_end.detach(), proc
 
 
-BACKENDS = {backend.name: backend() for backend in (Uml, Qemu)}
+class Container:
+    """A guest as a rootless container: no kernel boot, the host's own.
+
+    Needs what :func:`uml_runner.container.probe` checks, and says which of
+    it is missing before anything starts. No LAN, no uplink and no memory
+    control yet.
+    """
+
+    name = "container"
+
+    def launch(self, machine, rundir: Path, agent_fd: int, lan_fd: int | None) -> Launch:
+        spec, tools = machine.spec, machine.tools
+        missing = container.probe()
+        if missing:
+            raise BackendError(
+                "this host cannot run a container guest:\n"
+                + "\n".join(f"  {item}" for item in missing)
+            )
+        if lan_fd is not None:
+            raise BackendError(f"{spec.name}: a container guest has no LAN yet")
+        if spec.image is None:
+            raise BackendError(f"{spec.name}: this guest has no root template")
+
+        rootfs = rundir / "root"
+        shutil.copytree(spec.image, rootfs, symlinks=True)
+        # The template is in the store, so every copy is read-only.
+        for directory, _, _ in os.walk(rootfs):
+            os.chmod(directory, 0o755)
+
+        sockets, cleanup = socket_dir(rundir, "agent/sock", None)
+        agent_dir = sockets / "agent"
+        agent_dir.mkdir()
+
+        uid, gid = os.getuid(), os.getgid()
+        user = pwd.getpwuid(uid).pw_name
+        subuid = container.subordinate(Path("/etc/subuid"), user, uid)
+        subgid = container.subordinate(Path("/etc/subgid"), user, uid)
+        assert subuid is not None and subgid is not None, "probe() checked both"
+
+        bundle = rundir / "bundle"
+        bundle.mkdir()
+        (bundle / "config.json").write_text(
+            json.dumps(
+                container.oci_config(
+                    hostname=spec.name,
+                    init=f"{spec.boot['toplevel']}/init",
+                    setpriv=str(tools.setpriv),
+                    rootfs=rootfs,
+                    store=spec.store,
+                    agent_dir=agent_dir,
+                    artifacts=machine.artifacts,
+                    uid=uid,
+                    gid=gid,
+                    subuid=subuid,
+                    subgid=subgid,
+                )
+            )
+        )
+        state = rundir / "crun"
+        state.mkdir()
+        return Launch(
+            argv=[
+                sys.executable,
+                "-m",
+                "uml_runner.crun_launch",
+                str(tools.crun),
+                str(state),
+                str(bundle),
+                f"uml-{spec.name}-{os.getpid()}",
+            ],
+            pass_fds=(),
+            # A Nix-wrapped program carries its imports in the script, not
+            # the environment, so the launcher gets this process's path.
+            env=dict(os.environ, PYTHONPATH=os.pathsep.join(filter(None, sys.path))),
+            agent_path=agent_dir / "sock",
+            cleanup=cleanup,
+        )
+
+
+BACKENDS = {backend.name: backend() for backend in (Uml, Qemu, Container)}
 
 
 def get(name: str):

@@ -14,7 +14,9 @@ a test that wants two things at once wants two guests.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
+import socket
 import subprocess
 
 from .arpyc import Service, listen
@@ -167,9 +169,34 @@ class Agent(Service):
         return _sh(f"journalctl --no-pager -n {lines:d} {scope}", 30).stdout.rstrip()
 
 
-async def _serve() -> None:
-    conn = listen(os.open(TTY, os.O_RDWR), Agent())
+UNIX_PREFIX = "unix:"
+"""A :data:`TTY` that starts with this names a socket path instead.  A
+container has no serial line: the agent listens on a socket in a
+directory the host binds in, and the host connects once it sees
+:data:`AGENT_READY`."""
+
+
+def _accept_one(path: str) -> int:
+    with contextlib.suppress(FileNotFoundError):
+        os.unlink(path)
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(path)
+    server.listen(1)
+    # Listening before the ready line, so the host's connect never races
+    # the bind.
     print(AGENT_READY, flush=True)
+    conn, _ = server.accept()
+    server.close()
+    return conn.detach()
+
+
+async def _serve() -> None:
+    if TTY.startswith(UNIX_PREFIX):
+        fd = await asyncio.to_thread(_accept_one, TTY[len(UNIX_PREFIX) :])
+        conn = listen(fd, Agent(), raw_tty=False)
+    else:
+        conn = listen(os.open(TTY, os.O_RDWR), Agent())
+        print(AGENT_READY, flush=True)
     await conn.serve_forever()
 
 

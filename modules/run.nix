@@ -79,6 +79,7 @@ in
       type = types.enum [
         "uml"
         "qemu"
+        "container"
       ];
       default = "uml";
       description = ''

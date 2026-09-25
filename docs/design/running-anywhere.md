@@ -1015,6 +1015,19 @@
 17   with it. So the chain is runner, launcher, crun, init, each killed
 17   by the death of the one before, as `die_with_parent` does for the
 17   other backends.
+17
+17 ### Built: the first step
+17
+17 `boot.uml.backend = "container"` runs, by hand: `uml-eval run
+17 container` under a delegated scope. One guest, 1.5 s to boot, 2.9 s
+17 for the whole run. No unit fails, and a `nobody` service runs as 65534. A
+17 runner killed with SIGKILL while the guest is paused leaves nothing
+17 behind: 14 guest processes before, none after. Without a delegated
+17 cgroup the run refuses at once and names the fix.
+17
+17 Not built yet, in order: the LAN and the uplink, a writable store, the
+17 re-exec under a delegated scope, and the sandboxed check with
+17 `uid-range`.
 1
 1 ## What "any machine" means
 1

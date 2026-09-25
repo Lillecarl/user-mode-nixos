@@ -146,6 +146,9 @@ rec {
     }
     // lib.optionalAttrs (machine.boot.uml.backend == "qemu") {
       boot = machine.system.build.qemuBoot;
+    }
+    // lib.optionalAttrs (machine.boot.uml.backend == "container") {
+      boot = machine.system.build.containerBoot;
     };
 
   /**
@@ -178,13 +181,27 @@ rec {
       qemu = "${pkgs.qemu_kvm}/bin/qemu-system-x86_64";
       qemuImg = "${pkgs.qemu_kvm}/bin/qemu-img";
       virtiofsd = "${pkgs.virtiofsd}/bin/virtiofsd";
+    }
+    // lib.optionalAttrs (on "container" != [ ]) {
+      crun = lib.getExe pkgs.crun;
+      setpriv = "${lib.getBin pkgs.util-linux}/bin/setpriv";
     };
 
-  # A QEMU guest is only worth booting with KVM, and the daemon only hands
-  # /dev/kvm to a derivation that asks for it. Any QEMU guest in the run
-  # asks; UML asks for nothing, which is the whole point of UML.
-  kvmFor =
-    machines: lib.optional (lib.any (machine: machine.boot.uml.backend == "qemu") machines) "kvm";
+  /*
+    What the daemon must give a run's derivation, by the backends in it.
+
+    A QEMU guest is only worth booting with KVM, and the daemon only hands
+    /dev/kvm to a derivation that asks for it. A container needs the
+    `uid-range` feature: 65536 ids and a cgroup of its own, which a plain
+    sandbox build does not have (measured, see Area 8 of the design). UML
+    asks for nothing, which is the whole point of UML.
+  */
+  featuresFor =
+    machines:
+    let
+      any = backend: lib.any (machine: machine.boot.uml.backend == backend) machines;
+    in
+    lib.optional (any "qemu") "kvm" ++ lib.optional (any "container") "uid-range";
 
   # A guest: an ordinary NixOS configuration plus ./modules.
   #
@@ -411,7 +428,7 @@ rec {
         pkgs.runCommand "uml-test-${name}${suffix}-attempt"
           {
             nativeBuildInputs = [ python ];
-            requiredSystemFeatures = kvmFor machines;
+            requiredSystemFeatures = featuresFor machines;
             passthru = { inherit spec python run; };
           }
           ''
@@ -651,7 +668,7 @@ rec {
       attempt =
         pkgs.runCommand "uml-session-${name}-attempt"
           {
-            requiredSystemFeatures = kvmFor machines;
+            requiredSystemFeatures = featuresFor machines;
             passthru = { inherit spec; };
           }
           ''

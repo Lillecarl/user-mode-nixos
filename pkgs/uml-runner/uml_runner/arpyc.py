@@ -314,12 +314,15 @@ def connect(fd: int) -> AsyncConnection:
     return conn
 
 
-def listen(fd: int, service: Service) -> AsyncConnection:
+def listen(fd: int, service: Service, *, raw_tty: bool = True) -> AsyncConnection:
     """Guest side: put *fd* (``/dev/ttyS0``) in raw mode and start
     reading it.  Call ``serve_forever`` on the result to answer.
 
     Reading starts here rather than in ``serve_forever`` so that a guest
     can announce itself and be certain that nothing sent afterwards is
     missed: from this point requests queue up in the stream.
+
+    ``raw_tty=False`` for a socket, which has no line discipline to turn
+    off and fails ``tcgetattr``.
     """
-    return _connection(service, fd, raw_tty=True)
+    return _connection(service, fd, raw_tty=raw_tty)

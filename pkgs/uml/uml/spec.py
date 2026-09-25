@@ -133,6 +133,8 @@ class Spec(Strict):
     qemu: Path | None = None
     qemuImg: Path | None = None  # noqa: N815 -- Nix writes it, so Nix spells it
     virtiofsd: Path | None = None
+    crun: Path | None = None
+    setpriv: Path | None = None
 
     @classmethod
     def read(cls, path: Path) -> Spec:
@@ -160,7 +162,16 @@ class Spec(Strict):
         what makes Nix build it, so a UML run carries no QEMU and a QEMU
         run carries no kernel.
         """
-        named = ("kernel", "bridge", "passt", "qemu", "qemuImg", "virtiofsd")
+        named = (
+            "kernel",
+            "bridge",
+            "passt",
+            "qemu",
+            "qemuImg",
+            "virtiofsd",
+            "crun",
+            "setpriv",
+        )
         return {
             key: str(value)
             for key in named

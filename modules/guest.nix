@@ -32,7 +32,9 @@ in
   boot.loader.grub.enable = false;
   boot.loader.systemd-boot.enable = false;
   system.build.installBootLoader = lib.getExe' pkgs.coreutils "true";
-  system.activationScripts.modprobe.text = lib.mkIf (cfg.backend == "uml") (
+  # A container has no modules either, and NixOS defines no modprobe
+  # script under `boot.isContainer`, so the entry must still get a text.
+  system.activationScripts.modprobe.text = lib.mkIf (cfg.backend != "qemu") (
     lib.mkForce ""
   );
 
@@ -221,14 +223,17 @@ in
   # The device differs by backend -- ttyS0 under UML, hvc0 under QEMU,
   # where ttyS0 carries the console instead -- so the unit is ordered
   # against whichever one this guest got.
+  #
+  # A container's agent listens on a socket and has no device unit to wait
+  # for; one named anyway never appears, and the agent never starts.
   systemd.services.uml-agent = let
     device = lib.removePrefix "/dev/" cfg.agentDevice;
-    unit = "dev-${device}.device";
+    units = lib.optional (lib.hasPrefix "/dev/" cfg.agentDevice) "dev-${device}.device";
   in {
     description = "Host control channel on ${cfg.agentDevice}";
     wantedBy = [ "multi-user.target" ];
-    after = [ unit ];
-    bindsTo = [ unit ];
+    after = units;
+    bindsTo = units;
     environment.UML_AGENT_DEVICE = cfg.agentDevice;
     serviceConfig = {
       ExecStart = lib.getExe' config.system.build.umlRunnerPackage "uml-agent";

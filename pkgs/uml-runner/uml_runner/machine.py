@@ -66,6 +66,8 @@ class Toolchain:
     qemu: Path | None = None
     qemu_img: Path | None = None
     virtiofsd: Path | None = None
+    crun: Path | None = None
+    setpriv: Path | None = None
 
     @classmethod
     def from_json(cls, data: dict) -> Toolchain:
@@ -80,6 +82,8 @@ class Toolchain:
             qemu=maybe("qemu"),
             qemu_img=maybe("qemuImg"),
             virtiofsd=maybe("virtiofsd"),
+            crun=maybe("crun"),
+            setpriv=maybe("setpriv"),
         )
 
 
@@ -271,9 +275,14 @@ class Machine:
             socket.AF_UNIX, socket.SOCK_STREAM
         )
 
-        launch = self.backend.launch(
-            self, self._rundir, self._guest_sock.fileno(), self.lan_fd
-        )
+        try:
+            launch = self.backend.launch(
+                self, self._rundir, self._guest_sock.fileno(), self.lan_fd
+            )
+        except backends.BackendError as error:
+            # A host that lacks something is a reason, not a crash: said
+            # the way a guest that did not boot is said.
+            raise MachineError(f"[{self.name}] {error}") from None
         self._helpers = launch.helpers
         self._cleanup = launch.cleanup
         self._pid_file = launch.pid_file
@@ -328,6 +337,12 @@ class Machine:
                 f"{self.boot_timeout:g}s"
             ) from None
 
+        if launch.agent_path is not None:
+            # No serial line to carry the socketpair: the agent listens on
+            # a socket the host bound in, and says so before it accepts.
+            self._agent_sock.close()
+            self._agent_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self._agent_sock.connect(str(launch.agent_path))
         self._conn = connect(self._agent_sock.detach())
         self._agent_sock = None
         # Drop our copy of the guest's end, so the connection reports EOF

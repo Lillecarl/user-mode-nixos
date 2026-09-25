@@ -286,6 +286,29 @@ accept. UML for what is single-threaded and should cost the host little,
 QEMU for what wants the CPU. `nix build --file . mixed` proves it, by
 hand (it needs /dev/kvm).
 
+A third, `container`: the system under rootless crun, no kernel of its
+own (Area 8 of the design, issue #17). By hand only: the sandbox needs
+`uid-range` (`featuresFor` asks for it), and the host needs a user
+namespace, 65536 subordinate ids with working `newuidmap`/`newgidmap`,
+and a writable cgroup — `container.probe()` tries each and the boot
+fails naming what is missing. Run it under a delegated scope:
+
+```sh
+systemd-run --user --scope -p Delegate=yes nix run --file . uml-eval -- run container --out ./o
+```
+
+- `modules/container.nix`: `boot.isContainer`, a root template directory
+  the runner copies, `/nix/store` bound read-only. No LAN, uplink,
+  forwards or memory control yet; a LAN refuses at launch.
+- The agent listens on `unix:/run/host/agent/sock`; `Launch.agent_path`
+  makes `Machine` connect after the ready line.
+- `uml_runner.crun_launch` relays the pty crun hands over the console
+  socket; crun will not write it to a pipe. EIO on the master is systemd
+  re-opening the console, not the end.
+- Lifetime chain: runner → launcher → crun (`die_with_parent`) → init
+  (`setpriv --pdeathsig KILL`). SIGKILL of the runner leaves nothing
+  (measured). Keep every link when touching it.
+
 A QEMU guest gets `-cpu host` minus `vmx` and `svm`, so it cannot run
 VMs. `boot.uml.nestedVirtualization = true` passes the flag through and
 loads KVM in the guest; the host needs nesting on. `nix build --file .

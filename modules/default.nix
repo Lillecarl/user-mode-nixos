@@ -110,6 +110,7 @@ let
 in
 {
   imports = [
+    ./container.nix
     ./guest.nix
     ./image.nix
     ./qemu.nix
@@ -118,14 +119,18 @@ in
 
   options.boot.uml = {
     backend = lib.mkOption {
-      type = lib.types.enum [ "uml" "qemu" ];
+      type = lib.types.enum [ "uml" "qemu" "container" ];
       default = "uml";
       description = ''
         Which machine a guest becomes.
 
         `uml` is a process: no KVM, no root, no tap device, nothing asked
         of the host. `qemu` needs `/dev/kvm` to be worth running, and is
-        then multiprocessor and much faster.
+        then multiprocessor and much faster. `container` runs the system
+        under rootless crun on the host's own kernel: no kernel boot, but
+        no kernel of its own either, and the host needs user namespaces,
+        subordinate ids and a writable cgroup. It has no LAN or uplink
+        yet.
 
         The guest is the same NixOS configuration either way, and so is
         the test script. What changes is the kernel and how `/nix`

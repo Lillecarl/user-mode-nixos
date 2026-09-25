@@ -707,6 +707,23 @@ let
         '';
 
     /*
+      One guest as a rootless container under crun (Area 8 of the design).
+
+      By hand: the sandboxed run needs the `uid-range` feature, which
+      neither this repository's CI nor most daemons offer. Outside the
+      sandbox the host needs subordinate ids and a writable cgroup, and
+      the runner says which is missing.
+    */
+    container = mkSession {
+      name = "container";
+      nodes.one.boot.uml.backend = "container";
+      phases.check = {
+        script = ./tests/phases/container.py;
+        after = [ "boot" ];
+      };
+    };
+
+    /*
       One run, both kinds of guest: a UML guest and a QEMU guest on one
       segment. UML for what is single-threaded and wants to cost the host
       little, QEMU for what wants the CPU. A node sets its own
