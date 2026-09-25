@@ -293,7 +293,9 @@ cgroup it can delegate — `container.probe()` tries each and the boot
 fails naming what is missing.
 
 Sandboxed (`nix build --file . container`) it needs a daemon with
-`uid-range` (`featuresFor` asks; dynhetz has it, CI does not). There the
+`uid-range` (`featuresFor` asks; dynhetz has it, and CI's
+`test-container` gets it from ghanix's `nix.install.uidRange` — a stock
+runner needs nothing more than `userNamespaces`). There the
 build is root with 65536 ids: the guest shares that user namespace
 (`owns_ids`), the store is an rbind (one bind per input defeats an
 overlay), there is no uplink or LAN (no /dev/net/tun), the launcher

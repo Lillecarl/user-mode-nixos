@@ -1028,8 +1028,11 @@
 17 Not built yet: memory control.
 17
 17 The sandboxed door is built, on a daemon with `uid-range` (dynhetz
-17 has it since 2026-09-25; CI does not). `nix build --file . container`
-17 passes in 2.6 s. Four things differ from the by-hand run, each met
+17 has it since 2026-09-25). `nix build --file . container` passes in
+17 2.6 s. CI runs it too, as `test-container`: ghanix's
+17 `nix.install.uidRange` turns on `auto-allocate-uids`, `use-cgroups`
+17 and `extra-system-features = uid-range`, and a stock GitHub runner
+17 needs nothing else. There it booted in 1.8 s and passed in 5.9 s. Four things differ from the by-hand run, each met
 17 by trying it:
 17
 17 - The build is root with 65536 ids and no `/etc/subuid`. The guest

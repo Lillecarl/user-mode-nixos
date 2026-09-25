@@ -710,9 +710,9 @@ let
       One guest as a rootless container under crun (Area 8 of the design).
 
       `nix build --file . container` needs a daemon with the `uid-range`
-      feature, and CI's has none, so it is not a CI check. There the
-      guest has no uplink (no /dev/net/tun) and a read-only store, and
-      the phase says so. By hand, `uml-eval run container`, it has both;
+      feature; CI's `test-container` gets it from ghanix's
+      `nix.install.uidRange`. There the guest has no uplink (no
+      /dev/net/tun) and a read-only store, and the phase says so. By hand, `uml-eval run container`, it has both;
       the host needs subordinate ids and a cgroup it can delegate, and
       the runner says which is missing.
     */
