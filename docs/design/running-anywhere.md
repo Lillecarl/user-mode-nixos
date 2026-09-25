@@ -1032,7 +1032,21 @@
 17 2.6 s. CI runs it too, as `test-container`: ghanix's
 17 `nix.install.uidRange` turns on `auto-allocate-uids`, `use-cgroups`
 17 and `extra-system-features = uid-range`, and a stock GitHub runner
-17 needs nothing else. There it booted in 1.8 s and passed in 5.9 s. Four things differ from the by-hand run, each met
+17 needs nothing else. There it booted in 1.8 s and passed in 5.9 s.
+17
+17 With /dev/net in the sandbox (ghanix's `devNet`, nixpkgs' `devnet`)
+17 the sandboxed guests have the uplink and the LAN too: `container-lan`
+17 passes in the sandbox, two containers and a UML guest on one segment.
+17 One more thing differed. The guest shares the build's user namespace,
+17 and joining the namespace you are in is EINVAL, so pasta and the tap
+17 relay join only the network namespace there. With no external
+17 interface pasta uses its local mode, and vec0 gets 169.254.2.1/16.
+17
+17 `container-probe` runs the runner's host checks in the sandbox and
+17 fails in seconds, naming each missing piece and its fix. Every session
+17 with a container guest depends on it, and CI builds it first on its
+17 own. Without /dev/net, the `-tun` probe fails: "missing a tap device
+17 ... fix: put /dev/net in extra-sandbox-paths" (the negative control). Four things differ from the by-hand run, each met
 17 by trying it:
 17
 17 - The build is root with 65536 ids and no `/etc/subuid`. The guest

@@ -685,7 +685,7 @@ class Container:
 
     def launch(self, machine, rundir: Path, agent_fd: int, lan_fd: int | None) -> Launch:
         spec, tools = machine.spec, machine.tools
-        missing = container.probe()
+        missing = container.probe(tun=lan_fd is not None)
         if missing:
             raise BackendError(
                 "this host cannot run a container guest:\n"
@@ -709,12 +709,9 @@ class Container:
         # pasta's tap and the LAN's are made on /dev/net/tun, which a Nix
         # sandbox has only with /dev/net in `extra-sandbox-paths`. With no
         # tun the guest has no uplink; the sandbox has no network anyway.
-        tun = Path("/dev/net/tun").exists()
-        if lan_fd is not None and not tun:
-            raise BackendError(
-                f"{spec.name}: a container guest's LAN needs /dev/net/tun; in a "
-                "Nix build, put /dev/net in extra-sandbox-paths"
-            )
+        # The uplink is taken where a tap can be made and left out where it
+        # cannot; the LAN is required, and probe() checked it above.
+        tun = lan_fd is not None or container.tap_fails() is None
 
         uid, gid = os.getuid(), os.getgid()
         if container.owns_ids():

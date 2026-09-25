@@ -725,6 +725,12 @@ let
       };
     };
 
+    # Can this sandbox run a container guest? Seconds, and every missing
+    # piece named with its fix. `-tun` also asks for a tap device, which a
+    # LAN needs: /dev/net in `extra-sandbox-paths`.
+    container-probe = uml.containerProbe { };
+    container-probe-tun = uml.containerProbe { tun = true; };
+
     # Two containers and a UML guest on one segment. By hand, as above.
     container-lan = mkSession {
       name = "container-lan";

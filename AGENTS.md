@@ -298,10 +298,19 @@ Sandboxed (`nix build --file . container`) it needs a daemon with
 runner needs nothing more than `userNamespaces`). There the
 build is root with 65536 ids: the guest shares that user namespace
 (`owns_ids`), the store is an rbind (one bind per input defeats an
-overlay), there is no uplink or LAN (no /dev/net/tun), the launcher
+overlay), the uplink and LAN need /dev/net in `extra-sandbox-paths`
+(ghanix `nix.install.devNet`; locally `--option extra-sandbox-paths
+/dev/net` as a trusted user) and the guest shares the build's user
+namespace, so pasta and the tap relay join the net namespace only; the
+launcher
 mounts the cgroup2 crun insists on (`_ensure_cgroup2`), and seccomp
 refuses setuid, so the runner drops `no-setuid` in the agent directory
-and container.nix skips suid-sgid-wrappers on it. Where its own cgroup is not writable, the
+and container.nix skips suid-sgid-wrappers on it.
+
+`container-probe` / `container-probe-tun` run `container.probe()` in the
+sandbox and fail in seconds, naming each missing piece and its fix. Every
+session with a container guest depends on the one it needs (`probeFor`:
+`-tun` when a container has a LAN); CI builds it first on its own. Where its own cgroup is not writable, the
 runner starts the launcher under `systemd-run --user --scope -p
 Delegate=yes` (`container.scope()`), which execs in place and so keeps
 the parent-death signal. Plain `uml-eval run container` and MCP `start`

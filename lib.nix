@@ -203,6 +203,45 @@ rec {
     in
     lib.optional (any "qemu") "kvm" ++ lib.optional (any "container") "uid-range";
 
+  /**
+    Whether this sandbox can run a container guest, answered in seconds.
+
+    The runner's own host checks (`uml_runner.container.probe`), in a
+    derivation that asks for what a container session asks for. A missing
+    piece fails here, named with its fix, rather than as a guest that does
+    not boot minutes into a run. Every session with a container guest
+    depends on it; a CI job can build it first on its own.
+
+    `tun`: a LAN is wanted, so a tap device must be possible, which in a
+    sandbox needs /dev/net in `extra-sandbox-paths`.
+  */
+  containerProbe =
+    {
+      tun ? false,
+    }:
+    pkgs.runCommand "uml-container-probe${lib.optionalString tun "-tun"}"
+      {
+        nativeBuildInputs = [ (runner.pythonModule.withPackages (_: [ runner ])) ];
+        requiredSystemFeatures = [ "uid-range" ];
+      }
+      ''
+        set -o pipefail
+        python -m uml_runner.crun_launch probe ${lib.optionalString tun "--tun"} | tee $out
+      '';
+
+  # The probe a set of machines needs, or null when none is a container.
+  probeFor =
+    machines:
+    let
+      containers = lib.filter (machine: machine.boot.uml.backend == "container") machines;
+    in
+    if containers == [ ] then
+      null
+    else
+      containerProbe {
+        tun = lib.any (machine: machine.boot.uml.lan.network != null) containers;
+      };
+
   # A guest: an ordinary NixOS configuration plus ./modules.
   #
   # `eval-config.nix` and not `lib.nixosSystem`. That name only exists on the
@@ -665,16 +704,20 @@ rec {
         derivation's own output. Nothing branches on being in a sandbox,
         which is what stops the two drifting.
       */
+      probe = probeFor machines;
       attempt =
         pkgs.runCommand "uml-session-${name}-attempt"
           {
             requiredSystemFeatures = featuresFor machines;
-            passthru = { inherit spec; };
+            passthru = { inherit spec probe; };
           }
           ''
             export HOME="$TMPDIR"
             mkdir -p "$out"
             echo "phases checked: ${checked}" > "$out/typecheck"
+            # A dependency, so a sandbox that cannot run a container guest
+            # fails there, in seconds and by name, before this boots one.
+            ${lib.optionalString (probe != null) ''cp ${probe} "$out/probe"''}
             ${uml} run --spec ${spec} --out "$out" || true
             test -f "$out/status" || echo 1 > "$out/status"
           '';

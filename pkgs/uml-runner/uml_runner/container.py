@@ -246,15 +246,32 @@ def _unshare_user() -> None:
     os.unshare(os.CLONE_NEWUSER)
 
 
-def probe(user: str | None = None, uid: int | None = None) -> list[Missing]:
+def probe(
+    user: str | None = None, uid: int | None = None, *, tun: bool = False
+) -> list[Missing]:
     """What this host lacks for a container guest; empty when nothing.
 
     Each check does the thing once. Reading configuration is not enough:
     an AppArmor profile or a seccomp filter shows only as a failed attempt.
+
+    ``tun`` adds what a LAN needs: a tap device made in a network namespace
+    of its own.
     """
     uid = os.getuid() if uid is None else uid
     user = user or pwd.getpwuid(uid).pw_name
     missing: list[Missing] = []
+
+    if tun:
+        why = tap_fails()
+        if why:
+            missing.append(
+                Missing(
+                    "a tap device",
+                    why,
+                    "in a Nix build, put /dev/net in extra-sandbox-paths "
+                    "(ghanix: nix.install.devNet = true)",
+                )
+            )
 
     try:
         subprocess.run([sys.executable, "-c", ""], preexec_fn=_unshare_user, check=True)
@@ -352,6 +369,34 @@ os.rmdir(target + "/probe")
 namespace and make a group in it. Not a check of the runner's cgroup
 directory: a `uid-range` build has no /sys/fs/cgroup mounted at all, and
 this still works there (measured)."""
+
+
+_TAP_PROBE = """
+import os
+from uml_runner.container import _open_tap
+uid, gid = os.getuid(), os.getgid()
+os.unshare(os.CLONE_NEWUSER | os.CLONE_NEWNET)
+open("/proc/self/setgroups", "w").write("deny")
+open("/proc/self/uid_map", "w").write(f"0 {uid} 1")
+open("/proc/self/gid_map", "w").write(f"0 {gid} 1")
+os.close(_open_tap("probe0", 1500, "52:54:00:00:00:01"))
+"""
+"""What the LAN relay does, in a namespace of its own: open /dev/net/tun
+and make a tap. The file existing is not the answer; the device cgroup or
+a missing node both show only here."""
+
+
+def tap_fails() -> str | None:
+    """Why no tap can be made here, or ``None`` when one can."""
+    done = subprocess.run(
+        [sys.executable, "-c", _TAP_PROBE],
+        capture_output=True,
+        text=True,
+        env=dict(os.environ, PYTHONPATH=os.pathsep.join(filter(None, sys.path))),
+    )
+    if done.returncode == 0:
+        return None
+    return (done.stderr.strip().splitlines() or ["failed"])[-1]
 
 
 def cgroup_works(prefix: list[str] | None = None) -> bool:
@@ -492,6 +537,12 @@ def _relay(master: int, crun: subprocess.Popen) -> None:
         out.flush()
 
 
+def _shares_userns(pid: int) -> bool:
+    """Whether *pid* is in this process's user namespace. Joining the one
+    you are in is EINVAL."""
+    return os.readlink(f"/proc/{pid}/ns/user") == os.readlink("/proc/self/ns/user")
+
+
 def _init_pid(crun: list[str], name: str) -> int:
     return json.loads(
         subprocess.run([*crun, "state", name], capture_output=True, text=True, check=True).stdout
@@ -505,9 +556,14 @@ def _uplink(pid: int, log: Path, pasta: list[str]) -> subprocess.Popen:
     It fails at start or not at all -- a port it cannot bind is fatal --
     so a dead pasta a moment later is reported with its log.
     """
+    # By pid, pasta joins the init's user namespace as well. Where the guest
+    # shares the runner's -- the uid-range sandbox -- that join is EINVAL,
+    # "Couldn't enter user namespace" (measured), so name the network
+    # namespace alone, which pasta then joins by itself.
+    target = [f"--netns=/proc/{pid}/ns/net"] if _shares_userns(pid) else [str(pid)]
     with log.open("wb") as handle:
         proc = subprocess.Popen(
-            [*pasta, str(pid)],
+            [*pasta, *target],
             stdout=handle,
             stderr=subprocess.STDOUT,
             start_new_session=True,
@@ -557,7 +613,10 @@ def tap_relay(pid: int, lan: int, name: str, mtu: int, mac: str) -> int:
     the namespace that owns it. A process must be single-threaded to join
     a user namespace, which is why this is a process of its own.
     """
-    for kind, flag in (("user", os.CLONE_NEWUSER), ("net", os.CLONE_NEWNET)):
+    joins = [("net", os.CLONE_NEWNET)]
+    if not _shares_userns(pid):
+        joins.insert(0, ("user", os.CLONE_NEWUSER))
+    for kind, flag in joins:
         ns = os.open(f"/proc/{pid}/ns/{kind}", os.O_RDONLY)
         os.setns(ns, flag)
         os.close(ns)
@@ -629,6 +688,21 @@ def _ensure_cgroup2() -> None:
             raise OSError(ctypes.get_errno(), f"mount {args[1].decode()}")
 
 
+def _report(tun: bool) -> int:
+    """The probe as a program: what a derivation runs to fail early."""
+    missing = probe(tun=tun)
+    for item in missing:
+        print(f"missing {item}", flush=True)
+    if missing:
+        print(f"this host cannot run a container guest: {len(missing)} missing", flush=True)
+        return 1
+    ids = "the build's own (uid-range)" if owns_ids() else "subordinate ids"
+    store = "overlay" if store_is_one_mount("/nix") else "read-only bind"
+    uplink = "yes" if tap_fails() is None else "no (no tap device)"
+    print(f"ok: user namespace, cgroup, ids: {ids}, store: {store}, uplink: {uplink}")
+    return 0
+
+
 def _parse(argv: list[str]):
     import argparse
 
@@ -644,6 +718,8 @@ def _parse(argv: list[str]):
     run.add_argument("--mac")
     run.add_argument("--pasta-log")
     run.add_argument("pasta", nargs=argparse.REMAINDER)
+    check = sub.add_parser("probe", help="say what this host lacks, and exit 1 if anything")
+    check.add_argument("--tun", action="store_true", help="a LAN will be asked for")
     tap = sub.add_parser("tap")
     tap.add_argument("--pid", type=int, required=True)
     tap.add_argument("--fd", type=int, required=True)
@@ -662,6 +738,8 @@ def main(argv: list[str] | None = None) -> int:
     args = _parse(sys.argv[1:] if argv is None else argv)
     if args.mode == "tap":
         return tap_relay(args.pid, args.fd, "vec1", args.mtu, args.mac)
+    if args.mode == "probe":
+        return _report(args.tun)
     _ensure_cgroup2()
 
     name = args.name

@@ -145,21 +145,36 @@ let
     The derivation asks for `uid-range`: a build as root with 65536 ids
     and a cgroup of its own, which systemd as PID 1 in the container
     needs. The runner's daemon offers it only when told to, which is
-    ghanix's `uidRange`. No kernel and no KVM, so it waits on nothing.
+    ghanix's `uidRange`; `devNet` adds /dev/net, for the uplink and the
+    LAN. The probe goes first on its own, so a runner that lacks any of
+    it fails in seconds, by name. `container-lan` holds a UML guest,
+    hence the kernel.
   */
   containerJob = job {
     id = "test-container";
-    timeoutMinutes = 20;
+    needs = [ "kernel" ];
+    timeoutMinutes = 30;
     cond = selectable "test-container";
     ghanix = lib.mkMerge [
       sandboxBootstrap
-      { nix.install.uidRange = true; }
+      {
+        nix.install.uidRange = true;
+        nix.install.devNet = true;
+      }
     ];
     steps = [
       (steps.build {
-        name = "Run container: a NixOS guest under crun, in the sandbox";
-        attrs = [ "container" ];
-        timeoutMinutes = 10;
+        name = "Probe: can this sandbox run a container guest with a LAN";
+        attrs = [ "container-probe-tun" ];
+        timeoutMinutes = 5;
+      })
+      (steps.build {
+        name = "Run container and container-lan: NixOS guests under crun, in the sandbox";
+        attrs = [
+          "container"
+          "container-lan"
+        ];
+        timeoutMinutes = 20;
       })
     ];
   };

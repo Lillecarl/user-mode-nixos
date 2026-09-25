@@ -15,7 +15,7 @@ import socket
 from pathlib import Path
 
 from uml_runner import Machine, Machines
-from uml_runner.container import store_is_one_mount
+from uml_runner.container import store_is_one_mount, tap_fails
 
 
 async def test(vms: Machines) -> None:
@@ -41,10 +41,11 @@ async def test(vms: Machines) -> None:
     else:
         print("[test] skipped: a writable store (this store is one bind per input)")
 
-    if Path("/dev/net/tun").exists():
+    # The runner's own answer, so the phase and the launcher cannot disagree.
+    if tap_fails() is None:
         await _uplink(one)
     else:
-        print("[test] skipped: the uplink and forwards (no /dev/net/tun here)")
+        print("[test] skipped: the uplink and forwards (no tap device here)")
 
 
 async def _writable_store(one: Machine) -> None:

@@ -148,8 +148,9 @@ jobs:
   test-container:
     env:
       UMBRELLA_REV: ${{ needs.umbrella-rev.outputs.rev }}
-    if: (github.event_name != 'workflow_dispatch' || inputs.jobs == '' || contains(format(',{0},', inputs.jobs), ',test-container,'))
+    if: '!cancelled() && (needs.kernel.result == ''success'' || needs.kernel.result == ''skipped'') && (github.event_name != ''workflow_dispatch'' || inputs.jobs == '''' || contains(format('',{0},'', inputs.jobs), '',test-container,''))'
     needs:
+      - kernel
       - umbrella-rev
     runs-on: ubuntu-24.04
     steps:
@@ -167,6 +168,7 @@ jobs:
             auto-allocate-uids = true
             cores = 4
             experimental-features = nix-command flakes auto-allocate-uids cgroups
+            extra-sandbox-paths = /dev/net
             extra-system-features = uid-range
             max-jobs = 1
             use-cgroups = true
@@ -180,10 +182,13 @@ jobs:
       - name: Allow the unprivileged user namespaces Nix and passt need
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0; sudo sysctl -w kernel.unprivileged_userns_clone=1; unshare --user --map-root-user --mount --pid --fork --mount-proc true
         timeout-minutes: 5
-      - name: 'Run container: a NixOS guest under crun, in the sandbox'
-        run: nix build --no-link --print-build-logs --keep-going --file . container
-        timeout-minutes: 10
-    timeout-minutes: 20
+      - name: 'Probe: can this sandbox run a container guest with a LAN'
+        run: nix build --no-link --print-build-logs --keep-going --file . container-probe-tun
+        timeout-minutes: 5
+      - name: 'Run container and container-lan: NixOS guests under crun, in the sandbox'
+        run: nix build --no-link --print-build-logs --keep-going --file . container container-lan
+        timeout-minutes: 20
+    timeout-minutes: 30
   test-containerd:
     env:
       UMBRELLA_REV: ${{ needs.umbrella-rev.outputs.rev }}
