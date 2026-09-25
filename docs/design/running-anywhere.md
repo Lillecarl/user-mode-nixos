@@ -997,6 +997,24 @@
 16   Not built: how the tap's file descriptor leaves the namespace. The
 16   candidate is a holder process that makes the user and network
 16   namespaces first, keeps the tap, and lets crun join both by path.
+17
+17 ### Three more facts, measured before building it
+17
+17 - **The console needs a pty.** With `terminal: false`, the container
+17   has no `/dev/console`, and systemd's console output (every unit's
+17   `journal+console`, so the agent's ready line too) goes nowhere. With
+17   `terminal: true` and `--console-socket`, crun sends the pty master
+17   over the socket, and systemd's status lines arrive on it.
+17 - **crun will not relay the pty itself.** `terminal: true` with stdout
+17   a pipe and no console socket exits 1 with "tcgetattr: Inappropriate
+17   ioctl for device". So a small launcher takes the master and copies
+17   it to its own stdout, which is what `Machine` reads.
+17 - **SIGKILL of crun leaves the container running.** The container's
+17   init survived crun's death. `setpriv --pdeathsig KILL` in front of
+17   init fixes it: init then dies with crun, and the whole PID namespace
+17   with it. So the chain is runner, launcher, crun, init, each killed
+17   by the death of the one before, as `die_with_parent` does for the
+17   other backends.
 1
 1 ## What "any machine" means
 1
