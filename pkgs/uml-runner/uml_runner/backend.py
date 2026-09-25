@@ -703,12 +703,27 @@ class Container:
         sockets, cleanup = socket_dir(rundir, "agent/sock", None)
         agent_dir = sockets / "agent"
         agent_dir.mkdir()
+        if not container.setuid_allowed(rundir):
+            (agent_dir / container.NO_SETUID).touch()
+
+        # pasta's tap and the LAN's are made on /dev/net/tun, which a Nix
+        # sandbox has only with /dev/net in `extra-sandbox-paths`. With no
+        # tun the guest has no uplink; the sandbox has no network anyway.
+        tun = Path("/dev/net/tun").exists()
+        if lan_fd is not None and not tun:
+            raise BackendError(
+                f"{spec.name}: a container guest's LAN needs /dev/net/tun; in a "
+                "Nix build, put /dev/net in extra-sandbox-paths"
+            )
 
         uid, gid = os.getuid(), os.getgid()
-        user = pwd.getpwuid(uid).pw_name
-        subuid = container.subordinate(Path("/etc/subuid"), user, uid)
-        subgid = container.subordinate(Path("/etc/subgid"), user, uid)
-        assert subuid is not None and subgid is not None, "probe() checked both"
+        if container.owns_ids():
+            subuid = subgid = None
+        else:
+            user = pwd.getpwuid(uid).pw_name
+            subuid = container.subordinate(Path("/etc/subuid"), user, uid)
+            subgid = container.subordinate(Path("/etc/subgid"), user, uid)
+            assert subuid is not None and subgid is not None, "probe() checked both"
 
         bundle = rundir / "bundle"
         bundle.mkdir()
@@ -726,6 +741,7 @@ class Container:
                     gid=gid,
                     subuid=subuid,
                     subgid=subgid,
+                    writable_store=container.store_is_one_mount(spec.store),
                 )
             )
         )
@@ -753,14 +769,20 @@ class Container:
                 *lan,
                 # The uplink: pasta joins the guest's namespaces once crun
                 # has an init, with passt's arguments and forwards.
-                "--pasta-log", str(rundir / "passt.log"),
-                "--",
-                str(tools.passt.with_name("pasta")),
-                "--foreground",
-                "--ns-ifname",
-                "vec0",
-                *forward.uplink_args(machine.offline),
-                *self._pasta_forwards(forward.to_args(machine.forward)),
+                *(
+                    [
+                        "--pasta-log", str(rundir / "passt.log"),
+                        "--",
+                        str(tools.passt.with_name("pasta")),
+                        "--foreground",
+                        "--ns-ifname",
+                        "vec0",
+                        *forward.uplink_args(machine.offline),
+                        *self._pasta_forwards(forward.to_args(machine.forward)),
+                    ]
+                    if tun
+                    else []
+                ),
             ],
             pass_fds=(lan_fd,) if lan_fd is not None else (),
             # A Nix-wrapped program carries its imports in the script, not

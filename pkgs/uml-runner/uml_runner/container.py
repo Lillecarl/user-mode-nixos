@@ -115,18 +115,22 @@ def oci_config(
     artifacts: Path | None,
     uid: int,
     gid: int,
-    subuid: Range,
-    subgid: Range,
+    subuid: Range | None,
+    subgid: Range | None,
+    writable_store: bool = True,
 ) -> dict:
     """The ``config.json`` for one guest.
 
     The mounts are in the order crun applies them, and the order matters:
     the agent's bind lands on the ``/run`` tmpfs, so it comes after it.
 
-    ``/nix/store`` is the host's, read-only, as nixpkgs' nspawn containers
-    have it. A guest that writes to its store needs the overlay the other
-    backends build; unprivileged overlayfs in a user namespace is not
-    measured here yet.
+    With no subordinate ids the guest shares the runner's user namespace.
+    That is the `uid-range` sandbox, where the build is already root with
+    65536 ids, as nixpkgs' nspawn tests run with ``--private-users=no``.
+
+    Without ``writable_store``, ``/nix/store`` is the host's, bound
+    read-only and recursively: the sandbox's store is one bind mount per
+    input, and an overlay does not see a lower's submounts.
     """
     mounts = [
         _fs("proc", "/proc", "nosuid", "noexec", "nodev"),
@@ -150,7 +154,10 @@ def oci_config(
         # no uevents, so every link stayed "pending" and networkd never
         # configured vec0 (measured).
         _fs("sysfs", "/sys", "nosuid", "noexec", "nodev", "ro"),
-        _fs("cgroup", "/sys/fs/cgroup", "nosuid", "noexec", "nodev", "rw"),
+        # `cgroup2`, a plain mount, and not OCI's `cgroup`: crun reads what
+        # that means from the host's /sys/fs/cgroup, which a uid-range
+        # build does not mount, and says "invalid file system type".
+        _fs("cgroup2", "/sys/fs/cgroup", "nosuid", "noexec", "nodev", "rw"),
         _fs("tmpfs", "/run", "nosuid", "nodev", "mode=755"),
         _fs("tmpfs", "/tmp", "nosuid", "nodev", "mode=1777"),
         # The host's store below, the guest's writes above. `userxattr`
@@ -171,7 +178,9 @@ def oci_config(
                 f"workdir={rootfs}/.nix-work",
                 "userxattr",
             ],
-        },
+        }
+        if writable_store
+        else _bind(f"{store}/store", "/nix/store", "ro"),
         _bind(str(agent_dir), AGENT_DIR, "rw"),
     ]
     if artifacts is not None:
@@ -204,13 +213,17 @@ def oci_config(
         "linux": {
             "namespaces": [
                 {"type": kind}
-                for kind in ("pid", "ipc", "uts", "mount", "cgroup", "network", "user")
-            ],
-            "uidMappings": _mapping(uid, subuid),
-            "gidMappings": _mapping(gid, subgid),
+                for kind in ("pid", "ipc", "uts", "mount", "cgroup", "network")
+            ]
+            + ([{"type": "user"}] if subuid is not None else []),
             "maskedPaths": [],
             "readonlyPaths": [],
-        },
+        }
+        | (
+            {"uidMappings": _mapping(uid, subuid), "gidMappings": _mapping(gid, subgid)}
+            if subuid is not None and subgid is not None
+            else {}
+        ),
     }
 
 
@@ -231,14 +244,6 @@ class Missing:
 
 def _unshare_user() -> None:
     os.unshare(os.CLONE_NEWUSER)
-
-
-def _own_cgroup() -> Path | None:
-    try:
-        line = Path("/proc/self/cgroup").read_text().splitlines()[0]
-    except (OSError, IndexError):
-        return None
-    return Path("/sys/fs/cgroup" + line.split(":", 2)[2])
 
 
 def probe(user: str | None = None, uid: int | None = None) -> list[Missing]:
@@ -266,6 +271,97 @@ def probe(user: str | None = None, uid: int | None = None) -> list[Missing]:
             )
         )
 
+    # In the uid-range sandbox the runner is root already, with the ids a
+    # guest needs, and there is no /etc/subuid or newuidmap to ask.
+    if not owns_ids():
+        _probe_ranges(user, uid, userns, missing)
+
+    if not cgroup_works() and scope() is None:
+        missing.append(
+            Missing(
+                "a cgroup systemd can write in",
+                "a cgroup2 mounted in a new cgroup namespace was not writable, "
+                "and systemd-run --user could not make a delegated scope",
+                "run under a user systemd, or in a cgroup delegated to you; in "
+                "a Nix build, ask for the uid-range system feature",
+            )
+        )
+    return missing
+
+
+def owns_ids() -> bool:
+    """Root in a user namespace that maps at least a guest's worth of ids:
+    a `uid-range` build."""
+    if os.getuid() != 0:
+        return False
+    try:
+        lines = Path("/proc/self/uid_map").read_text().splitlines()
+    except OSError:
+        return False
+    return sum(int(line.split()[2]) for line in lines) >= SUBORDINATE_IDS
+
+
+NO_SETUID = "no-setuid"
+"""A file in the agent directory when setuid bits cannot be set: a Nix
+build's seccomp filter refuses them, for the container too ("chmod: ...
+Operation not permitted" from suid-sgid-wrappers, measured).
+modules/container.nix skips that unit on it rather than failing the boot.
+A file and not PID 1's environment: NixOS' stage 2 starts systemd without
+the variable, and a `ConditionEnvironment` on it never held (measured)."""
+
+
+def setuid_allowed(directory: Path) -> bool:
+    """Whether a file in *directory* can be made setuid. Tried, not read."""
+    probe_file = directory / "setuid-probe"
+    probe_file.write_bytes(b"")
+    try:
+        os.chmod(probe_file, 0o4755)
+        return bool(os.stat(probe_file).st_mode & 0o4000)
+    except PermissionError:
+        return False
+    finally:
+        probe_file.unlink()
+
+
+def store_is_one_mount(store: str) -> bool:
+    """Whether *store*/store has no mounts under it. A sandbox's store has
+    one bind per input, which an overlay lower does not show."""
+    prefix = f"{store}/store/"
+    try:
+        lines = Path("/proc/self/mountinfo").read_text().splitlines()
+    except OSError:
+        return False
+    return not any(line.split()[4].startswith(prefix) for line in lines)
+
+
+_CGROUP_PROBE = """
+import ctypes, os, sys, tempfile
+uid, gid = os.getuid(), os.getgid()
+os.unshare(os.CLONE_NEWUSER | os.CLONE_NEWNS | os.CLONE_NEWCGROUP)
+open("/proc/self/setgroups", "w").write("deny")
+open("/proc/self/uid_map", "w").write(f"0 {uid} 1")
+open("/proc/self/gid_map", "w").write(f"0 {gid} 1")
+target = tempfile.mkdtemp()
+libc = ctypes.CDLL(None, use_errno=True)
+if libc.mount(b"none", target.encode(), b"cgroup2", 0, None) != 0:
+    sys.exit("mount: " + os.strerror(ctypes.get_errno()))
+os.mkdir(target + "/probe")
+os.rmdir(target + "/probe")
+"""
+"""What systemd in the guest will do: mount a cgroup2 in its own cgroup
+namespace and make a group in it. Not a check of the runner's cgroup
+directory: a `uid-range` build has no /sys/fs/cgroup mounted at all, and
+this still works there (measured)."""
+
+
+def cgroup_works(prefix: list[str] | None = None) -> bool:
+    done = subprocess.run(
+        [*(prefix or []), sys.executable, "-c", _CGROUP_PROBE], capture_output=True
+    )
+    return done.returncode == 0
+
+
+def _probe_ranges(user: str, uid: int, userns: bool, missing: list[Missing]) -> None:
     ranges = {}
     for name, path in (("subuid", Path("/etc/subuid")), ("subgid", Path("/etc/subgid"))):
         found = subordinate(path, user, uid)
@@ -296,18 +392,6 @@ def probe(user: str | None = None, uid: int | None = None) -> list[Missing]:
                     )
                 )
 
-    cgroup = _own_cgroup()
-    if (cgroup is None or not os.access(cgroup, os.W_OK)) and scope() is None:
-        missing.append(
-            Missing(
-                "a cgroup to write in",
-                f"{cgroup or 'no cgroup v2'} is not writable, and "
-                "systemd-run --user could not make a delegated scope",
-                "run under a user systemd, or in a cgroup delegated to you",
-            )
-        )
-    return missing
-
 
 SCOPE = ["--user", "--scope", "--quiet", "--collect", "-p", "Delegate=yes"]
 
@@ -324,16 +408,12 @@ def scope() -> list[str] | None:
     path = _which("systemd-run")
     if path is None:
         return None
-    done = subprocess.run(
-        [path, *SCOPE, "sh", "-c", 'test -w "/sys/fs/cgroup$(cut -d: -f3 /proc/self/cgroup)"'],
-        capture_output=True,
-    )
-    return [path, *SCOPE] if done.returncode == 0 else None
+    prefix = [path, *SCOPE]
+    return prefix if cgroup_works(prefix) else None
 
 
 def needs_scope() -> bool:
-    cgroup = _own_cgroup()
-    return cgroup is None or not os.access(cgroup, os.W_OK)
+    return not cgroup_works()
 
 
 def _try_map(helper: str, host: int, extra: Range) -> str | None:
@@ -514,6 +594,41 @@ def _lan(pid: int, fd: int, mtu: int, mac: str) -> subprocess.Popen:
     )
 
 
+MS_REC = 0x4000
+MS_PRIVATE = 1 << 18
+
+
+def _cgroup2_mounted() -> bool:
+    for line in Path("/proc/self/mountinfo").read_text().splitlines():
+        before, _, after = line.partition(" - ")
+        if before.split()[4] == "/sys/fs/cgroup" and after.split()[0] == "cgroup2":
+            return True
+    return False
+
+
+def _ensure_cgroup2() -> None:
+    """Give crun the cgroup2 at /sys/fs/cgroup it insists on.
+
+    crun statfs()es /sys/fs/cgroup before anything else and refuses what
+    is not cgroup2 or tmpfs: "invalid file system type". A uid-range build
+    mounts nothing there. As root in its own user namespace, the launcher
+    can make a mount and cgroup namespace of its own and mount one: the
+    build's cgroup, which Nix delegated to it.
+    """
+    if _cgroup2_mounted() or os.getuid() != 0:
+        return
+    import ctypes
+
+    os.unshare(os.CLONE_NEWNS | os.CLONE_NEWCGROUP)
+    libc = ctypes.CDLL(None, use_errno=True)
+    for args in (
+        (b"none", b"/", None, MS_REC | MS_PRIVATE, None),
+        (b"none", b"/sys/fs/cgroup", b"cgroup2", 0, None),
+    ):
+        if libc.mount(*args) != 0:
+            raise OSError(ctypes.get_errno(), f"mount {args[1].decode()}")
+
+
 def _parse(argv: list[str]):
     import argparse
 
@@ -547,6 +662,7 @@ def main(argv: list[str] | None = None) -> int:
     args = _parse(sys.argv[1:] if argv is None else argv)
     if args.mode == "tap":
         return tap_relay(args.pid, args.fd, "vec1", args.mtu, args.mac)
+    _ensure_cgroup2()
 
     name = args.name
     bundle = args.bundle

@@ -97,6 +97,27 @@ class TestOciConfig:
         cgroup = next(m for m in config()["mounts"] if m["destination"] == "/sys/fs/cgroup")
         assert "rw" in cgroup["options"]
 
+    def test_in_the_sandbox_the_guest_shares_the_builds_ids(self):
+        """A uid-range build is root with 65536 ids and no /etc/subuid:
+        no user namespace of the guest's own, and no mappings to write."""
+        linux = config(subuid=None, subgid=None)["linux"]
+        assert "user" not in {ns["type"] for ns in linux["namespaces"]}
+        assert "uidMappings" not in linux and "gidMappings" not in linux
+
+    def test_a_store_of_binds_is_bound_read_only(self):
+        """An overlay lower does not show submounts, and the sandbox's store
+        is one bind per input."""
+        store = next(
+            m for m in config(writable_store=False)["mounts"] if m["destination"] == "/nix/store"
+        )
+        assert store["type"] == "bind"
+        assert store["options"] == ["rbind", "ro"]
+
+    def test_the_cgroup_is_a_plain_cgroup2_mount(self):
+        """OCI's `cgroup` makes crun read the runner's /sys/fs/cgroup."""
+        cgroup = next(m for m in config()["mounts"] if m["destination"] == "/sys/fs/cgroup")
+        assert cgroup["type"] == "cgroup2"
+
     def test_artifacts_only_when_given(self):
         assert "/artifacts" in destinations(config())
         assert "/artifacts" not in destinations(config(artifacts=None))

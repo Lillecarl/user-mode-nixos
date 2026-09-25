@@ -709,9 +709,11 @@ let
     /*
       One guest as a rootless container under crun (Area 8 of the design).
 
-      By hand: the sandboxed run needs the `uid-range` feature, which
-      neither this repository's CI nor most daemons offer. Outside the
-      sandbox the host needs subordinate ids and a writable cgroup, and
+      `nix build --file . container` needs a daemon with the `uid-range`
+      feature, and CI's has none, so it is not a CI check. There the
+      guest has no uplink (no /dev/net/tun) and a read-only store, and
+      the phase says so. By hand, `uml-eval run container`, it has both;
+      the host needs subordinate ids and a cgroup it can delegate, and
       the runner says which is missing.
     */
     container = mkSession {

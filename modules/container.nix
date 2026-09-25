@@ -23,6 +23,12 @@ lib.mkIf (cfg.backend == "container") {
   # the agent listens on a socket in it.
   boot.uml.agentDevice = "unix:/run/host/agent/sock";
 
+  # A Nix build's seccomp filter refuses setuid bits, and the runner says
+  # so with a file (uml_runner.container.NO_SETUID). Skipped rather than
+  # failed: without it every sandboxed boot is "degraded". By hand the
+  # file is absent and the wrappers are made as usual.
+  systemd.services.suid-sgid-wrappers.unitConfig.ConditionPathExists = "!/run/host/agent/no-setuid";
+
   # isContainer's login prompt, on the console the runner reads.
   systemd.services.console-getty.enable = false;
 

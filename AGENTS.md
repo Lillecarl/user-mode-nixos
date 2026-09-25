@@ -286,12 +286,20 @@ accept. UML for what is single-threaded and should cost the host little,
 QEMU for what wants the CPU. `nix build --file . mixed` proves it, by
 hand (it needs /dev/kvm).
 
-A third, `container`: the system under rootless crun, no kernel of its
-own (Area 8 of the design, issue #17). By hand only: the sandbox needs
-`uid-range` (`featuresFor` asks for it), and the host needs a user
-namespace, 65536 subordinate ids with working `newuidmap`/`newgidmap`,
-and a writable cgroup — `container.probe()` tries each and the boot
-fails naming what is missing. Where its own cgroup is not writable, the
+A third, `container`: the system under crun, no kernel of its own (Area
+8 of the design, issue #17). By hand the host needs a user namespace,
+65536 subordinate ids with working `newuidmap`/`newgidmap`, and a
+cgroup it can delegate — `container.probe()` tries each and the boot
+fails naming what is missing.
+
+Sandboxed (`nix build --file . container`) it needs a daemon with
+`uid-range` (`featuresFor` asks; dynhetz has it, CI does not). There the
+build is root with 65536 ids: the guest shares that user namespace
+(`owns_ids`), the store is an rbind (one bind per input defeats an
+overlay), there is no uplink or LAN (no /dev/net/tun), the launcher
+mounts the cgroup2 crun insists on (`_ensure_cgroup2`), and seccomp
+refuses setuid, so the runner drops `no-setuid` in the agent directory
+and container.nix skips suid-sgid-wrappers on it. Where its own cgroup is not writable, the
 runner starts the launcher under `systemd-run --user --scope -p
 Delegate=yes` (`container.scope()`), which execs in place and so keeps
 the parent-death signal. Plain `uml-eval run container` and MCP `start`

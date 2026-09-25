@@ -1025,8 +1025,24 @@
 17 behind: 14 guest processes before, none after. Without a delegated
 17 cgroup the run refuses at once and names the fix.
 17
-17 Not built yet: the sandboxed check with `uid-range`, and memory
-17 control.
+17 Not built yet: memory control.
+17
+17 The sandboxed door is built, on a daemon with `uid-range` (dynhetz
+17 has it since 2026-09-25; CI does not). `nix build --file . container`
+17 passes in 2.6 s. Four things differ from the by-hand run, each met
+17 by trying it:
+17
+17 - The build is root with 65536 ids and no `/etc/subuid`. The guest
+17   shares that user namespace, as nixpkgs' nspawn tests do.
+17 - crun refuses to start unless `/sys/fs/cgroup` is cgroup2, and the
+17   build mounts nothing there. The launcher makes its own mount and
+17   cgroup namespace and mounts one: the cgroup Nix delegated.
+17 - The store is one bind per input, which an overlay does not show,
+17   so it is bound read-only. No `/dev/net/tun`, so no uplink or LAN.
+17 - Nix's seccomp filter refuses setuid bits, so suid-sgid-wrappers
+17   failed. The runner tries a setuid bit and, refused, leaves a file
+17   the unit's condition reads. PID 1's environment did not work: stage
+17   2 starts systemd without the variable (measured).
 17
 17 The writable store is built: an overlay over the host's `/nix/store`,
 17 its upper layer in the run's root. A guest adds a path and runs a

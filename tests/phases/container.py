@@ -3,14 +3,19 @@
 
 `systemd-detect-virt` answers `container-other` under crun, which proves
 this is not a UML or a QEMU guest. The `nobody` service is the part that
-needs the subordinate ids: with root alone mapped it fails at the GROUP
-step.
+needs a range of ids: with root alone mapped it fails at the GROUP step.
+
+The same script runs by hand and in the `uid-range` sandbox. The sandbox
+has no /dev/net/tun, so no uplink, and its store is one bind per input,
+so the guest's store is read-only there. Each part says when it is
+skipped, so a sandboxed pass never reads as a full one.
 """
 
 import socket
 from pathlib import Path
 
-from uml_runner import Machines
+from uml_runner import Machine, Machines
+from uml_runner.container import store_is_one_mount
 
 
 async def test(vms: Machines) -> None:
@@ -31,16 +36,19 @@ async def test(vms: Machines) -> None:
         raise AssertionError(f"nobody runs as {who.strip()}")
     print("[test] systemd is up, nothing failed, and nobody is 65534")
 
-    # The uplink: pasta's DHCP gives vec0 the address passt gives the
-    # other backends, and its DNS forwarder answers.
-    await one.succeed(
-        "for i in $(seq 50); do ip -4 -o addr show vec0 | grep -q inet && exit 0; sleep 0.2; done; exit 1"
-    )
-    print(f"[test] vec0: {(await one.succeed('ip -4 -o addr show vec0')).split()[3]}")
-    await one.succeed("getent hosts localhost")
+    if store_is_one_mount("/nix"):
+        await _writable_store(one)
+    else:
+        print("[test] skipped: a writable store (this store is one bind per input)")
 
-    # A writable store: the guest adds a path, and the host's store does
-    # not get it.
+    if Path("/dev/net/tun").exists():
+        await _uplink(one)
+    else:
+        print("[test] skipped: the uplink and forwards (no /dev/net/tun here)")
+
+
+async def _writable_store(one: Machine) -> None:
+    # The guest adds a path, and the host's store does not get it.
     added = (await one.succeed("echo from-the-guest > /tmp/f && nix-store --add /tmp/f 2>/dev/null")).strip()
     await one.succeed(f"test -e {added} && nix-store --verify-path {added}")
     if Path(added).exists():
@@ -61,6 +69,16 @@ async def test(vms: Machines) -> None:
     if (await one.succeed(f"cat {built}")).strip() != "built":
         raise AssertionError(f"{built} does not hold what the builder wrote")
     print(f"[test] the guest built {built} in its own sandbox")
+
+
+async def _uplink(one: Machine) -> None:
+    # pasta's DHCP gives vec0 the address passt gives the other backends,
+    # and its DNS forwarder answers.
+    await one.succeed(
+        "for i in $(seq 50); do ip -4 -o addr show vec0 | grep -q inet && exit 0; sleep 0.2; done; exit 1"
+    )
+    print(f"[test] vec0: {(await one.succeed('ip -4 -o addr show vec0')).split()[3]}")
+    await one.succeed("getent hosts localhost")
 
     # A forward: the host reaches the guest's sshd through pasta.
     host, _, port = one.reachable(4325)[0].rpartition(":")
