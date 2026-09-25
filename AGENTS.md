@@ -291,11 +291,11 @@ own (Area 8 of the design, issue #17). By hand only: the sandbox needs
 `uid-range` (`featuresFor` asks for it), and the host needs a user
 namespace, 65536 subordinate ids with working `newuidmap`/`newgidmap`,
 and a writable cgroup — `container.probe()` tries each and the boot
-fails naming what is missing. Run it under a delegated scope:
-
-```sh
-systemd-run --user --scope -p Delegate=yes nix run --file . uml-eval -- run container --out ./o
-```
+fails naming what is missing. Where its own cgroup is not writable, the
+runner starts the launcher under `systemd-run --user --scope -p
+Delegate=yes` (`container.scope()`), which execs in place and so keeps
+the parent-death signal. Plain `uml-eval run container` and MCP `start`
+both work.
 
 - `modules/container.nix`: `boot.isContainer`, a root template directory
   the runner copies, `/nix/store` bound read-only. No memory control
@@ -314,7 +314,8 @@ systemd-run --user --scope -p Delegate=yes nix run --file . uml-eval -- run cont
 - `uml_runner.crun_launch` relays the pty crun hands over the console
   socket; crun will not write it to a pipe. EIO on the master is systemd
   re-opening the console, not the end.
-- Lifetime chain: runner → launcher → crun, pasta, tap (`die_with_parent`)
+- Lifetime chain: runner → (systemd-run, exec'd in place) launcher →
+  crun, pasta, tap (`die_with_parent`)
   → init (`setpriv --pdeathsig KILL`). SIGKILL of the runner leaves nothing
   (measured). Keep every link when touching it.
 

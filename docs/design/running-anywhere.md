@@ -1025,8 +1025,14 @@
 17 behind: 14 guest processes before, none after. Without a delegated
 17 cgroup the run refuses at once and names the fix.
 17
-17 Not built yet, in order: a writable store, the re-exec under a
-17 delegated scope, and the sandboxed check with `uid-range`.
+17 Not built yet, in order: a writable store, and the sandboxed check
+17 with `uid-range`.
+17
+17 The delegated scope is built. When its own cgroup is not writable,
+17 the runner starts the launcher under `systemd-run --user --scope -p
+17 Delegate=yes`. That execs in place, so the parent-death chain holds
+17 (measured again with SIGKILL). A plain `uml-eval run container` and a
+17 run started over MCP both pass with no wrapper.
 17
 17 The LAN is built. A helper joins the guest's user and network
 17 namespaces, makes `vec1` as a tap, and copies frames to the segment

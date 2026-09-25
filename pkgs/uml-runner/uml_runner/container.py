@@ -279,15 +279,43 @@ def probe(user: str | None = None, uid: int | None = None) -> list[Missing]:
                 )
 
     cgroup = _own_cgroup()
-    if cgroup is None or not os.access(cgroup, os.W_OK):
+    if (cgroup is None or not os.access(cgroup, os.W_OK)) and scope() is None:
         missing.append(
             Missing(
                 "a cgroup to write in",
-                f"{cgroup or 'no cgroup v2'} is not writable",
-                "run under systemd-run --user --scope -p Delegate=yes",
+                f"{cgroup or 'no cgroup v2'} is not writable, and "
+                "systemd-run --user could not make a delegated scope",
+                "run under a user systemd, or in a cgroup delegated to you",
             )
         )
     return missing
+
+
+SCOPE = ["--user", "--scope", "--quiet", "--collect", "-p", "Delegate=yes"]
+
+
+def scope() -> list[str] | None:
+    """A command prefix that runs its command in a delegated cgroup, or
+    ``None`` when the user's systemd will not make one.
+
+    ``systemd-run --scope`` execs the command in its own process rather
+    than forking it, so the parent-death signal the runner set survives.
+    The host's systemd-run, not one from the store: it talks to the host's
+    user manager, and the two must agree.
+    """
+    path = _which("systemd-run")
+    if path is None:
+        return None
+    done = subprocess.run(
+        [path, *SCOPE, "sh", "-c", 'test -w "/sys/fs/cgroup$(cut -d: -f3 /proc/self/cgroup)"'],
+        capture_output=True,
+    )
+    return [path, *SCOPE] if done.returncode == 0 else None
+
+
+def needs_scope() -> bool:
+    cgroup = _own_cgroup()
+    return cgroup is None or not os.access(cgroup, os.W_OK)
 
 
 def _try_map(helper: str, host: int, extra: Range) -> str | None:

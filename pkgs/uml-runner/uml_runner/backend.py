@@ -736,8 +736,12 @@ class Container:
             if lan_fd is not None
             else []
         )
+        # A cgroup systemd in the guest can write in: the one this runs in,
+        # or a delegated scope made for the launcher when it is not.
+        prefix = (container.scope() or []) if container.needs_scope() else []
         return Launch(
             argv=[
+                *prefix,
                 sys.executable,
                 "-m",
                 "uml_runner.crun_launch",
